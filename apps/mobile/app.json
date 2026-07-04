@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "JARVIS Mobile",
+    "slug": "jarvis-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "jarvis",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-secure-store",
+      "expo-local-authentication",
+      "expo-notifications"
+    ],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "local.eureka.jarvis",
+      "versionCode": 1,
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "POST_NOTIFICATIONS",
+        "USE_BIOMETRIC"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "local.eureka.jarvis",
+      "buildNumber": "1",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSUserNotificationsUsageDescription": "JARVIS sends local approval and execution status notifications.",
+        "NSFaceIDUsageDescription": "JARVIS can use Face ID to unlock sensitive approval actions."
+      }
+    }
+  }
+}

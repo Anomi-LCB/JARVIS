@@ -1,0 +1,267 @@
+{
+  "version": "a-03-intent-corpus-v1",
+  "thresholds": {
+    "intentAccuracy": 0.92,
+    "slotAccuracy": 0.86,
+    "entityAccuracy": 0.9,
+    "complexityAccuracy": 0.84,
+    "combinedAccuracy": 0.9
+  },
+  "fixtures": [
+    {
+      "id": "a03-create-xlsx-weekly-offering",
+      "command": "다음 주 헌금 정산 보고서를 엑셀로 만들어",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "xlsx",
+          "fileName": "헌금-정산.xlsx",
+          "dateHint": "다음 주",
+          "targetDirectoryHint": "workspace"
+        },
+        "entities": {
+          "hasDate": true,
+          "hasMoneyAmount": false,
+          "mentionsExternalDestination": false
+        },
+        "complexity": {
+          "needsPlanDecomposition": false
+        }
+      }
+    },
+    {
+      "id": "a03-create-txt-meeting-note",
+      "command": "오늘 회의 메모를 txt로 작성해줘",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "txt",
+          "fileName": "회의.txt",
+          "dateHint": "오늘"
+        },
+        "entities": {
+          "hasDate": true,
+          "hasPhoneNumber": false
+        },
+        "complexity": {
+          "needsPlanDecomposition": false
+        }
+      }
+    },
+    {
+      "id": "a03-create-pdf-bulletin",
+      "command": "이번 주 예배 안내문을 PDF로 만들어줘",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "pdf",
+          "fileName": "예배.pdf",
+          "dateHint": "이번 주"
+        },
+        "entities": {
+          "hasDate": true
+        },
+        "complexity": {
+          "needsPlanDecomposition": false
+        }
+      }
+    },
+    {
+      "id": "a03-list-downloads",
+      "command": "다운로드 폴더 파일 목록 보여줘",
+      "expected": {
+        "actionType": "LIST_FILES",
+        "slots": {
+          "directoryHint": "downloads"
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        },
+        "complexity": {
+          "needsPlanDecomposition": false
+        }
+      }
+    },
+    {
+      "id": "a03-list-workspace",
+      "command": "작업공간 파일 리스트 보여줘",
+      "expected": {
+        "actionType": "LIST_FILES",
+        "slots": {
+          "directoryHint": "workspace"
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-move-download-to-archive",
+      "command": "다운로드에서 보관함으로 6월 정산 파일 옮겨줘",
+      "expected": {
+        "actionType": "MOVE_FILE",
+        "slots": {
+          "sourceHint": "downloads",
+          "destinationHint": "archive",
+          "fileName": "6월-정산.txt"
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        },
+        "complexity": {
+          "needsPlanDecomposition": false
+        }
+      }
+    },
+    {
+      "id": "a03-upload-email-pdf",
+      "command": "주보.pdf를 이메일로 전송해줘",
+      "expected": {
+        "actionType": "UPLOAD_FILE",
+        "slots": {
+          "destination": "email",
+          "fileName": "주보.pdf",
+          "externalTransfer": true
+        },
+        "entities": {
+          "mentionsExternalDestination": true,
+          "hasEmailAddress": false
+        }
+      }
+    },
+    {
+      "id": "a03-upload-band-report",
+      "command": "정산 보고서를 밴드에 공유해",
+      "expected": {
+        "actionType": "UPLOAD_FILE",
+        "slots": {
+          "destination": "band",
+          "fileName": "정산.txt",
+          "externalTransfer": true
+        },
+        "entities": {
+          "mentionsExternalDestination": true
+        }
+      }
+    },
+    {
+      "id": "a03-upload-named-recipient",
+      "command": "민수에게 메일로 회의 메모 전송해줘",
+      "expected": {
+        "actionType": "UPLOAD_FILE",
+        "slots": {
+          "destination": "email",
+          "recipientHint": "민수",
+          "fileName": "회의.txt",
+          "externalTransfer": true
+        },
+        "entities": {
+          "mentionsExternalDestination": true
+        }
+      }
+    },
+    {
+      "id": "a03-browser-search-security-log",
+      "command": "jarvis 보안 로그 검색해",
+      "expected": {
+        "actionType": "BROWSER_SEARCH",
+        "slots": {
+          "query": "jarvis 보안 로그",
+          "dateHint": null
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-browser-search-dated-news",
+      "command": "오늘 AI 에이전트 보안 뉴스 조사해줘",
+      "expected": {
+        "actionType": "BROWSER_SEARCH",
+        "slots": {
+          "query": "오늘 AI 에이전트 보안 뉴스",
+          "dateHint": "오늘"
+        },
+        "entities": {
+          "hasDate": true
+        }
+      }
+    },
+    {
+      "id": "a03-delete-file",
+      "command": "급여 파일 삭제해",
+      "expected": {
+        "actionType": "DELETE_FILE",
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-create-sensitive-phone",
+      "command": "내일 010-1234-5678 연락처가 들어간 안내문 작성해",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "txt",
+          "dateHint": "내일"
+        },
+        "entities": {
+          "hasPhoneNumber": true,
+          "hasDate": true
+        }
+      }
+    },
+    {
+      "id": "a03-create-sensitive-money",
+      "command": "헌금 30만원 입금 내역 보고서 만들어",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "txt",
+          "fileName": "헌금-입금-내역.txt"
+        },
+        "entities": {
+          "hasMoneyAmount": true,
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-complex-search-then-create",
+      "command": "다음 주 행사 일정 조사하고 보고서 만들어",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "txt",
+          "fileName": "행사-일정.txt",
+          "dateHint": "다음 주"
+        },
+        "entities": {
+          "hasDate": true
+        },
+        "complexity": {
+          "needsPlanDecomposition": true
+        }
+      }
+    },
+    {
+      "id": "a03-complex-create-and-upload",
+      "command": "엑셀 보고서 만들고 그리고 밴드에 공유해",
+      "expected": {
+        "actionType": "UPLOAD_FILE",
+        "slots": {
+          "destination": "band",
+          "externalTransfer": true
+        },
+        "entities": {
+          "mentionsExternalDestination": true
+        },
+        "complexity": {
+          "needsPlanDecomposition": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "corpusId": "b-07-pc-agent-shadow-golden-corpus",
+  "version": "1.0.0",
+  "fixtures": [
+    {
+      "fixtureId": "shadow-create-text-ready",
+      "title": "Create text file preview without existing target",
+      "toolName": "filesystem.createTextFile",
+      "args": {
+        "path": "${root}/notes/new-note.txt",
+        "content": "JARVIS shadow preview"
+      },
+      "expected": {
+        "equals": {
+          "shadow.mode": "shadow",
+          "shadow.expectedChangesCount": 1,
+          "shadow.targetExists": false,
+          "approvalDiff.mutatesSystem": true,
+          "approvalDiff.requiresUserApproval": true
+        },
+        "includes": {
+          "approvalDiff.summary": "expects 1 local change"
+        }
+      }
+    },
+    {
+      "fixtureId": "shadow-create-text-conflict",
+      "title": "Create text file preview blocks overwrite without approval",
+      "toolName": "filesystem.createTextFile",
+      "setup": {
+        "files": [
+          {
+            "path": "${root}/notes/existing.txt",
+            "content": "existing"
+          }
+        ]
+      },
+      "args": {
+        "path": "${root}/notes/existing.txt",
+        "content": "new content"
+      },
+      "expected": {
+        "equals": {
+          "shadow.expectedChangesCount": 0,
+          "shadow.targetExists": true,
+          "approvalDiff.conflictCount": 1
+        },
+        "includes": {
+          "shadow.warnings": "target-exists",
+          "approvalDiff.summary": "preflight conflict"
+        }
+      }
+    },
+    {
+      "fixtureId": "shadow-move-ready",
+      "title": "Move file preview produces batch diff",
+      "toolName": "filesystem.moveFiles",
+      "setup": {
+        "files": [
+          {
+            "path": "${root}/inbox/source.txt",
+            "content": "move me"
+          }
+        ]
+      },
+      "args": {
+        "moves": [
+          {
+            "from": "${root}/inbox/source.txt",
+            "to": "${root}/archive/source.txt"
+          }
+        ]
+      },
+      "expected": {
+        "equals": {
+          "shadow.expectedChangesCount": 1,
+          "shadow.batchDiff.ready": 1,
+          "shadow.batchDiff.blocked": 0,
+          "approvalDiff.conflictCount": 0
+        },
+        "includes": {
+          "approvalDiff.summary": "expects 1 local change"
+        }
+      }
+    },
+    {
+      "fixtureId": "shadow-excel-template",
+      "title": "Excel workbook preview loads file template and visual contract",
+      "toolName": "excel.createWorkbook",
+      "args": {
+        "outputPath": "${root}/reports/shadow-report.xlsx",
+        "sheetName": "Shadow",
+        "columns": ["name", "status"],
+        "rows": [
+          {
+            "name": "A",
+            "status": "ready"
+          }
+        ],
+        "template": {
+          "templateFile": "${ministryReportTemplate}"
+        }
+      },
+      "expected": {
+        "equals": {
+          "shadow.expectedChangesCount": 1,
+          "shadow.templateId": "ministry-report",
+          "shadow.templateSource": "file",
+          "shadow.chartCount": 1,
+          "shadow.worker.processIsolation": "worker-module",
+          "approvalDiff.requiresUserApproval": true
+        }
+      }
+    },
+    {
+      "fixtureId": "shadow-browser-readonly",
+      "title": "Browser search preview is read-only and side-effect free",
+      "toolName": "browser.search",
+      "args": {
+        "query": "JARVIS local safety",
+        "searchEngine": "duckduckgo",
+        "readOnly": true,
+        "maxResults": 2
+      },
+      "expected": {
+        "equals": {
+          "shadow.expectedChangesCount": 0,
+          "shadow.readOnly": true,
+          "approvalDiff.readOnly": true,
+          "approvalDiff.requiresUserApproval": false
+        },
+        "includes": {
+          "shadow.url": "duckduckgo.com",
+          "approvalDiff.summary": "read-only"
+        }
+      }
+    }
+  ]
+}

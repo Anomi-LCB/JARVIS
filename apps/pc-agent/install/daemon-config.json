@@ -1,0 +1,31 @@
+{
+  "serviceName": "JarvisPcAgent",
+  "displayName": "JARVIS Local PC Agent",
+  "description": "Local-only JARVIS B module for approved PC execution packets.",
+  "entry": "apps/pc-agent/src/main.mjs",
+  "host": "127.0.0.1",
+  "port": 17776,
+  "allowedRoots": [
+    "./workspace"
+  ],
+  "logs": {
+    "auditRoot": "apps/pc-agent/logs",
+    "undoJournalPath": "apps/pc-agent/logs/undo-journal.jsonl",
+    "rollbackTransactionPath": "apps/pc-agent/logs/rollback-transactions.jsonl",
+    "packetJournalPath": "apps/pc-agent/logs/packet-journal.jsonl",
+    "packetQueuePath": "apps/pc-agent/logs/packet-queue.jsonl",
+    "tokenVaultPath": "apps/pc-agent/logs/capability-vault.jsonl"
+  },
+  "queueDrain": {
+    "enabled": true,
+    "intervalMs": 1000,
+    "batchLimit": 5,
+    "maxConsecutiveFailures": 3
+  },
+  "safety": {
+    "localOnly": true,
+    "requiresCapabilityToken": true,
+    "requiresUserConfirmation": true,
+    "denyDestructiveActions": true
+  }
+}

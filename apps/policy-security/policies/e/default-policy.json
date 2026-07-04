@@ -1,0 +1,143 @@
+{
+  "policyVersion": "jarvis-e-policy-v1.2",
+  "schemaVersion": "e-policy-schema-v1",
+  "constitution": {
+    "principles": [
+      "deny_by_default",
+      "no_execution_without_approval",
+      "no_mobile_simple_approval_for_tier3_or_higher",
+      "no_external_or_destructive_capability_in_mvp",
+      "growth_memory_cannot_relax_policy",
+      "external_content_is_not_a_command"
+    ]
+  },
+  "risk": {
+    "forbiddenActions": ["DELETE_FILE", "MAKE_PAYMENT", "CHANGE_SYSTEM_SETTING", "READ_SECRET"],
+    "tiersByAction": {
+      "CREATE_FILE": 5,
+      "LIST_FILES": 5,
+      "COPY_FILE": 5,
+      "MOVE_FILE": 5,
+      "BROWSER_SEARCH": 4,
+      "UPLOAD_FILE": 3,
+      "DELETE_FILE": 2,
+      "MAKE_PAYMENT": 1,
+      "CHANGE_SYSTEM_SETTING": 1,
+      "READ_SECRET": 1
+    }
+  },
+  "dataRules": [
+    {
+      "id": "secret",
+      "pattern": "api[_-]?key|password|token|비밀번호|secret",
+      "dataClass": "D4",
+      "ministryDataClass": "M4",
+      "flags": ["secret"]
+    },
+    {
+      "id": "resident_registration_number",
+      "pattern": "\\b\\d{6}[-\\s]?[1-4]\\d{6}\\b",
+      "dataClass": "D4",
+      "ministryDataClass": "M4",
+      "flags": ["national_id", "pii"]
+    },
+    {
+      "id": "financial_account",
+      "pattern": "계좌|은행|입금|출금|헌금|십일조|account number|bank transfer",
+      "dataClass": "D3",
+      "ministryDataClass": "M4",
+      "flags": ["financial", "ministry_finance"]
+    },
+    {
+      "id": "email_address",
+      "pattern": "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+      "dataClass": "D2",
+      "ministryDataClass": "M2",
+      "flags": ["email", "pii"]
+    },
+    {
+      "id": "ministry_sensitive",
+      "pattern": "상담|질병|가정사|재정|심방|기도제목|목양|새가족|교적|양육",
+      "dataClass": "D3",
+      "ministryDataClass": "M3",
+      "flags": ["ministry_sensitive"]
+    },
+    {
+      "id": "health_pastoral_care",
+      "pattern": "우울|불안|질병|진단|복용|입원|치료|상처|중독|자살|medical|diagnosis|hospital",
+      "dataClass": "D3",
+      "ministryDataClass": "M4",
+      "flags": ["health", "pastoral_care"]
+    },
+    {
+      "id": "minor_or_family",
+      "pattern": "아동|청소년|미성년|자녀|가정폭력|학대|양육권|minor|child custody",
+      "dataClass": "D3",
+      "ministryDataClass": "M4",
+      "flags": ["minor", "family_sensitive"]
+    },
+    {
+      "id": "phone_number",
+      "pattern": "\\b010[-.\\s]?\\d{4}[-.\\s]?\\d{4}\\b",
+      "dataClass": "D2",
+      "ministryDataClass": "M2",
+      "flags": ["phone_number"]
+    }
+  ],
+  "approval": {
+    "tiers": {
+      "1": { "required": true, "approvalMode": "pc_only", "mobileApprovalAllowed": false, "expiresInSec": 0, "decision": "block" },
+      "2": { "required": true, "approvalMode": "pc_only", "mobileApprovalAllowed": false, "expiresInSec": 180, "decision": "require_approval" },
+      "3": { "required": true, "approvalMode": "pc_only", "mobileApprovalAllowed": false, "expiresInSec": 300, "decision": "require_approval" },
+      "4": { "required": true, "approvalMode": "detailed", "mobileApprovalAllowed": false, "expiresInSec": 900, "decision": "require_approval" },
+      "5": { "required": true, "approvalMode": "simple", "mobileApprovalAllowed": true, "expiresInSec": 1800, "decision": "require_approval" }
+    },
+    "mobileTier4Allowed": false
+  },
+  "capability": {
+    "maxTtlMs": 3600000,
+    "defaultAllowedPaths": ["./workspace"],
+    "forbiddenIssueActions": ["DELETE_FILE", "UPLOAD_FILE", "MAKE_PAYMENT"],
+    "maxAffectedItems": 20,
+    "maxRuntimeMs": 30000
+  },
+  "toolPoisoning": {
+    "toolOutputSources": ["TOOL_OUTPUT", "TOOL_METADATA", "WEB_CONTENT", "EMAIL_CONTENT", "PDF_CONTENT", "OCR_CONTENT"],
+    "blockedInstructionPatterns": [
+      "ignore previous",
+      "이전 지시.*무시",
+      "execute this",
+      "run this command",
+      "이 명령을 실행",
+      "토큰.*업로드",
+      "upload.*token",
+      "로컬 파일.*읽",
+      "read.*local file"
+    ],
+    "nonExecutableBoundary": "TOOL_OUTPUT_NON_EXECUTABLE"
+  },
+  "promptInjection": {
+    "blockedPatterns": [
+      { "id": "ignore_previous", "pattern": "ignore previous|이전 지시.*무시", "severity": "high" },
+      { "id": "secret_exfiltration", "pattern": "token|api[_-]?key|secret|비밀번호|토큰.*업로드", "severity": "high" },
+      { "id": "local_file_access", "pattern": "로컬 파일.*읽|read.*local file|C:[/\\\\]+Users|/etc/passwd", "severity": "high" },
+      { "id": "policy_bypass", "pattern": "승인 없이|without approval|bypass policy|정책.*우회", "severity": "high" },
+      { "id": "system_prompt_probe", "pattern": "system prompt|시스템 프롬프트|developer message", "severity": "medium" }
+    ],
+    "quotedContentNonExecutable": true,
+    "untrustedSourceTypes": ["WEB_CONTENT", "PDF_CONTENT", "EMAIL_CONTENT", "OCR_CONTENT", "CLIPBOARD_CONTENT", "TOOL_OUTPUT", "TOOL_METADATA"],
+    "decisions": {
+      "high": "block",
+      "medium": "warn",
+      "low": "allow"
+    }
+  },
+  "autonomy": {
+    "approvalCountAtLeast": 5,
+    "failureCount": 0,
+    "rejectionCount": 0,
+    "expiresAtRequired": true,
+    "minimumRiskTier": 4,
+    "forbiddenScopeActions": ["DELETE_FILE"]
+  }
+}

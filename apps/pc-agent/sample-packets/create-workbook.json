@@ -1,0 +1,25 @@
+{
+  "packetId": "packet_sample_create_workbook",
+  "taskId": "task_sample_create_workbook",
+  "capabilityToken": {
+    "tokenId": "cap_sample_create_workbook"
+  },
+  "userConfirmation": {
+    "confirmed": true,
+    "sourceModule": "A_CORE"
+  },
+  "action": {
+    "actionType": "CREATE_FILE",
+    "skillId": "excel_create_skill",
+    "toolName": "excel.createWorkbook",
+    "arguments": {
+      "outputPath": "./workspace/sample.xlsx",
+      "sheetName": "Sample",
+      "columns": ["name", "status"],
+      "rows": [
+        { "name": "JARVIS-A", "status": "planned" },
+        { "name": "JARVIS-B", "status": "executed" }
+      ]
+    }
+  }
+}

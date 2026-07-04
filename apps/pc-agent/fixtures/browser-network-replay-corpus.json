@@ -1,0 +1,81 @@
+{
+  "fixturePackVersion": "b-browser-network-replay-corpus-v1",
+  "fixturePackId": "browser-readonly-network-replay-product-pack",
+  "fixtures": [
+    {
+      "fixtureId": "browser.safe_search_result",
+      "query": "JARVIS local automation",
+      "searchEngine": "duckduckgo",
+      "url": "https://duckduckgo.com/?q=JARVIS%20local%20automation",
+      "title": "JARVIS Local Automation",
+      "bodyText": "JARVIS local automation result. Read-only page text with no forms.",
+      "expectedTextIncludes": ["JARVIS local automation", "Read-only page text"],
+      "requests": [{ "method": "GET", "url": "https://duckduckgo.com/?q=JARVIS%20local%20automation", "resourceType": "document" }],
+      "responses": [{ "url": "https://duckduckgo.com/?q=JARVIS%20local%20automation", "status": 200, "contentType": "text/html" }]
+    },
+    {
+      "fixtureId": "browser.email_redaction",
+      "query": "contact redaction",
+      "searchEngine": "duckduckgo",
+      "url": "https://duckduckgo.com/?q=contact%20redaction",
+      "title": "Contact Redaction",
+      "bodyText": "Contact lead@example.com should be redacted from browser DOM snapshots.",
+      "expectedTextIncludes": ["[email]", "browser DOM snapshots"],
+      "requests": [{ "method": "GET", "url": "https://duckduckgo.com/?q=contact%20redaction", "resourceType": "document" }],
+      "responses": [{ "url": "https://duckduckgo.com/?q=contact%20redaction", "status": 200, "contentType": "text/html" }]
+    },
+    {
+      "fixtureId": "browser.phone_redaction",
+      "query": "phone redaction",
+      "searchEngine": "bing",
+      "url": "https://www.bing.com/search?q=phone%20redaction",
+      "title": "Phone Redaction",
+      "bodyText": "Call 010-1234-5678 appears in source and must become [phone].",
+      "expectedTextIncludes": ["[phone]", "source"],
+      "requests": [{ "method": "GET", "url": "https://www.bing.com/search?q=phone%20redaction", "resourceType": "document" }],
+      "responses": [{ "url": "https://www.bing.com/search?q=phone%20redaction", "status": 200, "contentType": "text/html" }]
+    },
+    {
+      "fixtureId": "browser.get_only_assets",
+      "query": "asset replay",
+      "searchEngine": "duckduckgo",
+      "url": "https://duckduckgo.com/?q=asset%20replay",
+      "title": "Asset Replay",
+      "bodyText": "Document plus stylesheet replay remain GET only.",
+      "expectedTextIncludes": ["stylesheet replay", "GET only"],
+      "requests": [
+        { "method": "GET", "url": "https://duckduckgo.com/?q=asset%20replay", "resourceType": "document" },
+        { "method": "GET", "url": "https://duckduckgo.com/assets/app.css", "resourceType": "stylesheet" }
+      ],
+      "responses": [
+        { "url": "https://duckduckgo.com/?q=asset%20replay", "status": 200, "contentType": "text/html" },
+        { "url": "https://duckduckgo.com/assets/app.css", "status": 200, "contentType": "text/css" }
+      ]
+    },
+    {
+      "fixtureId": "browser.blocked_post_attempt",
+      "query": "blocked post replay",
+      "searchEngine": "duckduckgo",
+      "url": "https://duckduckgo.com/?q=blocked%20post%20replay",
+      "title": "Blocked POST Replay",
+      "bodyText": "A replayed POST attempt is counted as blocked and not allowed.",
+      "expectedTextIncludes": ["POST attempt", "blocked"],
+      "requests": [
+        { "method": "GET", "url": "https://duckduckgo.com/?q=blocked%20post%20replay", "resourceType": "document" },
+        { "method": "POST", "url": "https://duckduckgo.com/form", "resourceType": "xhr", "blocked": true }
+      ],
+      "responses": [{ "url": "https://duckduckgo.com/?q=blocked%20post%20replay", "status": 200, "contentType": "text/html" }]
+    },
+    {
+      "fixtureId": "browser.rendering_stability",
+      "query": "rendering stability",
+      "searchEngine": "bing",
+      "url": "https://www.bing.com/search?q=rendering%20stability",
+      "title": "Rendering Stability",
+      "bodyText": "Stable viewport evidence keeps only a PNG hash and sanitized text.",
+      "expectedTextIncludes": ["Stable viewport evidence", "sanitized text"],
+      "requests": [{ "method": "GET", "url": "https://www.bing.com/search?q=rendering%20stability", "resourceType": "document" }],
+      "responses": [{ "url": "https://www.bing.com/search?q=rendering%20stability", "status": 200, "contentType": "text/html" }]
+    }
+  ]
+}

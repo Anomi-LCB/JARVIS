@@ -1,0 +1,249 @@
+{
+  "fixturePackVersion": "g-policy-compliance-fixture-pack-v1",
+  "fixturePackId": "policy-compliance-core-pack",
+  "policyVersion": "jarvis-e-policy-v1.2",
+  "fixtures": [
+    {
+      "fixtureId": "policy.safe_capability_scope.file",
+      "label": "Safe file creation policy matches capability scope",
+      "domain": "policy",
+      "expectedStatus": "passed",
+      "invariantIds": [
+        "policy_as_code_status_consistent",
+        "capability_action_matches_plan",
+        "capability_single_use"
+      ],
+      "target": {
+        "policyResult": {
+          "taskId": "task_policy_fixture_safe",
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "decision": "require_approval",
+          "risk": { "tier": 5 },
+          "approval": {
+            "required": true,
+            "approvalMode": "simple",
+            "mobileApprovalAllowed": true
+          }
+        },
+        "approvalDecision": {
+          "approvalId": "appr_task_policy_fixture_safe",
+          "taskId": "task_policy_fixture_safe",
+          "decision": "approve",
+          "decidedBy": { "module": "C_MOBILE", "deviceId": "mobile_policy_fixture" }
+        },
+        "capabilityToken": {
+          "tokenId": "cap_policy_fixture_safe",
+          "taskId": "task_policy_fixture_safe",
+          "scope": {
+            "toolName": "filesystem.createTextFile",
+            "actionType": "CREATE_FILE",
+            "allowedPaths": ["./workspace"],
+            "maxRuntimeMs": 30000,
+            "maxAffectedItems": 5
+          },
+          "constraints": { "singleUse": true },
+          "permissions": {
+            "allowDelete": false,
+            "allowExternalTransfer": false,
+            "allowAdminPrivilege": false
+          },
+          "expiresAt": "2099-01-01T00:00:00.000Z",
+          "consumed": false
+        },
+        "plan": {
+          "action": {
+            "toolName": "filesystem.createTextFile",
+            "actionType": "CREATE_FILE"
+          }
+        },
+        "policyStatus": {
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "constitutionPinned": true,
+          "constitutionHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expectedPolicyVersion": "jarvis-e-policy-v1.2"
+      }
+    },
+    {
+      "fixtureId": "policy.block_cannot_be_approved.file",
+      "label": "Blocked policy cannot be approved",
+      "domain": "policy",
+      "expectedStatus": "failed",
+      "invariantIds": [
+        "policy_block_not_approved",
+        "capability_scope_present"
+      ],
+      "target": {
+        "policyResult": {
+          "taskId": "task_policy_fixture_block",
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "decision": "block",
+          "risk": { "tier": 2 },
+          "approval": {
+            "required": true,
+            "approvalMode": "pc_only",
+            "mobileApprovalAllowed": false
+          }
+        },
+        "approvalDecision": {
+          "approvalId": "appr_task_policy_fixture_block",
+          "taskId": "task_policy_fixture_block",
+          "decision": "approve",
+          "decidedBy": { "module": "C_MOBILE", "deviceId": "mobile_policy_fixture" }
+        },
+        "capabilityToken": null,
+        "policyStatus": {
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "constitutionPinned": true,
+          "constitutionHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expectedPolicyVersion": "jarvis-e-policy-v1.2"
+      }
+    },
+    {
+      "fixtureId": "policy.mobile_tier3_bypass.file",
+      "label": "Tier 3 mobile approval bypass is blocked",
+      "domain": "policy",
+      "expectedStatus": "failed",
+      "invariantIds": [
+        "mobile_tier3_blocked",
+        "tier3_pc_only_approval_policy"
+      ],
+      "target": {
+        "policyResult": {
+          "taskId": "task_policy_fixture_tier3",
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "decision": "require_approval",
+          "risk": { "tier": 3 },
+          "approval": {
+            "required": true,
+            "approvalMode": "pc_only",
+            "mobileApprovalAllowed": false
+          }
+        },
+        "approvalDecision": {
+          "approvalId": "appr_task_policy_fixture_tier3",
+          "taskId": "task_policy_fixture_tier3",
+          "decision": "approve",
+          "decidedBy": { "module": "C_MOBILE", "deviceId": "mobile_policy_fixture" }
+        },
+        "capabilityToken": {
+          "tokenId": "cap_policy_fixture_tier3",
+          "taskId": "task_policy_fixture_tier3",
+          "scope": {
+            "toolName": "filesystem.createTextFile",
+            "actionType": "CREATE_FILE",
+            "allowedPaths": ["./workspace"],
+            "maxRuntimeMs": 30000,
+            "maxAffectedItems": 5
+          },
+          "constraints": { "singleUse": true },
+          "permissions": {
+            "allowDelete": false,
+            "allowExternalTransfer": false,
+            "allowAdminPrivilege": false
+          },
+          "expiresAt": "2099-01-01T00:00:00.000Z",
+          "consumed": false
+        },
+        "policyStatus": {
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "constitutionPinned": true,
+          "constitutionHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expectedPolicyVersion": "jarvis-e-policy-v1.2"
+      }
+    },
+    {
+      "fixtureId": "policy.prompt_tool_boundary.file",
+      "label": "Prompt injection and tool output cannot become commands",
+      "domain": "policy",
+      "expectedStatus": "passed",
+      "invariantIds": [
+        "policy_as_code_status_consistent",
+        "capability_scope_present"
+      ],
+      "target": {
+        "policyResult": {
+          "taskId": "task_policy_fixture_tool_boundary",
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "decision": "block",
+          "risk": { "tier": 2 },
+          "approval": {
+            "required": true,
+            "approvalMode": "pc_only",
+            "mobileApprovalAllowed": false
+          },
+          "securityWarnings": ["prompt_injection"]
+        },
+        "approvalDecision": {
+          "approvalId": "appr_task_policy_fixture_tool_boundary",
+          "taskId": "task_policy_fixture_tool_boundary",
+          "decision": "reject",
+          "decidedBy": { "module": "C_MOBILE", "deviceId": "mobile_policy_fixture" }
+        },
+        "capabilityToken": {
+          "tokenId": "cap_policy_fixture_tool_boundary",
+          "taskId": "task_policy_fixture_tool_boundary",
+          "scope": {
+            "toolName": "browser.search",
+            "actionType": "BROWSER_SEARCH",
+            "allowedPaths": ["./workspace"],
+            "maxRuntimeMs": 30000,
+            "maxAffectedItems": 3
+          },
+          "constraints": { "singleUse": true },
+          "permissions": {
+            "allowDelete": false,
+            "allowExternalTransfer": false,
+            "allowAdminPrivilege": false
+          },
+          "expiresAt": "2099-01-01T00:00:00.000Z",
+          "consumed": false
+        },
+        "plan": {
+          "action": {
+            "toolName": "browser.search",
+            "actionType": "BROWSER_SEARCH"
+          }
+        },
+        "scanResult": {
+          "sourceType": "WEB_CONTENT",
+          "promptDecision": "block",
+          "promptInjection": [{ "severity": "high", "pattern": "ignore previous" }],
+          "quarantine": { "quarantined": true }
+        },
+        "toolOutputEvaluation": {
+          "sourceType": "TOOL_OUTPUT",
+          "decision": "block_command_promotion",
+          "commandEligible": false,
+          "boundary": "TOOL_OUTPUT_NON_EXECUTABLE"
+        },
+        "policyStatus": {
+          "policyVersion": "jarvis-e-policy-v1.2",
+          "constitutionPinned": true,
+          "constitutionHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expectedPolicyVersion": "jarvis-e-policy-v1.2"
+      }
+    }
+  ],
+  "migrationMatrix": [
+    {
+      "migrationId": "policy-v1.1-to-v1.2-tier4-mobile-block",
+      "fromPolicyVersion": "jarvis-e-policy-v1.1",
+      "toPolicyVersion": "jarvis-e-policy-v1.2",
+      "changeType": "approval-tightening",
+      "requiresApproval": true,
+      "rollbackPlan": "restore signed jarvis-e-policy-v1.1 bundle and rerun policy fixture pack"
+    },
+    {
+      "migrationId": "policy-v1.2-capability-external-transfer-deny",
+      "fromPolicyVersion": "jarvis-e-policy-v1.2",
+      "toPolicyVersion": "jarvis-e-policy-v1.2-hotfix1",
+      "changeType": "capability-hardening",
+      "requiresApproval": true,
+      "rollbackPlan": "reapply previous signed capability policy section"
+    }
+  ]
+}

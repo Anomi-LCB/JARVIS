@@ -1,0 +1,75 @@
+{
+  "version": "a-03-semantic-intent-corpus-v1",
+  "thresholds": {
+    "intentAccuracy": 0.92,
+    "slotAccuracy": 0.82,
+    "entityAccuracy": 0.9,
+    "complexityAccuracy": 0.84,
+    "combinedAccuracy": 0.88
+  },
+  "fixtures": [
+    {
+      "id": "a03-semantic-create-table-summary",
+      "command": "지난달 헌금 자료를 표로 정리해줘",
+      "expected": {
+        "actionType": "CREATE_FILE",
+        "slots": {
+          "outputFormat": "txt"
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-semantic-list-workspace-natural",
+      "command": "작업공간 안에 뭐가 있는지 확인해줘",
+      "expected": {
+        "actionType": "LIST_FILES",
+        "slots": {
+          "directoryHint": "workspace"
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-semantic-browser-latest-news",
+      "command": "보안 관련 최신 소식 알아봐",
+      "expected": {
+        "actionType": "BROWSER_SEARCH",
+        "slots": {
+          "query": "보안 관련 최신 소식"
+        },
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    },
+    {
+      "id": "a03-semantic-upload-band-post",
+      "command": "첨부 주보를 밴드에 올려줘",
+      "expected": {
+        "actionType": "UPLOAD_FILE",
+        "slots": {
+          "destination": "band",
+          "externalTransfer": true
+        },
+        "entities": {
+          "mentionsExternalDestination": true
+        }
+      }
+    },
+    {
+      "id": "a03-semantic-delete-old-file",
+      "command": "오래된 급여 자료 지워줘",
+      "expected": {
+        "actionType": "DELETE_FILE",
+        "entities": {
+          "mentionsExternalDestination": false
+        }
+      }
+    }
+  ]
+}

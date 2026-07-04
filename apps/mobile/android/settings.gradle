@@ -1,0 +1,40 @@
+pluginManagement {
+  def jarvisIncludesDir = new File(settingsDir, ".jarvis-gradle-includes")
+  includeBuild(new File(jarvisIncludesDir, "react-native-gradle-plugin").absolutePath)
+
+  def expoPluginsPath = new File(
+    providers.exec {
+      workingDir(rootDir)
+      commandLine("node", "--print", "require.resolve('expo-modules-autolinking/package.json', { paths: [require.resolve('expo/package.json')] })")
+    }.standardOutput.asText.get().trim(),
+    "../android/expo-gradle-plugin"
+  ).absolutePath
+  includeBuild(expoPluginsPath)
+
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
+plugins {
+  id("com.facebook.react.settings")
+  id("expo-autolinking-settings")
+}
+
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {
+    ex.autolinkLibrariesFromCommand()
+  } else {
+    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
+  }
+}
+expoAutolinking.useExpoModules()
+
+rootProject.name = 'JARVIS Mobile'
+
+expoAutolinking.useExpoVersionCatalog()
+
+include ':app'
+includeBuild(new File(settingsDir, ".jarvis-gradle-includes/react-native-gradle-plugin").absolutePath)

@@ -1,0 +1,94 @@
+{
+  "fixturePackVersion": "f-sensitive-minimizer-fixture-pack-v1",
+  "fixturePackId": "sensitive-minimizer-product-pack",
+  "policyVersion": "f-sensitive-minimizer-v1",
+  "fixtures": [
+    {
+      "fixtureId": "sensitive.phone_ministry_summary",
+      "expectedSensitive": true,
+      "expectedAction": "summarize",
+      "expectedRuleIds": ["phone_number", "ministry_sensitive"],
+      "event": {
+        "eventId": "evt_fixture_phone_ministry",
+        "eventType": "feedback.good",
+        "taskId": "task_fixture_phone_ministry",
+        "payload": { "rawText": "010-1234-5678 상담 기록을 다음에도 기억해" },
+        "learningFlags": { "containsSensitiveData": false, "doNotRemember": false },
+        "trustBoundary": { "userProvided": true, "externalContent": false, "systemGenerated": false }
+      }
+    },
+    {
+      "fixtureId": "sensitive.email_secret_title",
+      "expectedSensitive": true,
+      "expectedAction": "redact",
+      "expectedRuleIds": ["email_address", "secret"],
+      "event": {
+        "eventId": "evt_fixture_email_secret",
+        "eventType": "approval.edited",
+        "taskId": "task_fixture_email_secret",
+        "payload": {
+          "rawText": "lead@example.com 에게 api_key=sk-test-123 값을 보내지 마",
+          "title": "password=hunter2 포함 여부 점검"
+        },
+        "learningFlags": { "containsSensitiveData": false, "doNotRemember": false },
+        "trustBoundary": { "userProvided": true, "externalContent": false, "systemGenerated": false }
+      }
+    },
+    {
+      "fixtureId": "sensitive.health_family_note",
+      "expectedSensitive": true,
+      "expectedAction": "redact",
+      "expectedRuleIds": ["health_pastoral_care", "minor_or_family"],
+      "event": {
+        "eventId": "evt_fixture_health_family",
+        "eventType": "feedback.good",
+        "taskId": "task_fixture_health_family",
+        "payload": { "note": "자녀 치료와 불안 상담 내용은 원문 저장 금지" },
+        "learningFlags": { "containsSensitiveData": false, "doNotRemember": false },
+        "trustBoundary": { "userProvided": true, "externalContent": false, "systemGenerated": false }
+      }
+    },
+    {
+      "fixtureId": "sensitive.national_id_summary",
+      "expectedSensitive": true,
+      "expectedAction": "summarize",
+      "expectedRuleIds": ["resident_registration_number"],
+      "event": {
+        "eventId": "evt_fixture_national_id",
+        "eventType": "task.created",
+        "taskId": "task_fixture_national_id",
+        "payload": { "rawText": "주민번호 900101-1234567 문구가 보이면 최소 요약만 저장" },
+        "learningFlags": { "containsSensitiveData": false, "doNotRemember": false },
+        "trustBoundary": { "userProvided": true, "externalContent": false, "systemGenerated": false }
+      }
+    },
+    {
+      "fixtureId": "false_positive.finance_training_example",
+      "expectedSensitive": false,
+      "expectedFalsePositiveReview": true,
+      "expectedRuleIds": ["financial_account"],
+      "event": {
+        "eventId": "evt_fixture_false_positive_finance",
+        "eventType": "feedback.good",
+        "taskId": "task_fixture_false_positive_finance",
+        "payload": { "rawText": "헌금 계좌는 보안 교육 예시 문장입니다" },
+        "learningFlags": { "containsSensitiveData": false, "doNotRemember": false },
+        "trustBoundary": { "userProvided": true, "externalContent": false, "systemGenerated": false }
+      }
+    },
+    {
+      "fixtureId": "safe.workflow_preference",
+      "expectedSensitive": false,
+      "expectedFalsePositiveReview": false,
+      "expectedRuleIds": [],
+      "event": {
+        "eventId": "evt_fixture_safe_workflow",
+        "eventType": "approval.edited",
+        "taskId": "task_fixture_safe_workflow",
+        "payload": { "editRequest": "날짜를 크게 표시하고 표 머리글은 굵게 해줘" },
+        "learningFlags": { "canBeUsedForPreference": true, "containsSensitiveData": false, "doNotRemember": false },
+        "trustBoundary": { "userProvided": true, "externalContent": false, "systemGenerated": false }
+      }
+    }
+  ]
+}

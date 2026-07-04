@@ -1,0 +1,26 @@
+{
+  "name": "@jarvis/mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "expo": "^53.0.0",
+    "expo-local-authentication": "^16.0.0",
+    "expo-notifications": "^0.31.0",
+    "expo-secure-store": "^14.2.0",
+    "expo-sharing": "^13.1.5",
+    "expo-system-ui": "~5.0.11",
+    "react": "19.0.0",
+    "react-native": "0.79.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

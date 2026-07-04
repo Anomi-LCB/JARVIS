@@ -1,0 +1,23 @@
+{
+  "fixturePackId": "g-simulation-scenario-pack-v2",
+  "version": "2.0.0",
+  "executionMode": "dry_run_no_side_effects",
+  "scenarios": [
+    { "scenarioId": "approval_required", "expectedStatus": "review_required", "docs": ["A", "E", "G"] },
+    { "scenarioId": "capability_required", "expectedStatus": "blocked", "docs": ["B", "E", "G"] },
+    { "scenarioId": "delete_file_blocked", "expectedStatus": "blocked", "docs": ["A", "B", "E", "G"] },
+    { "scenarioId": "mobile_tier3_blocked", "expectedStatus": "blocked", "docs": ["C", "E", "G"] },
+    { "scenarioId": "prompt_injection_blocked", "expectedStatus": "blocked", "docs": ["E", "G"] },
+    { "scenarioId": "bridge_replay_blocked", "expectedStatus": "blocked", "docs": ["D", "G"] },
+    { "scenarioId": "sensitive_learning_redacted", "expectedStatus": "passed", "docs": ["F", "G"] },
+    { "scenarioId": "tool_output_poisoning_blocked", "expectedStatus": "blocked", "docs": ["E", "G"] },
+    { "scenarioId": "execution_fixture_replay", "expectedStatus": "passed", "docs": ["B", "G"] }
+  ],
+  "linkedFixturePacks": [
+    {
+      "fixturePackId": "b-07-pc-agent-shadow-golden-corpus",
+      "path": "apps/pc-agent/fixtures/shadow-golden-corpus.json",
+      "purpose": "Dry-run replay coverage for filesystem, move, workbook, and read-only browser adapters."
+    }
+  ]
+}

@@ -1,0 +1,172 @@
+{
+  "fixturePackId": "g-simulation-expanded-scenario-pack-v1",
+  "version": "1.0.0",
+  "executionMode": "dry_run_no_side_effects",
+  "purpose": "Expanded A-G simulation scenarios for product-readiness release dossiers.",
+  "minimumScenarioCount": 24,
+  "scenarios": [
+    {
+      "scenarioId": "external_transfer_requires_tier3",
+      "title": "A/E external transfer escalates to Tier 3 review",
+      "expectedStatus": "review_required",
+      "docs": ["A", "E", "G"],
+      "riskModel": "external_transfer_risk_escalation",
+      "chaosTags": ["policy_drift", "approval_latency"]
+    },
+    {
+      "scenarioId": "pc_agent_queue_backpressure",
+      "title": "B/G PC agent queue backpressure stays dry-run only",
+      "expectedStatus": "passed",
+      "docs": ["B", "G"],
+      "riskModel": "queue_backpressure",
+      "chaosTags": ["queue_delay", "retry_budget"]
+    },
+    {
+      "scenarioId": "workbook_renderer_fault",
+      "title": "B/G workbook renderer fallback does not mutate files",
+      "expectedStatus": "passed",
+      "docs": ["B", "G"],
+      "riskModel": "workbook_renderer_fallback",
+      "chaosTags": ["renderer_unavailable"]
+    },
+    {
+      "scenarioId": "browser_replay_network_drop",
+      "title": "B/G browser replay network drop remains read-only",
+      "expectedStatus": "passed",
+      "docs": ["B", "G"],
+      "riskModel": "browser_network_replay_drop",
+      "chaosTags": ["network_drop", "cache_miss"]
+    },
+    {
+      "scenarioId": "mobile_offline_approval_resume",
+      "title": "C/D/G mobile offline approval resumes through event replay",
+      "expectedStatus": "passed",
+      "docs": ["C", "D", "G"],
+      "riskModel": "mobile_offline_reconnect",
+      "chaosTags": ["sse_disconnect", "ws_fallback"]
+    },
+    {
+      "scenarioId": "mobile_pin_locked_sensitive_action",
+      "title": "C/E/G locked mobile session blocks sensitive action",
+      "expectedStatus": "blocked",
+      "docs": ["C", "E", "G"],
+      "riskModel": "mobile_session_lock",
+      "chaosTags": ["background_lock"]
+    },
+    {
+      "scenarioId": "bridge_dns_rebinding_attempt",
+      "title": "D/G DNS rebinding host is blocked",
+      "expectedStatus": "blocked",
+      "docs": ["D", "G"],
+      "riskModel": "dns_rebinding",
+      "chaosTags": ["host_header_spoof"]
+    },
+    {
+      "scenarioId": "bridge_rate_limit_abuse_burst",
+      "title": "D/G API burst abuse trips rate limiter",
+      "expectedStatus": "blocked",
+      "docs": ["D", "G"],
+      "riskModel": "rate_limit_abuse",
+      "chaosTags": ["request_burst"]
+    },
+    {
+      "scenarioId": "device_token_rotation_overlap",
+      "title": "D/E/G stale device token is rejected after rotation",
+      "expectedStatus": "blocked",
+      "docs": ["D", "E", "G"],
+      "riskModel": "device_token_rotation",
+      "chaosTags": ["credential_rotation"]
+    },
+    {
+      "scenarioId": "policy_hot_reload_hash_drift",
+      "title": "E/G policy hot reload hash drift is detected",
+      "expectedStatus": "blocked",
+      "docs": ["E", "G"],
+      "riskModel": "policy_hash_drift",
+      "chaosTags": ["policy_reload"]
+    },
+    {
+      "scenarioId": "policy_migration_requires_dual_approval",
+      "title": "E/G policy migration requires dual approval",
+      "expectedStatus": "review_required",
+      "docs": ["E", "G"],
+      "riskModel": "policy_migration_review",
+      "chaosTags": ["approval_split_brain"]
+    },
+    {
+      "scenarioId": "audit_archive_rotation",
+      "title": "D/E/G signed audit archive rotation preserves evidence",
+      "expectedStatus": "passed",
+      "docs": ["D", "E", "G"],
+      "riskModel": "audit_archive_rotation",
+      "chaosTags": ["archive_rotation"]
+    },
+    {
+      "scenarioId": "memory_do_not_remember_violation",
+      "title": "F/G do-not-remember evidence cannot be promoted",
+      "expectedStatus": "blocked",
+      "docs": ["F", "G"],
+      "riskModel": "do_not_remember_violation",
+      "chaosTags": ["learning_filter"]
+    },
+    {
+      "scenarioId": "growth_hygiene_batch_review",
+      "title": "D/F/G hygiene batch review remains auditable",
+      "expectedStatus": "passed",
+      "docs": ["D", "F", "G"],
+      "riskModel": "growth_hygiene_batch_review",
+      "chaosTags": ["batch_review"]
+    },
+    {
+      "scenarioId": "autonomy_candidate_expiry",
+      "title": "F/G expired autonomy candidate cannot execute",
+      "expectedStatus": "blocked",
+      "docs": ["F", "G"],
+      "riskModel": "autonomy_expiry",
+      "chaosTags": ["scheduler_expiry"]
+    },
+    {
+      "scenarioId": "skill_draft_non_executable",
+      "title": "F/G approved skill draft remains non-executable by default",
+      "expectedStatus": "passed",
+      "docs": ["F", "G"],
+      "riskModel": "skill_registry_safety",
+      "chaosTags": ["skill_review"]
+    },
+    {
+      "scenarioId": "tool_metadata_prompt_smuggling",
+      "title": "E/G tool metadata prompt smuggling is quarantined",
+      "expectedStatus": "blocked",
+      "docs": ["E", "G"],
+      "riskModel": "tool_metadata_prompt_smuggling",
+      "chaosTags": ["metadata_poisoning"]
+    },
+    {
+      "scenarioId": "golden_trace_baseline_drift",
+      "title": "G baseline drift requires approved update",
+      "expectedStatus": "review_required",
+      "docs": ["G"],
+      "riskModel": "baseline_drift",
+      "chaosTags": ["baseline_change"]
+    }
+  ],
+  "chaosSchedule": {
+    "scheduleVersion": "g-chaos-simulation-schedule-v1",
+    "executionMode": "dry_run_no_side_effects",
+    "cadence": "release-gate",
+    "recommendedCycles": 3,
+    "faults": [
+      "network_drop",
+      "policy_reload",
+      "request_burst",
+      "renderer_unavailable",
+      "scheduler_expiry"
+    ]
+  },
+  "retentionPolicy": {
+    "dashboardVersion": "g-simulation-trend-retention-dashboard-v1",
+    "keepLast": 50,
+    "maxAgeDays": 30,
+    "artifactStore": "local-verification-report-store"
+  }
+}

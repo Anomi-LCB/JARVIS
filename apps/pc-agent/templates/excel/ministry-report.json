@@ -1,0 +1,22 @@
+{
+  "templateId": "ministry-report",
+  "version": "1.0.0",
+  "name": "Ministry Report Workbook",
+  "defaultStyle": {
+    "headerBold": true,
+    "headerFill": "FFB6D7A8",
+    "autoFilter": true
+  },
+  "defaultCharts": [
+    {
+      "chartId": "status_summary",
+      "type": "bar",
+      "title": "상태 요약"
+    }
+  ],
+  "visualExpectations": {
+    "requireHeaderStyle": true,
+    "requireAutoFilter": true,
+    "requireChartDrawing": true
+  }
+}

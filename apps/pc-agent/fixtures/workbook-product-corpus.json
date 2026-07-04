@@ -1,0 +1,120 @@
+{
+  "fixturePackVersion": "b-workbook-product-corpus-v1",
+  "fixturePackId": "workbook-render-template-worker-product-pack",
+  "workerPool": {
+    "size": 2,
+    "cycles": 2
+  },
+  "fixtures": [
+    {
+      "fixtureId": "ministry_report_chart_render",
+      "title": "Ministry report template opens with style, filter, drawing, and chart parts",
+      "args": {
+        "sheetName": "보고서",
+        "columns": ["이름", "상태"],
+        "rows": [
+          { "이름": "A", "상태": "완료" },
+          { "이름": "B", "상태": "대기" }
+        ],
+        "template": {
+          "templateFile": "apps/pc-agent/templates/excel/ministry-report.json"
+        }
+      },
+      "expected": {
+        "templateId": "ministry-report",
+        "chartCount": 1,
+        "hasAutoFilter": true
+      }
+    },
+    {
+      "fixtureId": "builtin_table_line_chart_render",
+      "title": "Builtin table template renders a line chart and autofilter",
+      "args": {
+        "sheetName": "Trend",
+        "columns": ["월", "수치"],
+        "rows": [
+          ["1월", 12],
+          ["2월", 19],
+          ["3월", 23]
+        ],
+        "template": {
+          "templateId": "table"
+        },
+        "charts": [
+          {
+            "type": "line",
+            "title": "월별 추세"
+          }
+        ]
+      },
+      "expected": {
+        "templateId": "table",
+        "chartCount": 1,
+        "hasAutoFilter": true
+      }
+    }
+  ],
+  "templateMigrationFixtures": [
+    {
+      "fixtureId": "legacy_id_style_charts_visual",
+      "title": "Legacy template fields migrate to v2 schema",
+      "manifest": {
+        "id": "legacy-ministry-report",
+        "version": "0.8.0",
+        "name": "Legacy Ministry Report",
+        "style": {
+          "headerBold": true,
+          "headerFill": "FFB6D7A8",
+          "autoFilter": true
+        },
+        "charts": [
+          {
+            "chartId": "legacy_status",
+            "type": "bar",
+            "title": "Legacy Status"
+          }
+        ],
+        "visual": {
+          "headerStyle": true,
+          "autoFilter": true,
+          "chartDrawing": true
+        }
+      },
+      "expected": {
+        "templateId": "legacy-ministry-report",
+        "schemaVersion": "b-workbook-template-v2"
+      }
+    },
+    {
+      "fixtureId": "current_v2_ministry_report",
+      "title": "Current template schema remains compatible",
+      "manifest": {
+        "schemaVersion": "b-workbook-template-v2",
+        "templateId": "ministry-report",
+        "version": "1.0.0",
+        "name": "Ministry Report Workbook",
+        "defaultStyle": {
+          "headerBold": true,
+          "headerFill": "FFB6D7A8",
+          "autoFilter": true
+        },
+        "defaultCharts": [
+          {
+            "chartId": "status_summary",
+            "type": "bar",
+            "title": "상태 요약"
+          }
+        ],
+        "visualExpectations": {
+          "requireHeaderStyle": true,
+          "requireAutoFilter": true,
+          "requireChartDrawing": true
+        }
+      },
+      "expected": {
+        "templateId": "ministry-report",
+        "schemaVersion": "b-workbook-template-v2"
+      }
+    }
+  ]
+}

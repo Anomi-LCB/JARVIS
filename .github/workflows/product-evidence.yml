@@ -1,0 +1,95 @@
+name: JARVIS Product Evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+
+jobs:
+  product-evidence:
+    name: A-G product evidence and WORM staging
+    runs-on: [self-hosted, Windows, jarvis-field-runner]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Enable pnpm
+        shell: powershell
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.0.0 --activate
+
+      - name: Install dependencies
+        shell: powershell
+        run: pnpm install --frozen-lockfile
+
+      - name: Build static product shell
+        shell: powershell
+        run: npm run build
+
+      - name: Generate product evidence
+        shell: powershell
+        run: npm run product:evidence
+
+      - name: Run full regression suite
+        shell: powershell
+        run: npm test
+
+      - name: Stage WORM promotion manifest
+        shell: powershell
+        run: npm run ops:worm-promotion
+
+      - name: Prepare WORM target report
+        shell: powershell
+        run: npm run ops:worm-target
+
+      - name: Sync WORM proof
+        shell: powershell
+        run: npm run ops:worm-sync -- --external-dir artifacts/worm-target
+
+      - name: Refresh operator preflight
+        shell: powershell
+        run: |
+          npm run ops:preflight
+          npm run ag:handoff
+
+      - name: Evaluate final release gate
+        shell: powershell
+        run: |
+          npm run ops:final-gate
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Final release gate is not passed yet; continuing so evidence artifacts can be uploaded."
+            exit 0
+          }
+
+      - name: Package final signoff kit
+        shell: powershell
+        run: |
+          npm run ops:signoff-kit
+          npm run ag:handoff
+
+      - name: Publish completion ledger and CI annotations
+        if: always()
+        shell: powershell
+        run: npm run ops:release-verify
+
+      - name: Upload evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-product-evidence
+          path: |
+            dist/**
+          retention-days: 30

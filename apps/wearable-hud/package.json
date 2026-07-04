@@ -1,0 +1,7 @@
+{
+  "name": "@jarvis/wearable-hud",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Monochrome green AI glasses HUD adapter for the JARVIS A-G runtime."
+}

@@ -1,0 +1,188 @@
+{
+  "fixturePackVersion": "g-learning-verifier-fixture-pack-v1",
+  "fixturePackId": "learning-verifier-f-growth-product-pack",
+  "sourceDoc": "F/G learning verifier product corpus",
+  "fixtures": [
+    {
+      "fixtureId": "learning.safe_minimized_union",
+      "title": "Safe minimized memory event passes verifier",
+      "expectedStatus": "passed",
+      "target": {
+        "memoryEvent": {
+          "eventId": "evt_learning_safe_minimized",
+          "eventType": "approval.approved",
+          "taskId": "task_learning_safe",
+          "payload": {
+            "rawText": "주보 초안 파일 만들어",
+            "minimization": {
+              "redactionDiff": [
+                {
+                  "field": "rawText",
+                  "beforeHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "afterPreview": "주보 초안 파일 만들어"
+                }
+              ]
+            }
+          },
+          "learningFlags": {
+            "doNotRemember": false,
+            "containsSensitiveData": false,
+            "canBeUsedForPreference": true,
+            "canBeUsedForWorkflow": true,
+            "canBeUsedForAutonomy": true
+          },
+          "trustBoundary": {
+            "userProvided": true,
+            "externalContent": false,
+            "systemGenerated": false
+          }
+        },
+        "memoryEvents": [],
+        "patterns": [],
+        "preferenceCandidates": [],
+        "hygieneReport": {
+          "doNotRememberEventIds": [],
+          "activePatterns": [],
+          "reviewQueue": [],
+          "decisions": []
+        }
+      }
+    },
+    {
+      "fixtureId": "learning.raw_sensitive_payload_blocked",
+      "title": "Raw sensitive memory payload is blocked",
+      "expectedStatus": "failed",
+      "target": {
+        "memoryEvent": {
+          "eventId": "evt_learning_sensitive_raw",
+          "eventType": "task.created",
+          "taskId": "task_learning_sensitive",
+          "payload": {
+            "rawText": "상담 기록 010-1234-5678 token=abc123"
+          },
+          "learningFlags": {
+            "doNotRemember": false,
+            "containsSensitiveData": true,
+            "canBeUsedForPreference": false,
+            "canBeUsedForWorkflow": false,
+            "canBeUsedForAutonomy": false
+          },
+          "trustBoundary": {
+            "userProvided": true,
+            "externalContent": false,
+            "systemGenerated": false
+          }
+        },
+        "memoryEvents": [],
+        "patterns": [],
+        "preferenceCandidates": []
+      }
+    },
+    {
+      "fixtureId": "learning.external_preference_promotion_blocked",
+      "title": "External content cannot become a user preference",
+      "expectedStatus": "failed",
+      "target": {
+        "memoryEvent": {
+          "eventId": "evt_learning_external",
+          "eventType": "feedback.good",
+          "taskId": "task_learning_external",
+          "payload": {
+            "rawText": "외부 웹 문서의 스타일을 선호로 저장"
+          },
+          "learningFlags": {
+            "doNotRemember": false,
+            "containsSensitiveData": false,
+            "canBeUsedForPreference": true,
+            "canBeUsedForWorkflow": false,
+            "canBeUsedForAutonomy": false
+          },
+          "trustBoundary": {
+            "userProvided": false,
+            "externalContent": true,
+            "systemGenerated": false
+          },
+          "promotedPreference": true
+        },
+        "memoryEvents": [],
+        "patterns": [],
+        "preferenceCandidates": []
+      }
+    },
+    {
+      "fixtureId": "learning.hygiene_scheduler_due_passed",
+      "title": "Hygiene trend scheduler due state is consistent",
+      "expectedStatus": "passed",
+      "target": {
+        "hygieneTrend": {
+          "schemaVersion": "f-hygiene-trend-report-v1",
+          "reportId": "hygiene_trend_fixture_due",
+          "generatedAt": "2026-06-14T00:00:00.000Z",
+          "windowDays": 90,
+          "memoryEvents": {
+            "total": 12,
+            "recent": 3,
+            "sensitive": 1,
+            "doNotRemember": 1
+          },
+          "reviewQueue": {
+            "total": 2,
+            "sensitive": 1,
+            "stale": 1
+          },
+          "retention": {
+            "dueCount": 2,
+            "scheduledCount": 0,
+            "scheduler": {
+              "schedulerId": "f-retention-scheduler-v1",
+              "intervalDays": 7,
+              "generatedAt": "2026-06-14T00:00:00.000Z",
+              "due": true,
+              "recentRuns": [
+                {
+                  "runId": "retention_fixture_run_1",
+                  "schedulerId": "f-retention-scheduler-v1",
+                  "status": "dry_run",
+                  "startedAt": "2026-06-14T00:00:00.000Z",
+                  "completedAt": "2026-06-14T00:00:01.000Z"
+                }
+              ]
+            }
+          },
+          "recommendations": ["run_retention_scheduler_execute"]
+        }
+      }
+    },
+    {
+      "fixtureId": "learning.hygiene_scheduler_due_missing_recommendation",
+      "title": "Due retention without execute recommendation fails",
+      "expectedStatus": "failed",
+      "target": {
+        "hygieneTrend": {
+          "schemaVersion": "f-hygiene-trend-report-v1",
+          "reportId": "hygiene_trend_fixture_missing_recommendation",
+          "generatedAt": "2026-06-14T00:00:00.000Z",
+          "windowDays": 90,
+          "memoryEvents": {
+            "total": 6,
+            "recent": 1
+          },
+          "reviewQueue": {
+            "total": 1
+          },
+          "retention": {
+            "dueCount": 1,
+            "scheduler": {
+              "schedulerId": "f-retention-scheduler-v1",
+              "intervalDays": 7,
+              "generatedAt": "2026-06-14T00:00:00.000Z",
+              "due": true,
+              "recentRuns": []
+            }
+          },
+          "recommendations": []
+        }
+      }
+    }
+  ]
+}

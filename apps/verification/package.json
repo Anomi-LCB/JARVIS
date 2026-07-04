@@ -1,0 +1,10 @@
+{
+  "name": "@jarvis/verification",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "files": [
+    "src"
+  ]
+}

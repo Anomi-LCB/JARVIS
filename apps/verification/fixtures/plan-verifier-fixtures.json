@@ -1,0 +1,75 @@
+{
+  "fixturePackId": "g-plan-verifier-fixture-pack-v1",
+  "source": "document-derived-plan-invariants",
+  "description": "Plan verifier fixtures separated from runtime code and mapped to A/G document invariants.",
+  "fixtures": [
+    {
+      "fixtureId": "plan.safe_create_file.documented",
+      "title": "Safe create file plan includes steps, risk, rollback, choices, and affected items.",
+      "taskId": "task_plan_pack_safe_create",
+      "actionType": "CREATE_FILE",
+      "riskTier": 5,
+      "externalTransfer": false,
+      "rollbackAvailable": true,
+      "expectedStatus": "passed",
+      "invariantIds": [
+        "plan_steps_present",
+        "approval_risk_present",
+        "approval_rollback_present",
+        "approval_choices_present",
+        "approval_affected_items_present"
+      ],
+      "documentRefs": ["A", "C", "G"]
+    },
+    {
+      "fixtureId": "plan.external_transfer.documented_escalation",
+      "title": "External transfer must be conservatively escalated instead of treated as low risk.",
+      "taskId": "task_plan_pack_external_transfer",
+      "actionType": "CREATE_FILE",
+      "riskTier": 5,
+      "externalTransfer": true,
+      "rollbackAvailable": false,
+      "expectedStatus": "failed",
+      "invariantIds": [
+        "approval_external_transfer_present",
+        "external_transfer_risk_tier_strict"
+      ],
+      "documentRefs": ["A", "E", "G"]
+    },
+    {
+      "fixtureId": "plan.delete_file.documented_forbidden",
+      "title": "Delete file actions are forbidden in the MVP plan verifier pack.",
+      "taskId": "task_plan_pack_delete_file",
+      "actionType": "DELETE_FILE",
+      "riskTier": 2,
+      "externalTransfer": false,
+      "rollbackAvailable": false,
+      "expectedStatus": "failed",
+      "invariantIds": [
+        "forbidden_action_absent",
+        "approval_risk_present"
+      ],
+      "documentRefs": ["B", "E", "G"]
+    },
+    {
+      "fixtureId": "plan.approval_choices.documented_required",
+      "title": "Approval cards must expose user decision choices.",
+      "taskId": "task_plan_pack_missing_choices",
+      "actionType": "CREATE_FILE",
+      "riskTier": 5,
+      "externalTransfer": false,
+      "rollbackAvailable": true,
+      "mutations": {
+        "approvalCard": {
+          "choices": []
+        }
+      },
+      "expectedStatus": "failed",
+      "invariantIds": [
+        "approval_choices_present",
+        "approval_risk_present"
+      ],
+      "documentRefs": ["A", "C", "G"]
+    }
+  ]
+}

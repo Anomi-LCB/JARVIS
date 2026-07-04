@@ -1,0 +1,57 @@
+{
+  "fixturePackId": "g-regression-external-fixture-pack-v1",
+  "fixturePackVersion": "g-regression-external-fixture-pack-v1",
+  "minimumCombinedFixtureCount": 50,
+  "requiredDomains": [
+    "plan",
+    "learning",
+    "redteam",
+    "tool_leak",
+    "simulation",
+    "policy"
+  ],
+  "retentionPolicy": {
+    "policyVersion": "g-regression-fixture-retention-policy-v1",
+    "appendOnly": true,
+    "productionMissesBecomeFixtures": true,
+    "artifactStore": "g-regression-long-term-artifact-store-v1"
+  },
+  "fixtures": [
+    {
+      "fixtureId": "external.plan.parallel_dag_compensation",
+      "domain": "plan",
+      "expectedStatus": "passed",
+      "source": "release-hardening"
+    },
+    {
+      "fixtureId": "external.learning.hygiene_retention_scheduler",
+      "domain": "learning",
+      "expectedStatus": "passed",
+      "source": "release-hardening"
+    },
+    {
+      "fixtureId": "external.redteam.homoglyph_zero_width",
+      "domain": "redteam",
+      "expectedStatus": "quarantined",
+      "source": "production-miss-template"
+    },
+    {
+      "fixtureId": "external.tool_leak.html_script_secret",
+      "domain": "tool_leak",
+      "expectedStatus": "redacted",
+      "source": "production-miss-template"
+    },
+    {
+      "fixtureId": "external.simulation.bridge_replay_clock_skew",
+      "domain": "simulation",
+      "expectedStatus": "blocked",
+      "source": "release-hardening"
+    },
+    {
+      "fixtureId": "external.policy.tier3_mobile_bypass",
+      "domain": "policy",
+      "expectedStatus": "failed",
+      "source": "release-hardening"
+    }
+  ]
+}

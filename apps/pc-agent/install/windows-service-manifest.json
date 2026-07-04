@@ -1,0 +1,34 @@
+{
+  "serviceName": "JarvisPcAgent",
+  "displayName": "JARVIS Local PC Agent",
+  "startType": "manual",
+  "account": "LocalService",
+  "description": "Runs the local-only JARVIS PC Agent on 127.0.0.1 for approved execution packets.",
+  "entry": {
+    "runtime": "node",
+    "script": "apps/pc-agent/src/main.mjs",
+    "arguments": [],
+    "environment": {
+      "PORT": "17776",
+      "JARVIS_LOCAL_ONLY": "true",
+      "JARVIS_SERVICE_DAEMON": "true",
+      "JARVIS_QUEUE_DRAIN_ENABLED": "true"
+    }
+  },
+  "installSafety": {
+    "dryRunDefault": true,
+    "requiresExplicitExecuteFlag": true,
+    "neverInstallsWithoutUserConsent": true,
+    "bindsTo": "127.0.0.1"
+  },
+  "recovery": {
+    "enabled": true,
+    "resetSeconds": 86400,
+    "actions": [
+      { "type": "restart", "delayMs": 5000 },
+      { "type": "restart", "delayMs": 30000 },
+      { "type": "none", "delayMs": 0 }
+    ],
+    "restartOnNonCrashFailures": true
+  }
+}
