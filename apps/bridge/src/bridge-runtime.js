@@ -5613,28 +5613,58 @@ export class BridgeRuntime {
     if (handoff.status !== 'awaiting_user_confirmation') {
       return createError('D_HANDOFF_ALREADY_USED', 'Execution handoff is no longer pending.', 409);
     }
-    const packet = {
-      ...handoff.packet,
-      userConfirmation: {
-        ...handoff.packet.userConfirmation,
-        confirmed: true,
-        confirmedAt: this.clock().toISOString(),
+    let result;
+    let verification;
+    if (this.orchestrationWorker) {
+      // 실제 계획 실행 경로: A 오케스트레이션 워커가 E 능력 발급 → B 노드별 실행 →
+      // G 검증 → F 학습까지 수행한다. LLM 분해/초안이 담긴 계획이 그대로 실행된다.
+      const run = await this.orchestrationWorker.runTask(handoff.taskId, {
         deviceId: auth.device.deviceId
-      }
-    };
-    const result = await this.pcAgent.receiveExecutionPacket(packet);
-    const verification = result.executionResult?.status === 'success'
-      ? await this.verificationRuntime.verifyExecution({
-          verificationId: stableId('ver_exec', handoff.taskId, this.clock().toISOString()),
+      });
+      if (!run || run.success === false) {
+        const reason = run?.error?.code ?? run?.status ?? 'worker-run-failed';
+        this.auditLog.write('execution.handoff.worker_failed', {
+          handoffId,
           taskId: handoff.taskId,
-          target: {
-            executionResult: result.executionResult,
-            evidence: {
-              undo: { undoJournalId: result.executionResult.undoJournalId }
+          deviceId: auth.device.deviceId,
+          reason
+        });
+        return createError('D_HANDOFF_EXECUTION_FAILED', `Worker execution failed: ${reason}`, 500);
+      }
+      result = {
+        taskId: handoff.taskId,
+        status: run.status,
+        executionResult: run.execution?.executionResult ?? null,
+        planVerification: run.planVerification ?? null,
+        policyVerification: run.policyVerification ?? null,
+        learning: run.learning ?? null
+      };
+      verification = run.executionVerification ?? null;
+    } else {
+      // 워커가 없는 조립(레거시/축소 픽스처)에서는 기존 단일 텍스트 패킷 경로를 유지한다.
+      const packet = {
+        ...handoff.packet,
+        userConfirmation: {
+          ...handoff.packet.userConfirmation,
+          confirmed: true,
+          confirmedAt: this.clock().toISOString(),
+          deviceId: auth.device.deviceId
+        }
+      };
+      result = await this.pcAgent.receiveExecutionPacket(packet);
+      verification = result.executionResult?.status === 'success'
+        ? await this.verificationRuntime.verifyExecution({
+            verificationId: stableId('ver_exec', handoff.taskId, this.clock().toISOString()),
+            taskId: handoff.taskId,
+            target: {
+              executionResult: result.executionResult,
+              evidence: {
+                undo: { undoJournalId: result.executionResult.undoJournalId }
+              }
             }
-          }
-        })
-      : null;
+          })
+        : null;
+    }
     handoff.status = 'confirmed';
     handoff.confirmedAt = this.clock().toISOString();
     this.results.set(handoff.taskId, { ...result, verification });

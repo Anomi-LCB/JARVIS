@@ -1696,7 +1696,14 @@ export default function App() {
     let result: any = null;
     try {
       const fetched = await homeClient().getResult(taskId);
-      if (fetched?.success !== false) result = fetched;
+      if (fetched?.success !== false && fetched) {
+        const execution = fetched.executionResult ?? fetched.execution?.executionResult ?? {};
+        result = {
+          summary: execution.summary ?? fetched.summary ?? null,
+          outputPaths: execution.outputPaths ?? fetched.outputPaths ?? [],
+          rollbackAvailable: execution.rollbackAvailable ?? fetched.rollbackAvailable ?? false
+        };
+      }
     } catch {
       // 결과 조회 실패 시 상태만 표시한다.
     }

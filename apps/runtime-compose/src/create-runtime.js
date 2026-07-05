@@ -78,6 +78,8 @@ export function createAgRuntime(options = {}) {
     queueStorePath: options.workerQueueStorePath,
     clock: options.clock
   });
+  // 모바일 승인 → 실행 핸드오프가 스텁 패킷 대신 실제 계획(A-E-B-G-F)을 실행하도록 워커를 노출한다.
+  bridgeRuntime.orchestrationWorker = orchestrationWorker;
   const workerDaemon = new CoreWorkerDaemon({
     worker: orchestrationWorker,
     enabled: options.workerDaemonEnabled ?? true,
