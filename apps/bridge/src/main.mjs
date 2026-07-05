@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createAgRuntime } from '../../runtime-compose/src/create-runtime.js';
 import { allBridgeRouteContracts, bridgeRouteContracts, BridgeRequestValidator, createBridgeOpenApiSpec } from './request-validator.js';
@@ -1865,6 +1866,22 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const { bridgeRuntime } = createAgRuntime({
     bridgeRealExecution: process.env.JARVIS_BRIDGE_REAL_EXECUTION !== '0'
   });
+  // 완료 산출물을 PC 기본 프로그램으로 자동 열기(끄려면 JARVIS_BRIDGE_OPEN_OUTPUTS=0).
+  if (process.env.JARVIS_BRIDGE_OPEN_OUTPUTS !== '0') {
+    bridgeRuntime.outputOpener = (paths) => {
+      for (const rawPath of paths) {
+        const target = String(rawPath);
+        if (process.platform === 'win32') {
+          // start의 첫 따옴표 인자는 창 제목이므로 빈 제목을 먼저 준다.
+          spawn('cmd', ['/c', 'start', '', target], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        } else if (process.platform === 'darwin') {
+          spawn('open', [target], { detached: true, stdio: 'ignore' }).unref();
+        } else {
+          spawn('xdg-open', [target], { detached: true, stdio: 'ignore' }).unref();
+        }
+      }
+    };
+  }
   const { host, port } = resolveBridgeListenOptions();
   createBridgeServer(bridgeRuntime).listen(port, host, () => {
     console.log(`JARVIS-D Bridge listening at http://${host}:${port} (${ModuleId.BRIDGE})`);

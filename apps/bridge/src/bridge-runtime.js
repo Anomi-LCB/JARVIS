@@ -5696,10 +5696,20 @@ export class BridgeRuntime {
       status: result.status,
       deviceId: auth.device.deviceId
     });
+    // 완료된 산출물을 PC에서 바로 열어 사용자가 결과를 확인할 수 있게 한다.
+    const outputPaths = result.executionResult?.outputPaths ?? [];
+    if (this.outputOpener && result.status === 'COMPLETED' && outputPaths.length) {
+      try {
+        this.outputOpener(outputPaths);
+      } catch {
+        // 열기 실패는 실행 결과에 영향을 주지 않는다.
+      }
+    }
     return {
       taskId: handoff.taskId,
       status: result.status,
-      verificationStatus: verification?.status ?? 'not_required'
+      verificationStatus: verification?.status ?? 'not_required',
+      outputPaths
     };
   }
 

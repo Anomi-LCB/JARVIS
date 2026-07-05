@@ -2187,8 +2187,11 @@ export default function App() {
               {home.taskStatus === 'COMPLETED' ? '✅ 완료했습니다' : `결과: ${home.taskStatus ?? '알 수 없음'}`}
             </Text>
             {home.result?.summary ? <Text style={styles.homeHint}>{home.result.summary}</Text> : null}
+            {(home.result?.outputPaths ?? []).length ? (
+              <Text style={styles.homeHint}>PC에 결과가 저장되어 화면에 열렸습니다.</Text>
+            ) : null}
             {(home.result?.outputPaths ?? []).map((path: string) => (
-              <Text key={path} style={styles.homePath}>{path}</Text>
+              <Text key={path} style={styles.homePath}>{path.split(/[\\/]/).filter(Boolean).at(-1)}</Text>
             ))}
             <Pressable
               testID="home-new-command-button"
@@ -2201,16 +2204,6 @@ export default function App() {
             </Pressable>
           </View>
         ) : null}
-
-        <Pressable
-          testID="home-expert-button"
-          accessibilityRole="button"
-          accessibilityLabel="전문가 모드 열기"
-          onPress={() => navigate(MobileRoutes.CommandScreen)}
-          style={styles.homeExpertLink}
-        >
-          <Text style={styles.homeExpertLinkText}>전문가 모드 열기 ›</Text>
-        </Pressable>
       </View>
     );
   }
