@@ -232,6 +232,50 @@ test('preferences also reach the decomposition prompt for composite commands', (
   assert.ok(prompts[0].includes('보고서 파일명에는 날짜를 붙인다'), 'decomposition prompt carries preferences');
 });
 
+test('plan carries a human explanation and asks clarifying questions when ambiguous', () => {
+  const planner = new ClaudeCliTaskPlanner({
+    clarifyEnabled: true,
+    runner: (prompt) => {
+      if (prompt.includes('요구사항을 확인하는')) {
+        return plannerResponse({ questions: ['어떤 형식으로 만들까요? (엑셀/메모)', '언제까지 필요하세요?'] });
+      }
+      throw new Error('unexpected prompt');
+    }
+  });
+  const command = '그거 좀 정리해줘';
+  const taskRequest = makeTaskRequest(command);
+  // 모호한 의도(신뢰도 낮음)를 강제한다.
+  const intent = { ...intentParser.parse(command, { requestId: taskRequest.requestId }), confidence: 0.4, unknown: true };
+  const plan = planner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_clar_1', currentDirectory: './workspace' }
+  });
+  assert.ok(plan.planExplanation && plan.planExplanation.length > 0, 'plan explains how it was formed');
+  assert.equal(plan.clarification.ambiguous, true);
+  assert.equal(plan.clarification.questions.length, 2);
+  assert.match(plan.clarification.questions[0], /형식/);
+});
+
+test('clear commands skip clarifying questions', () => {
+  let clarifyCalls = 0;
+  const planner = new ClaudeCliTaskPlanner({
+    clarifyEnabled: true,
+    runner: (prompt) => {
+      if (prompt.includes('요구사항을 확인하는')) { clarifyCalls += 1; return plannerResponse({ questions: ['x'] }); }
+      throw new Error('unexpected');
+    }
+  });
+  const command = '보고서 엑셀 만들어줘';
+  const taskRequest = makeTaskRequest(command);
+  const intent = intentParser.parse(command, { requestId: taskRequest.requestId });
+  const plan = planner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_clar_2', currentDirectory: './workspace' }
+  });
+  assert.equal(clarifyCalls, 0, 'high-confidence command does not call the clarify LLM');
+  assert.equal(plan.clarification.ambiguous, false);
+  assert.equal(plan.clarification.questions.length, 0);
+  assert.ok(plan.planExplanation);
+});
+
 test('worker node packets carry per-node actionType and toolName for heterogeneous plans', () => {
   const runtime = createAgRuntime({
     taskPlanner: new ClaudeCliTaskPlanner({ runner: () => heterogeneousResponse }),

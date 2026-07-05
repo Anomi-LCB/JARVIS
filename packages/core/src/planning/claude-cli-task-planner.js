@@ -96,6 +96,8 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     contentEnabled = false,
     contentModel = 'haiku',
     contentTimeoutMs = 90000,
+    clarifyEnabled = true,
+    clarifyConfidenceThreshold = 0.7,
     runner = null,
     contentRunner = null,
     clock = () => new Date(),
@@ -108,6 +110,8 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     this.contentModel = contentModel;
     this.maxCommandLength = maxCommandLength;
     this.contentEnabled = contentEnabled;
+    this.clarifyEnabled = clarifyEnabled;
+    this.clarifyConfidenceThreshold = clarifyConfidenceThreshold;
     this.clock = clock;
     this.adapterId = adapterId;
     this.runner = runner ?? createClaudeCliRunner({ command, model, timeoutMs });
@@ -119,10 +123,60 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
   createPlan(taskRequest, intent, options = {}) {
     this.pendingPreferenceHints = this.preferenceHintsFrom(options.planningContext);
     try {
-      return this.createPlanWithLlm(taskRequest, intent, options);
+      const plan = this.createPlanWithLlm(taskRequest, intent, options);
+      return this.attachClarification(plan, taskRequest, intent);
     } finally {
       this.pendingPreferenceHints = null;
     }
+  }
+
+  // 계획을 어떻게 세웠는지 사람이 읽을 설명 + 애매하면 물어볼 질문을 붙인다.
+  attachClarification(plan, taskRequest, intent) {
+    const partCount = plan.planGraph?.nodes?.filter((node) => node.nodeId?.startsWith('action_')).length ?? 1;
+    const planExplanation = plan.llmPlanning?.summary
+      ? `명령을 "${plan.llmPlanning.summary}"(으)로 이해하고 ${partCount}단계로 계획했습니다.`
+      : `명령을 "${intent.title ?? intent.label}" 작업으로 이해하고 ${partCount}단계로 계획했습니다.`;
+    const ambiguous = intent.unknown === true
+      || Number(intent.confidence ?? 1) < this.clarifyConfidenceThreshold
+      || (Array.isArray(intent.missingSlots) && intent.missingSlots.includes('intent'));
+    const clarifyingQuestions = (this.clarifyEnabled && ambiguous)
+      ? this.clarifyingQuestionsFor(taskRequest.command.rawText, intent)
+      : [];
+    return {
+      ...plan,
+      planExplanation,
+      clarification: {
+        adapterId: this.adapterId,
+        ambiguous,
+        confidence: Number(intent.confidence ?? 1),
+        questions: clarifyingQuestions
+      }
+    };
+  }
+
+  clarifyingQuestionsFor(rawText, intent) {
+    const text = String(rawText ?? '').trim().slice(0, this.maxCommandLength);
+    if (!text) return [];
+    const prompt = [
+      '당신은 작업 실행 전 요구사항을 확인하는 어시스턴트입니다.',
+      '아래 사용자 명령을 실행하기에 애매하거나 정보가 부족한 부분이 있으면, 진행 전에 물어볼 핵심 질문을 최대 3개 만드세요.',
+      '충분히 명확하면 빈 배열을 반환합니다. 불필요한 질문은 만들지 않습니다.',
+      '반드시 JSON 객체 하나만 출력합니다: {"questions":["질문1","질문2"]}',
+      `사용자 명령: ${text}`
+    ].join('\n');
+    let stdout;
+    try {
+      stdout = this.runner(prompt);
+    } catch {
+      return [];
+    }
+    const wrapper = extractJsonObject(stdout);
+    const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
+    if (!Array.isArray(payload?.questions)) return [];
+    return payload.questions
+      .filter((question) => typeof question === 'string' && question.trim())
+      .slice(0, 3)
+      .map((question) => question.trim().slice(0, 200));
   }
 
   preferenceHintsFrom(planningContext) {

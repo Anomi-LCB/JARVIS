@@ -133,6 +133,12 @@ export class CoreFacade {
       createdAt: taskRequest.createdAt,
       expiresAt: new Date(Date.parse(taskRequest.createdAt) + policy.approval.expiresInSec * 1000).toISOString()
     });
+    // 계획 설명 + LLM 명료화 질문을 승인 카드에 실어 폰이 보여줄 수 있게 한다.
+    if (plan.planExplanation) approvalCard.planExplanation = plan.planExplanation;
+    if (plan.clarification) {
+      approvalCard.clarifyingQuestions = plan.clarification.questions ?? [];
+      approvalCard.ambiguous = plan.clarification.ambiguous ?? false;
+    }
     const clarificationPreview = this.clarificationPreviewDiff({
       previousPlan: null,
       nextPlan: plan,
