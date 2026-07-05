@@ -60,18 +60,26 @@ export function buildPlanDecompositionPrompt(commandText, { preferenceHints = []
 export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [] }) {
   const format = outputFormat === 'xlsx' ? 'xlsx' : 'txt';
   return [
-    '당신은 JARVIS 로컬 비서의 문서 초안 작성기입니다. 사용자 명령이 요구하는 문서의 실제 내용을 작성하세요.',
+    '당신은 실무 문서를 작성하는 전문 어시스턴트입니다. 사용자 명령이 요구하는 문서를 실제 업무에 바로 쓸 수 있는 프로 수준으로 완성하세요.',
+    '초안이 아니라 완성본을 목표로 합니다. 형식적이거나 뼈대만 있는 결과는 금지합니다.',
     ...preferenceSection(preferenceHints),
     '',
-    '규칙:',
+    '품질 기준:',
+    '- 실무에서 통용되는 구조와 항목을 갖춘다(적절한 섹션, 표 머리글, 요약/합계, 단위 표기 등).',
+    '- 사용자가 명시하지 않았어도 그 문서 유형에서 일반적으로 포함되는 표준 항목·행/열을 충실히 채운다.',
+    '- 다만 사용자만 아는 사실(고유명사, 실제 수치, 개인정보)은 지어내지 않고 채울 자리(빈 값 또는 "(입력)" 같은 안내)로 남긴다.',
+    '- 날짜가 필요하면 오늘 기준으로 계산해 실제 날짜를 넣는다.',
+    '- 분량은 실제로 쓸 만하게. 형식만 보여주는 1~2줄은 금지하되, 과하게 방대하지 않게 핵심을 채운다(표는 대략 10~30행 권장).',
+    '',
+    '출력 규칙:',
     '- 반드시 JSON 객체 하나만 출력한다. 설명 문장, 마크다운 코드펜스를 붙이지 않는다.',
     `- 문서 언어는 ${locale.startsWith('ko') ? '한국어' : locale}를 기본으로 한다.`,
-    '- 사용자가 요청한 범위를 넘는 내용을 지어내지 않는다. 데이터가 없으면 사용자가 채울 자리(빈 값 또는 안내 문구)를 만든다.',
     format === 'xlsx'
-      ? '- xlsx 형식: {"kind":"xlsx","sheetName":"시트명","columns":["열1","열2"],"rows":[["값","값"]]} — 열은 최대 10개, 행은 최대 50개.'
-      : '- txt 형식: {"kind":"txt","content":"문서 본문"} — 본문은 4000자 이하.',
+      ? '- xlsx 형식: {"kind":"xlsx","sheetName":"시트명","columns":["열1","열2"],"rows":[["값","값"]]} — 열 최대 20개, 행은 보통 10~30개(최대 200). 합계/소계 행이 자연스러우면 포함한다.'
+      : '- txt 형식: {"kind":"txt","content":"문서 본문"} — 제목·섹션 구분·항목을 갖춘 완성된 본문. 최대 20000자.',
     '',
     `요청 형식: ${format}`,
+    `오늘 날짜: ${new Date().toISOString().slice(0, 10)}`,
     fileName ? `파일명 힌트: ${fileName}` : null,
     `사용자 명령: ${text}`
   ].filter((line) => line !== null).join('\n');
@@ -86,7 +94,10 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     timeoutMs = 45000,
     maxCommandLength = 2000,
     contentEnabled = false,
+    contentModel = 'haiku',
+    contentTimeoutMs = 90000,
     runner = null,
+    contentRunner = null,
     clock = () => new Date(),
     adapterId = 'claude-cli-task-planner-v1'
   } = {}) {
@@ -94,11 +105,14 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     this.parser = parser;
     this.skillRouter = skillRouter;
     this.model = model;
+    this.contentModel = contentModel;
     this.maxCommandLength = maxCommandLength;
     this.contentEnabled = contentEnabled;
     this.clock = clock;
     this.adapterId = adapterId;
     this.runner = runner ?? createClaudeCliRunner({ command, model, timeoutMs });
+    // 콘텐츠 작성은 프로 품질을 위해 더 강한 모델(기본 sonnet)과 긴 타임아웃을 쓴다.
+    this.contentRunner = contentRunner ?? runner ?? createClaudeCliRunner({ command, model: contentModel, timeoutMs: contentTimeoutMs });
     this.contentDraftCache = new Map();
   }
 
@@ -262,7 +276,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     if (this.contentDraftCache.has(cacheKey)) return this.contentDraftCache.get(cacheKey);
     let stdout;
     try {
-      stdout = this.runner(buildContentDraftPrompt({ text: trimmed, outputFormat, fileName, locale, preferenceHints }));
+      stdout = this.contentRunner(buildContentDraftPrompt({ text: trimmed, outputFormat, fileName, locale, preferenceHints }));
     } catch {
       this.contentDraftCache.set(cacheKey, null);
       return null;
@@ -277,14 +291,14 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
   sanitizeContentDraft(payload) {
     if (payload?.kind === 'xlsx') {
       const columns = Array.isArray(payload.columns)
-        ? payload.columns.slice(0, 10).map((column) => String(column).slice(0, 80))
+        ? payload.columns.slice(0, 20).map((column) => String(column).slice(0, 120))
         : [];
       const rows = Array.isArray(payload.rows)
         ? payload.rows
-            .slice(0, 50)
+            .slice(0, 200)
             .filter((row) => Array.isArray(row))
-            .map((row) => row.slice(0, columns.length || 10).map((cell) => (
-              typeof cell === 'number' ? cell : String(cell ?? '').slice(0, 300)
+            .map((row) => row.slice(0, columns.length || 20).map((cell) => (
+              typeof cell === 'number' ? cell : String(cell ?? '').slice(0, 500)
             )))
         : [];
       if (columns.length === 0 || rows.length === 0) return null;
@@ -298,7 +312,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
       };
     }
     if (payload?.kind === 'txt' && typeof payload.content === 'string' && payload.content.trim()) {
-      return { kind: 'txt', content: payload.content.trim().slice(0, 4000) };
+      return { kind: 'txt', content: payload.content.trim().slice(0, 20000) };
     }
     return null;
   }
@@ -372,6 +386,10 @@ export function createTaskPlannerFromEnv({ env = process.env, runner = null, clo
     model: env.JARVIS_LLM_PLANNER_MODEL ?? env.JARVIS_LLM_INTENT_MODEL ?? 'haiku',
     timeoutMs: Number(env.JARVIS_LLM_PLANNER_TIMEOUT_MS ?? 45000),
     contentEnabled: env.JARVIS_LLM_CONTENT === '1' || env.JARVIS_LLM_CONTENT === 'true',
+    // 콘텐츠 모델 기본 haiku(프로 프롬프트로 이미 실무 품질, ~35s로 폰 타임아웃 안전).
+    // 최고 품질을 원하면 JARVIS_LLM_CONTENT_MODEL=sonnet (지연 편차 큼, 타임아웃도 함께 늘릴 것).
+    contentModel: env.JARVIS_LLM_CONTENT_MODEL ?? 'haiku',
+    contentTimeoutMs: Number(env.JARVIS_LLM_CONTENT_TIMEOUT_MS ?? 90000),
     runner,
     clock
   });

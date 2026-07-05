@@ -120,7 +120,7 @@ test('content drafting fills CREATE_FILE arguments with LLM-drafted xlsx content
   const planner = new ClaudeCliTaskPlanner({
     contentEnabled: true,
     runner: (prompt) => {
-      if (prompt.includes('문서 초안 작성기')) {
+      if (prompt.includes('프로 수준')) {
         draftCalls += 1;
         return plannerResponse({
           kind: 'xlsx',
