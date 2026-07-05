@@ -2727,30 +2727,9 @@ export default function App() {
   }
 
   function renderScreen() {
-    switch (route) {
-      case MobileRoutes.HomeScreen:
-        return renderHomeScreen();
-      case MobileRoutes.PairingScreen:
-        return renderPairingScreen();
-      case MobileRoutes.CommandScreen:
-        return renderCommandScreen();
-      case MobileRoutes.ApprovalQueueScreen:
-        return renderApprovalQueueScreen();
-      case MobileRoutes.ApprovalDetailScreen:
-        return renderApprovalDetailScreen();
-      case MobileRoutes.TaskStatusScreen:
-        return renderTaskStatusScreen();
-      case MobileRoutes.ResultScreen:
-        return renderResultScreen();
-      case MobileRoutes.SettingsScreen:
-        return renderSettingsScreen();
-      case MobileRoutes.GrowthReviewScreen:
-        return renderGrowthReviewScreen();
-      case MobileRoutes.PoisonQueueScreen:
-        return renderPoisonQueueScreen();
-      default:
-        return renderCommandScreen();
-    }
+    // 사용자 앱은 집사 홈 화면만 노출한다. 전문가(엔지니어링) 화면 렌더러는
+    // 코드에 남아 있지만 UI 어떤 경로로도 도달하지 않는다(문제 발생 시 개발자가 코드로 수정).
+    return renderHomeScreen();
   }
 
   function renderRouteDock() {
@@ -2790,7 +2769,8 @@ export default function App() {
     );
   }
 
-  const isHome = route === MobileRoutes.HomeScreen;
+  // 사용자 앱은 항상 홈 레이아웃(집사 화면)만 사용한다.
+  const isHome = true;
 
   return (
     <SafeAreaView testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={styles.root}>
