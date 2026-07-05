@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createAgRuntime } from '../../runtime-compose/src/create-runtime.js';
 import { allBridgeRouteContracts, bridgeRouteContracts, BridgeRequestValidator, createBridgeOpenApiSpec } from './request-validator.js';
 import { createBridgeReverseProxyDeploymentGuide, LocalNetworkGuard } from './network-guard.js';
@@ -1863,8 +1864,13 @@ export function resolveBridgeListenOptions(env = process.env) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // 상시 브리지(폰 실사용)는 승인 시 실제 A-G 계획을 실행한다. 끄려면 JARVIS_BRIDGE_REAL_EXECUTION=0.
+  // auditRoot를 고정 경로로 주면 기기 등록/토큰이 디스크에 저장되어 브리지 재시작·PC 재부팅 후에도
+  // 폰이 재페어링 없이 자동 재연결된다(연결 실패의 근본 원인 해결).
+  const bridgeStateDir = process.env.JARVIS_BRIDGE_STATE_DIR
+    ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../logs/bridge-state');
   const { bridgeRuntime } = createAgRuntime({
-    bridgeRealExecution: process.env.JARVIS_BRIDGE_REAL_EXECUTION !== '0'
+    bridgeRealExecution: process.env.JARVIS_BRIDGE_REAL_EXECUTION !== '0',
+    auditRoot: bridgeStateDir
   });
   // 완료 산출물을 PC 기본 프로그램으로 자동 열기(끄려면 JARVIS_BRIDGE_OPEN_OUTPUTS=0).
   if (process.env.JARVIS_BRIDGE_OPEN_OUTPUTS !== '0') {
