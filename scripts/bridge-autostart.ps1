@@ -16,11 +16,19 @@ $errLog = Join-Path $logDir 'bridge-runtime.err.log'
 $env:JARVIS_BRIDGE_HOST = if ($env:JARVIS_BRIDGE_HOST) { $env:JARVIS_BRIDGE_HOST } else { '0.0.0.0' }
 $env:JARVIS_BRIDGE_PORT = if ($env:JARVIS_BRIDGE_PORT) { $env:JARVIS_BRIDGE_PORT } else { '17777' }
 
-# Advertise the LAN address in pairing QR payloads so phones can connect directly.
+# Allow Tailscale (CGNAT 100.64/10) clients so the phone works from any internet connection.
+if (-not $env:JARVIS_BRIDGE_ALLOW_TAILSCALE) { $env:JARVIS_BRIDGE_ALLOW_TAILSCALE = '1' }
+
+# Advertise a phone-reachable address in pairing QR payloads.
+# Tailscale IP first (works from anywhere), LAN IP as fallback (same Wi-Fi only).
 if (-not $env:JARVIS_BRIDGE_URL) {
+    $tsIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceAlias -like '*Tailscale*' -and $_.IPAddress -like '100.*' } |
+        Select-Object -First 1).IPAddress
     $lanIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
         Select-Object -First 1).IPv4Address.IPAddress
-    if ($lanIp) { $env:JARVIS_BRIDGE_URL = "http://${lanIp}:$($env:JARVIS_BRIDGE_PORT)" }
+    $advertised = if ($tsIp) { $tsIp } elseif ($lanIp) { $lanIp } else { $null }
+    if ($advertised) { $env:JARVIS_BRIDGE_URL = "http://${advertised}:$($env:JARVIS_BRIDGE_PORT)" }
 }
 
 # Keep a single instance: exit if the port is already served.

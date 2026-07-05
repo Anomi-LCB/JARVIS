@@ -7,13 +7,17 @@ export class LocalNetworkGuard {
     trustedProxyHosts = [],
     allowPrivateLan = true,
     allowLoopback = true,
-    allowForwardedHeaders = true
+    allowForwardedHeaders = true,
+    // Tailscale 등 CGNAT(100.64.0.0/10) VPN 클라이언트 허용. 기본 false — 켜면
+    // 개인 tailnet에 조인한 기기만 해당 대역을 받으므로 사설망 신뢰 모델이 유지된다.
+    allowCgnat = false
   } = {}) {
     this.allowedHostnames = new Set(allowedHostnames.map(normalizeHost).filter(Boolean));
     this.trustedProxyHosts = new Set(trustedProxyHosts.map(normalizeHost).filter(Boolean));
     this.allowPrivateLan = allowPrivateLan;
     this.allowLoopback = allowLoopback;
     this.allowForwardedHeaders = allowForwardedHeaders;
+    this.allowCgnat = allowCgnat;
   }
 
   evaluate({ hostHeader = '127.0.0.1', remoteAddress = null, headers = {} } = {}) {
@@ -27,6 +31,7 @@ export class LocalNetworkGuard {
       trustedProxyHosts: this.trustedProxyHosts,
       allowPrivateLan: this.allowPrivateLan,
       allowLoopback: this.allowLoopback,
+      allowCgnat: this.allowCgnat,
       remoteAddress: remoteHost
     };
     const checks = [
@@ -68,7 +73,8 @@ export class LocalNetworkGuard {
       allowedHostnames: this.allowedHostnames,
       trustedProxyHosts: this.trustedProxyHosts,
       allowPrivateLan: this.allowPrivateLan,
-      allowLoopback: this.allowLoopback
+      allowLoopback: this.allowLoopback,
+      allowCgnat: this.allowCgnat
     });
     const trustedByList = this.trustedProxyHosts.has(remoteHost);
     return {
@@ -300,6 +306,7 @@ function classifyHost(host, source, {
   allowedHostnames = new Set(),
   allowPrivateLan = true,
   allowLoopback = true,
+  allowCgnat = false,
   remoteAddress = null
 } = {}) {
   if (!host) return blocked(source, host, 'empty-host');
@@ -316,6 +323,9 @@ function classifyHost(host, source, {
     if (a === 192 && b === 168) return allowPrivateLan ? allowed(source, host, 'private-192.168/16') : blocked(source, host, 'private-lan-disabled');
     if (a === 172 && b >= 16 && b <= 31) return allowPrivateLan ? allowed(source, host, 'private-172.16/12') : blocked(source, host, 'private-lan-disabled');
     if (a === 169 && b === 254) return allowPrivateLan ? allowed(source, host, 'link-local-169.254/16') : blocked(source, host, 'private-lan-disabled');
+    if (a === 100 && b >= 64 && b <= 127) {
+      return allowCgnat ? allowed(source, host, 'cgnat-tailscale-100.64/10') : blocked(source, host, 'cgnat-disabled');
+    }
     return blocked(source, host, 'public-ipv4');
   }
   if (ipVersion === 6) {

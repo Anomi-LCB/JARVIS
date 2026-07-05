@@ -346,6 +346,19 @@ Administrator shell. Logs: `logs/bridge-runtime.out.log`, `logs/bridge-launcher.
 `bridge:pair` starts a 5-minute pairing session and prints the bridge URL + 8-digit code to
 enter in the mobile app's pairing screen.
 
+### Remote access over the internet (Tailscale)
+
+The bridge deliberately rejects public-internet clients. For phone access away from home Wi-Fi,
+join both the PC and the phone to a personal Tailscale tailnet (encrypted WireGuard VPN):
+
+1. PC: install Tailscale (`winget install Tailscale.Tailscale`, requires admin) and sign in.
+2. Phone: install the Tailscale app from the Play Store and sign in to the same account.
+3. Set `JARVIS_BRIDGE_ALLOW_TAILSCALE=1` (the autostart launcher sets this by default). This
+   admits only the CGNAT range 100.64.0.0/10 — devices in your own tailnet — while public IPs
+   stay blocked (`cgnat-disabled` / `public-ipv4`).
+4. The autostart launcher advertises the Tailscale IP in pairing QR payloads when available,
+   so pairing done over Tailscale keeps working from any network.
+
 ## Mobile verification
 
 ```bash

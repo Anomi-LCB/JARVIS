@@ -58,6 +58,11 @@ function isLocalOrPrivateCorsHost(hostname) {
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
   if (/^10\./.test(host)) return true;
   if (/^192\.168\./.test(host)) return true;
+  const matchCgnat = /^100\.(\d{1,3})\./.exec(host);
+  if (matchCgnat && Number(matchCgnat[1]) >= 64 && Number(matchCgnat[1]) <= 127
+    && (process.env.JARVIS_BRIDGE_ALLOW_TAILSCALE === '1' || process.env.JARVIS_BRIDGE_ALLOW_TAILSCALE === 'true')) {
+    return true;
+  }
   const match172 = /^172\.(\d{1,2})\./.exec(host);
   return Boolean(match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31);
 }
@@ -66,7 +71,8 @@ export function createBridgeServer(bridgeRuntime, {
   networkGuard = new LocalNetworkGuard({
     allowedHostnames: parseEnvList(process.env.JARVIS_BRIDGE_ALLOWED_HOSTS),
     trustedProxyHosts: parseEnvList(process.env.JARVIS_BRIDGE_TRUSTED_PROXY_HOSTS),
-    allowForwardedHeaders: process.env.JARVIS_BRIDGE_ALLOW_FORWARDED_HEADERS !== 'false'
+    allowForwardedHeaders: process.env.JARVIS_BRIDGE_ALLOW_FORWARDED_HEADERS !== 'false',
+    allowCgnat: process.env.JARVIS_BRIDGE_ALLOW_TAILSCALE === '1' || process.env.JARVIS_BRIDGE_ALLOW_TAILSCALE === 'true'
   })
 } = {}) {
   const requestValidator = new BridgeRequestValidator({ auditLog: bridgeRuntime.auditLog });
