@@ -47,6 +47,25 @@ export function buildPlanDecompositionPrompt(commandText) {
   ].join('\n');
 }
 
+export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR' }) {
+  const format = outputFormat === 'xlsx' ? 'xlsx' : 'txt';
+  return [
+    '당신은 JARVIS 로컬 비서의 문서 초안 작성기입니다. 사용자 명령이 요구하는 문서의 실제 내용을 작성하세요.',
+    '',
+    '규칙:',
+    '- 반드시 JSON 객체 하나만 출력한다. 설명 문장, 마크다운 코드펜스를 붙이지 않는다.',
+    `- 문서 언어는 ${locale.startsWith('ko') ? '한국어' : locale}를 기본으로 한다.`,
+    '- 사용자가 요청한 범위를 넘는 내용을 지어내지 않는다. 데이터가 없으면 사용자가 채울 자리(빈 값 또는 안내 문구)를 만든다.',
+    format === 'xlsx'
+      ? '- xlsx 형식: {"kind":"xlsx","sheetName":"시트명","columns":["열1","열2"],"rows":[["값","값"]]} — 열은 최대 10개, 행은 최대 50개.'
+      : '- txt 형식: {"kind":"txt","content":"문서 본문"} — 본문은 4000자 이하.',
+    '',
+    `요청 형식: ${format}`,
+    fileName ? `파일명 힌트: ${fileName}` : null,
+    `사용자 명령: ${text}`
+  ].filter((line) => line !== null).join('\n');
+}
+
 export class ClaudeCliTaskPlanner extends TaskPlanner {
   constructor({
     parser = new IntentParser(),
@@ -55,6 +74,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     model = null,
     timeoutMs = 45000,
     maxCommandLength = 2000,
+    contentEnabled = false,
     runner = null,
     clock = () => new Date(),
     adapterId = 'claude-cli-task-planner-v1'
@@ -64,9 +84,11 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     this.skillRouter = skillRouter;
     this.model = model;
     this.maxCommandLength = maxCommandLength;
+    this.contentEnabled = contentEnabled;
     this.clock = clock;
     this.adapterId = adapterId;
     this.runner = runner ?? createClaudeCliRunner({ command, model, timeoutMs });
+    this.contentDraftCache = new Map();
   }
 
   createPlan(taskRequest, intent, options = {}) {
@@ -157,6 +179,84 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     };
   }
 
+  argumentsFor(intent, taskRequest, contextSnapshot) {
+    const base = super.argumentsFor(intent, taskRequest, contextSnapshot);
+    if (!this.contentEnabled || intent.actionType !== ActionType.CREATE_FILE) return base;
+    const sourceText = intent.slots?.llmPartText ?? taskRequest.command.rawText;
+    const draft = this.draftContentFor({
+      text: sourceText,
+      outputFormat: base.outputFormat ?? intent.slots?.outputFormat ?? 'txt',
+      fileName: base.fileName ?? intent.slots?.fileName ?? null,
+      locale: taskRequest.command?.locale ?? 'ko-KR'
+    });
+    if (!draft) return base;
+    if (draft.kind === 'xlsx' && base.outputFormat === 'xlsx') {
+      return {
+        ...base,
+        sheetName: draft.sheetName ?? base.sheetName,
+        columns: draft.columns,
+        rows: draft.rows,
+        contentDraft: { adapterId: this.adapterId, kind: 'xlsx', draftedByLlm: true }
+      };
+    }
+    if (draft.kind === 'txt' && base.outputFormat !== 'xlsx') {
+      return {
+        ...base,
+        content: draft.content,
+        contentDraft: { adapterId: this.adapterId, kind: 'txt', draftedByLlm: true }
+      };
+    }
+    return base;
+  }
+
+  draftContentFor({ text, outputFormat, fileName, locale }) {
+    const trimmed = String(text ?? '').trim().slice(0, this.maxCommandLength);
+    if (!trimmed) return null;
+    const cacheKey = `${outputFormat}:${trimmed}`;
+    if (this.contentDraftCache.has(cacheKey)) return this.contentDraftCache.get(cacheKey);
+    let stdout;
+    try {
+      stdout = this.runner(buildContentDraftPrompt({ text: trimmed, outputFormat, fileName, locale }));
+    } catch {
+      this.contentDraftCache.set(cacheKey, null);
+      return null;
+    }
+    const wrapper = extractJsonObject(stdout);
+    const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
+    const draft = this.sanitizeContentDraft(payload);
+    this.contentDraftCache.set(cacheKey, draft);
+    return draft;
+  }
+
+  sanitizeContentDraft(payload) {
+    if (payload?.kind === 'xlsx') {
+      const columns = Array.isArray(payload.columns)
+        ? payload.columns.slice(0, 10).map((column) => String(column).slice(0, 80))
+        : [];
+      const rows = Array.isArray(payload.rows)
+        ? payload.rows
+            .slice(0, 50)
+            .filter((row) => Array.isArray(row))
+            .map((row) => row.slice(0, columns.length || 10).map((cell) => (
+              typeof cell === 'number' ? cell : String(cell ?? '').slice(0, 300)
+            )))
+        : [];
+      if (columns.length === 0 || rows.length === 0) return null;
+      return {
+        kind: 'xlsx',
+        sheetName: typeof payload.sheetName === 'string' && payload.sheetName.trim()
+          ? payload.sheetName.trim().slice(0, 30)
+          : null,
+        columns,
+        rows
+      };
+    }
+    if (payload?.kind === 'txt' && typeof payload.content === 'string' && payload.content.trim()) {
+      return { kind: 'txt', content: payload.content.trim().slice(0, 4000) };
+    }
+    return null;
+  }
+
   sanitizeSlots(slots) {
     const sanitized = {};
     for (const key of ['fileName', 'outputFormat', 'destination', 'directoryHint', 'query', 'topic', 'dateHint']) {
@@ -185,7 +285,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
         title: part.description,
         category: actionProfiles[part.actionType].category,
         riskHint: actionProfiles[part.actionType].riskHint,
-        slots: { ...this.parser.extractSlots(part.text, part.actionType), ...part.slots }
+        slots: { ...this.parser.extractSlots(part.text, part.actionType), ...part.slots, llmPartText: part.text }
       };
       const partRoute = part.actionType === action.actionType
         ? { skill: { skillId: action.skillId, toolName: action.toolName, version: action.skillVersion } }
@@ -225,6 +325,7 @@ export function createTaskPlannerFromEnv({ env = process.env, runner = null, clo
     command: env.JARVIS_LLM_PLANNER_COMMAND ?? env.JARVIS_LLM_INTENT_COMMAND ?? 'claude',
     model: env.JARVIS_LLM_PLANNER_MODEL ?? env.JARVIS_LLM_INTENT_MODEL ?? 'haiku',
     timeoutMs: Number(env.JARVIS_LLM_PLANNER_TIMEOUT_MS ?? 45000),
+    contentEnabled: env.JARVIS_LLM_CONTENT === '1' || env.JARVIS_LLM_CONTENT === 'true',
     runner,
     clock
   });

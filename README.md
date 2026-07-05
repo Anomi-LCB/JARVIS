@@ -166,6 +166,22 @@ npm run core:dev -- "주간 정산표 엑셀로 만들고 그리고 로키드 �
 - Tuning: `JARVIS_LLM_PLANNER_MODEL` (default `haiku`), `JARVIS_LLM_PLANNER_TIMEOUT_MS`
   (default 45000), `JARVIS_LLM_PLANNER_COMMAND` (default `claude`).
 
+## LLM content drafting
+
+With `JARVIS_LLM_CONTENT=1` (requires `JARVIS_LLM_PLANNER=1`), CREATE_FILE plans carry
+LLM-drafted document content instead of echoing the raw command: xlsx plans get real
+columns/rows (max 10x50, sanitized), txt plans get a drafted body (max 4000 chars).
+
+- Drafting happens at planning time, so the approval card and E policy see the actual content
+  before anything is written; B stays a deterministic executor of the approved arguments.
+- The draft prompt forbids inventing out-of-scope facts — unknown values become user-fillable
+  placeholders. A malformed or empty draft falls back to the base arguments.
+- Drafted plans are marked with `action.arguments.contentDraft.draftedByLlm=true`.
+
+Verified end to end: `이번 주 교회 주간 사역 점검표 엑셀로 만들어줘` produced
+`workspace/주간-사역-점검표.xlsx` with an 8-column weekly ministry checklist through the full
+A-E-B-G-F worker pipeline.
+
 ## Local execution safety
 
 Local PC control is deny-by-default:

@@ -115,6 +115,61 @@ test('llm planner skips the LLM for simple commands and falls back on failure', 
   assert.equal(createTaskPlannerFromEnv({ env: {} }), null, 'flag off returns null so CoreFacade keeps the base planner');
 });
 
+test('content drafting fills CREATE_FILE arguments with LLM-drafted xlsx content', () => {
+  let draftCalls = 0;
+  const planner = new ClaudeCliTaskPlanner({
+    contentEnabled: true,
+    runner: (prompt) => {
+      if (prompt.includes('문서 초안 작성기')) {
+        draftCalls += 1;
+        return plannerResponse({
+          kind: 'xlsx',
+          sheetName: '주간정산',
+          columns: ['항목', '금액', '비고'],
+          rows: [['헌금', 0, '사용자 입력'], ['운영비', 0, '사용자 입력']]
+        });
+      }
+      throw new Error('unexpected prompt');
+    }
+  });
+  const command = '주간 정산표 엑셀 만들어줘';
+  const taskRequest = makeTaskRequest(command);
+  const intent = intentParser.parse(command, { requestId: taskRequest.requestId });
+  const plan = planner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_draft_1', currentDirectory: './workspace' }
+  });
+  assert.equal(draftCalls, 1, 'simple command drafts content without a decomposition round trip');
+  assert.deepEqual(plan.action.arguments.columns, ['항목', '금액', '비고']);
+  assert.equal(plan.action.arguments.rows.length, 2);
+  assert.equal(plan.action.arguments.sheetName, '주간정산');
+  assert.equal(plan.action.arguments.contentDraft.draftedByLlm, true);
+});
+
+test('content drafting is off by default, sanitizes bad drafts, and falls back safely', () => {
+  const defaultPlanner = new ClaudeCliTaskPlanner({
+    runner: () => {
+      throw new Error('must not be called');
+    }
+  });
+  const command = '메모 파일 만들어줘';
+  const taskRequest = makeTaskRequest(command);
+  const intent = intentParser.parse(command, { requestId: taskRequest.requestId });
+  const plainPlan = defaultPlanner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_draft_2', currentDirectory: './workspace' }
+  });
+  assert.equal(plainPlan.action.arguments.contentDraft, undefined, 'contentEnabled=false keeps base arguments');
+
+  const badDraftPlanner = new ClaudeCliTaskPlanner({
+    contentEnabled: true,
+    runner: () => plannerResponse({ kind: 'xlsx', columns: [], rows: [] })
+  });
+  const badPlan = badDraftPlanner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_draft_3', currentDirectory: './workspace' }
+  });
+  assert.equal(badPlan.action.arguments.contentDraft, undefined, 'empty draft falls back to base arguments');
+  assert.equal(badPlan.action.arguments.rawText, command, 'base arguments remain intact');
+});
+
 test('worker node packets carry per-node actionType and toolName for heterogeneous plans', () => {
   const runtime = createAgRuntime({
     taskPlanner: new ClaudeCliTaskPlanner({ runner: () => heterogeneousResponse }),
