@@ -182,6 +182,22 @@ Verified end to end: `이번 주 교회 주간 사역 점검표 엑셀로 만들
 `workspace/주간-사역-점검표.xlsx` with an 8-column weekly ministry checklist through the full
 A-E-B-G-F worker pipeline.
 
+### Confirmed-preference injection (clone-self learning loop)
+
+When A createTask passes the F `planningPreferenceContext` into the planner, up to 5 confirmed
+preferences (sorted by `planningWeight`) are injected into both the decomposition prompt and the
+content-draft prompt as user style/format directives. This closes the learning loop: preferences
+confirmed through the C growth-review flow change how future documents are drafted.
+
+- Only *confirmed* preferences are used — hypotheses stay out of prompts until the user confirms
+  them, matching the F module contract.
+- Applied preference ids are recorded in `action.arguments.contentDraft.appliedPreferences` and
+  `plan.llmPlanning.preferenceHintsApplied`, so the approval card can show which learned
+  preferences shaped the draft.
+- Live-verified: with confirmed preferences "모든 표의 마지막 행에는 합계 행을 넣는다" and
+  "표에는 항상 비고 열을 포함한다", a 헌금 정산표 draft gained a 비고 column and a trailing
+  합계 row.
+
 ## Local execution safety
 
 Local PC control is deny-by-default:

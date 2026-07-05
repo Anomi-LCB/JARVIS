@@ -24,7 +24,16 @@ const riskTierByAction = Object.freeze({
   [ActionType.READ_SECRET]: 1
 });
 
-export function buildPlanDecompositionPrompt(commandText) {
+function preferenceSection(preferenceHints) {
+  if (!preferenceHints?.length) return [];
+  return [
+    '',
+    '사용자가 확정한 선호 (문서/계획에 반영하되, 아래 규칙과 충돌하면 규칙이 우선):',
+    ...preferenceHints.map((hint) => `- ${hint.statement}`)
+  ];
+}
+
+export function buildPlanDecompositionPrompt(commandText, { preferenceHints = [] } = {}) {
   const actionLines = Object.entries(actionProfiles)
     .map(([actionType, profile]) => `- ${actionType}: ${profile.label}`)
     .join('\n');
@@ -32,6 +41,7 @@ export function buildPlanDecompositionPrompt(commandText) {
     '당신은 JARVIS 로컬 비서의 작업 계획 분해기입니다. 사용자 명령을 실행 순서대로 최대 5개의 하위 작업으로 분해하세요.',
     '각 하위 작업의 actionType은 아래 목록에서 정확히 하나를 선택합니다.',
     actionLines,
+    ...preferenceSection(preferenceHints),
     '',
     '규칙:',
     '- 반드시 JSON 객체 하나만 출력한다. 설명 문장, 마크다운 코드펜스를 붙이지 않는다.',
@@ -47,10 +57,11 @@ export function buildPlanDecompositionPrompt(commandText) {
   ].join('\n');
 }
 
-export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR' }) {
+export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [] }) {
   const format = outputFormat === 'xlsx' ? 'xlsx' : 'txt';
   return [
     '당신은 JARVIS 로컬 비서의 문서 초안 작성기입니다. 사용자 명령이 요구하는 문서의 실제 내용을 작성하세요.',
+    ...preferenceSection(preferenceHints),
     '',
     '규칙:',
     '- 반드시 JSON 객체 하나만 출력한다. 설명 문장, 마크다운 코드펜스를 붙이지 않는다.',
@@ -92,9 +103,32 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
   }
 
   createPlan(taskRequest, intent, options = {}) {
+    this.pendingPreferenceHints = this.preferenceHintsFrom(options.planningContext);
+    try {
+      return this.createPlanWithLlm(taskRequest, intent, options);
+    } finally {
+      this.pendingPreferenceHints = null;
+    }
+  }
+
+  preferenceHintsFrom(planningContext) {
+    return (planningContext?.confirmedPreferenceHints ?? [])
+      .filter((hint) => typeof hint?.statement === 'string' && hint.statement.trim())
+      .sort((a, b) => (b.planningWeight ?? 0) - (a.planningWeight ?? 0))
+      .slice(0, 5)
+      .map((hint) => ({
+        preferenceId: hint.preferenceId ?? null,
+        statement: hint.statement.trim().slice(0, 200)
+      }));
+  }
+
+  createPlanWithLlm(taskRequest, intent, options = {}) {
     const decomposition = this.decomposeWithLlm(taskRequest.command.rawText, intent);
     if (!decomposition) {
-      return super.createPlan(taskRequest, intent, options);
+      const plan = super.createPlan(taskRequest, intent, options);
+      return this.pendingPreferenceHints?.length && plan.action.arguments.contentDraft
+        ? { ...plan, llmPlanning: { adapterId: this.adapterId, preferenceHintsApplied: this.pendingPreferenceHints.length, ...(plan.llmPlanning ?? {}) } }
+        : plan;
     }
     // 대표 액션을 가장 위험한 조각으로 승격한다. E evaluatePlan은 plan.action만 보므로
     // 이 승격이 있어야 복합 명령 속의 위험 조각(삭제/외부전송 등)이 정책 평가를 우회하지 못한다.
@@ -136,6 +170,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
           partCount: decomposition.parts.length,
           heterogeneous: new Set(decomposition.parts.map((part) => part.actionType)).size > 1,
           riskEscalated: escalated,
+          preferenceHintsApplied: this.pendingPreferenceHints?.length ?? 0,
           externalService: 'anthropic-claude-cli',
           rawCommandSharedWithModel: true
         }
@@ -153,7 +188,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const startedAt = Date.now();
     let stdout;
     try {
-      stdout = this.runner(buildPlanDecompositionPrompt(text));
+      stdout = this.runner(buildPlanDecompositionPrompt(text, { preferenceHints: this.pendingPreferenceHints ?? [] }));
     } catch {
       return null;
     }
@@ -196,14 +231,24 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
         sheetName: draft.sheetName ?? base.sheetName,
         columns: draft.columns,
         rows: draft.rows,
-        contentDraft: { adapterId: this.adapterId, kind: 'xlsx', draftedByLlm: true }
+        contentDraft: {
+          adapterId: this.adapterId,
+          kind: 'xlsx',
+          draftedByLlm: true,
+          appliedPreferences: (this.pendingPreferenceHints ?? []).map((hint) => hint.preferenceId).filter(Boolean)
+        }
       };
     }
     if (draft.kind === 'txt' && base.outputFormat !== 'xlsx') {
       return {
         ...base,
         content: draft.content,
-        contentDraft: { adapterId: this.adapterId, kind: 'txt', draftedByLlm: true }
+        contentDraft: {
+          adapterId: this.adapterId,
+          kind: 'txt',
+          draftedByLlm: true,
+          appliedPreferences: (this.pendingPreferenceHints ?? []).map((hint) => hint.preferenceId).filter(Boolean)
+        }
       };
     }
     return base;
@@ -212,11 +257,12 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
   draftContentFor({ text, outputFormat, fileName, locale }) {
     const trimmed = String(text ?? '').trim().slice(0, this.maxCommandLength);
     if (!trimmed) return null;
-    const cacheKey = `${outputFormat}:${trimmed}`;
+    const preferenceHints = this.pendingPreferenceHints ?? [];
+    const cacheKey = `${outputFormat}:${trimmed}:${preferenceHints.map((hint) => hint.statement).join('|')}`;
     if (this.contentDraftCache.has(cacheKey)) return this.contentDraftCache.get(cacheKey);
     let stdout;
     try {
-      stdout = this.runner(buildContentDraftPrompt({ text: trimmed, outputFormat, fileName, locale }));
+      stdout = this.runner(buildContentDraftPrompt({ text: trimmed, outputFormat, fileName, locale, preferenceHints }));
     } catch {
       this.contentDraftCache.set(cacheKey, null);
       return null;

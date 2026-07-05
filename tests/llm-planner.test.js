@@ -170,6 +170,68 @@ test('content drafting is off by default, sanitizes bad drafts, and falls back s
   assert.equal(badPlan.action.arguments.rawText, command, 'base arguments remain intact');
 });
 
+test('confirmed F preferences flow into LLM draft prompts and plan evidence', () => {
+  const prompts = [];
+  const planner = new ClaudeCliTaskPlanner({
+    contentEnabled: true,
+    runner: (prompt) => {
+      prompts.push(prompt);
+      return plannerResponse({
+        kind: 'xlsx',
+        sheetName: '정산',
+        columns: ['항목', '금액', '비고'],
+        rows: [['합계', 0, '']]
+      });
+    }
+  });
+  const command = '정산표 엑셀 만들어줘';
+  const taskRequest = makeTaskRequest(command);
+  const intent = intentParser.parse(command, { requestId: taskRequest.requestId });
+  const planningContext = {
+    confirmedPreferenceHints: [
+      { preferenceId: 'pref_1', statement: '표에는 항상 비고 열을 포함한다', confidence: 0.9, planningWeight: 1.8 },
+      { preferenceId: 'pref_2', statement: '금액은 원 단위 숫자로만 적는다', confidence: 0.8, planningWeight: 1.6 }
+    ]
+  };
+  const plan = planner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_pref_1', currentDirectory: './workspace' },
+    planningContext
+  });
+  assert.ok(prompts[0].includes('사용자가 확정한 선호'), 'draft prompt contains the preference section');
+  assert.ok(prompts[0].includes('표에는 항상 비고 열을 포함한다'));
+  assert.ok(prompts[0].includes('금액은 원 단위 숫자로만 적는다'));
+  assert.deepEqual(plan.action.arguments.contentDraft.appliedPreferences, ['pref_1', 'pref_2']);
+  assert.equal(plan.llmPlanning.preferenceHintsApplied, 2);
+
+  const noPrefPlan = planner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_pref_2', currentDirectory: './workspace' }
+  });
+  assert.ok(!prompts.at(-1).includes('사용자가 확정한 선호'), 'no preference section without hints');
+  assert.deepEqual(noPrefPlan.action.arguments.contentDraft.appliedPreferences, []);
+});
+
+test('preferences also reach the decomposition prompt for composite commands', () => {
+  const prompts = [];
+  const planner = new ClaudeCliTaskPlanner({
+    runner: (prompt) => {
+      prompts.push(prompt);
+      return heterogeneousResponse;
+    }
+  });
+  const taskRequest = makeTaskRequest(compositeCommand);
+  const intent = intentParser.parse(compositeCommand, { requestId: taskRequest.requestId });
+  planner.createPlan(taskRequest, intent, {
+    contextSnapshot: { snapshotId: 'ctx_pref_3', currentDirectory: './workspace' },
+    planningContext: {
+      confirmedPreferenceHints: [
+        { preferenceId: 'pref_3', statement: '보고서 파일명에는 날짜를 붙인다', confidence: 0.85, planningWeight: 1.7 }
+      ]
+    }
+  });
+  assert.ok(prompts[0].includes('작업 계획 분해기'));
+  assert.ok(prompts[0].includes('보고서 파일명에는 날짜를 붙인다'), 'decomposition prompt carries preferences');
+});
+
 test('worker node packets carry per-node actionType and toolName for heterogeneous plans', () => {
   const runtime = createAgRuntime({
     taskPlanner: new ClaudeCliTaskPlanner({ runner: () => heterogeneousResponse }),
