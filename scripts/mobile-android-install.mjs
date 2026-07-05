@@ -201,7 +201,9 @@ async function runGradleBuild({ appDir, gradleCommand, variant = defaultVariant,
     '--stacktrace',
     '--build-cache',
     '--no-watch-fs',
-    '-PreactNativeArchitectures=x86_64',
+    // 실기기(arm64) + 에뮬레이터(x86_64)를 모두 포함한다. x86_64 단독 하드코딩은
+    // 실폰에서 libexpo-modules-core.so 누락 즉시 크래시를 만들었던 원인이다.
+    `-PreactNativeArchitectures=${env.JARVIS_ANDROID_ARCHS ?? 'armeabi-v7a,arm64-v8a,x86,x86_64'}`,
     '-PnewArchEnabled=false'
   ];
   const javaHome = preferredJavaHome(env);
