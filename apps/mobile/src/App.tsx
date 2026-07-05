@@ -219,6 +219,7 @@ export default function App() {
   const [home, setHome] = useState<any>({
     phase: 'idle',
     text: '',
+    answer: '',
     taskId: null,
     approval: null,
     taskStatus: null,
@@ -1555,8 +1556,8 @@ export default function App() {
     return statusResult?.status ?? statusResult?.task?.status ?? null;
   }
 
-  async function homeSubmit() {
-    const rawText = String(home.text ?? '').trim();
+  async function homeSubmit(overrideText: string | null = null) {
+    const rawText = String(overrideText ?? home.text ?? '').trim();
     if (!rawText) {
       setHome((current: any) => ({ ...current, error: '자비스에게 시킬 일을 입력해 주세요.' }));
       return;
@@ -1724,6 +1725,7 @@ export default function App() {
       ...current,
       phase: 'idle',
       text: '',
+      answer: '',
       taskId: null,
       approval: null,
       taskStatus: null,
@@ -1731,6 +1733,16 @@ export default function App() {
       error: null,
       notice: null
     }));
+  }
+
+  // 명료화 질문에 답하면 원 명령에 답을 덧붙여 더 정확한 계획으로 다시 제출한다.
+  async function homeResubmitWithAnswer() {
+    const answer = String(home.answer ?? '').trim();
+    if (!answer) return;
+    const baseText = String(home.text ?? '').trim();
+    const composed = `${baseText} (추가 정보: ${answer})`;
+    setHome((current: any) => ({ ...current, text: composed, answer: '', approval: null }));
+    await homeSubmit(composed);
   }
 
   function completeTask() {
@@ -2152,12 +2164,41 @@ export default function App() {
           <View style={[styles.homeCard, styles.homeApprovalCard]}>
             <Text style={styles.homeCardTitle}>이렇게 진행할까요?</Text>
             <Text style={styles.homeApprovalTitle}>{approvalCard.title}</Text>
-            {approvalCard.interpretedIntent ? (
+            {approvalCard.planExplanation ? (
+              <Text style={styles.homeHint}>{approvalCard.planExplanation}</Text>
+            ) : approvalCard.interpretedIntent ? (
               <Text style={styles.homeHint}>{approvalCard.interpretedIntent}</Text>
             ) : null}
             {(approvalCard.planSteps ?? []).slice(0, 3).map((step: string, index: number) => (
               <Text key={`${index}-${step}`} style={styles.homePlanStep}>· {step}</Text>
             ))}
+            {(approvalCard.clarifyingQuestions ?? []).length ? (
+              <View style={styles.homeClarifyBox}>
+                <Text style={styles.homeClarifyTitle}>몇 가지 확인하고 싶어요</Text>
+                {approvalCard.clarifyingQuestions.map((q: string, i: number) => (
+                  <Text key={`q-${i}`} style={styles.homeClarifyQuestion}>? {q}</Text>
+                ))}
+                <TextInput
+                  testID="home-clarify-answer"
+                  value={home.answer}
+                  onChangeText={(value) => setHome((current: any) => ({ ...current, answer: value }))}
+                  placeholder="답을 적으면 그 정보로 다시 계획해요 (선택)"
+                  placeholderTextColor={colors.muted}
+                  multiline
+                  style={styles.homeClarifyInput}
+                />
+                <Pressable
+                  testID="home-clarify-resubmit"
+                  accessibilityRole="button"
+                  accessibilityLabel="이 정보로 다시 계획"
+                  disabled={!String(home.answer ?? '').trim()}
+                  onPress={() => void homeResubmitWithAnswer()}
+                  style={[styles.homePrimaryButton, !String(home.answer ?? '').trim() ? styles.homeButtonDisabled : null]}
+                >
+                  <Text style={styles.homePrimaryButtonText}>이 정보로 다시 계획</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.homeDecideRow}>
               <Pressable
                 testID="home-approve-button"
@@ -2890,6 +2931,35 @@ const styles = StyleSheet.create({
   },
   homeApprovalCard: {
     borderColor: colors.accent
+  },
+  homeClarifyBox: {
+    gap: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: 8,
+    backgroundColor: colors.background,
+    borderColor: colors.warning,
+    borderWidth: 1
+  },
+  homeClarifyTitle: {
+    color: colors.warning,
+    fontSize: 14,
+    fontWeight: '700'
+  },
+  homeClarifyQuestion: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20
+  },
+  homeClarifyInput: {
+    minHeight: 60,
+    padding: spacing.sm,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 8,
+    color: colors.text,
+    fontSize: 15,
+    textAlignVertical: 'top',
+    backgroundColor: colors.surface
   },
   homeApprovalTitle: {
     color: colors.text,
