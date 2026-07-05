@@ -25,7 +25,8 @@ export class CoreFacade {
     cwd = () => process.cwd(),
     desktopContextProvider = null,
     desktopContextCollector = null,
-    inputProviderRegistry = null
+    inputProviderRegistry = null,
+    intentParser = null
   } = {}) {
     this.policyEngine = policyEngine;
     this.memoryStore = memoryStore;
@@ -34,7 +35,7 @@ export class CoreFacade {
     this.clock = clock;
     this.eventBus = eventBus ?? new EventBus({ clock, eventLogPath });
     this.commandIntake = new CommandIntake({ clock, inputProviderRegistry });
-    this.intentParser = new IntentParser();
+    this.intentParser = intentParser ?? new IntentParser();
     this.ambiguityResolver = new AmbiguityResolver({ clock });
     this.contextBuilder = new ContextSnapshotBuilder({ cwd, clock, desktopContextProvider, desktopContextCollector });
     this.taskPlanner = new TaskPlanner();

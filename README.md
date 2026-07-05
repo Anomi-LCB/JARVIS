@@ -116,6 +116,31 @@ The dashboard and readiness report rank work in this order:
 
 This keeps the next step visible instead of leaving the A-G document map as passive status.
 
+## LLM intent brain (Claude adapter)
+
+The A core can consult a real LLM for intent classification through the policy-gated
+semantic adapter chain. It is off by default and never bypasses the E policy gates.
+
+```bash
+set JARVIS_LLM_INTENT=1
+npm run core:dev -- "요즘 로키드 글래스 신형 나왔는지 궁금하네"
+```
+
+- Backend: `claude -p` CLI (`packages/core/src/intent/claude-cli-intent-adapter.js`), so it reuses
+  the local Claude Code subscription. No API key is stored in this repo.
+- Flow: `LocalSemanticIntentAdapter` parses first; the LLM is consulted only when local
+  confidence falls below `JARVIS_LLM_INTENT_MIN_LOCAL_CONFIDENCE` (default 0.72).
+- Safety: the model only selects an `actionType`. Risk tier, category, and label come from a
+  fixed table inside the adapter, so model output cannot downgrade risk. Confidence is clamped
+  to 0.93. CLI failure/timeout/garbage output falls back to the local parser.
+- Evidence: `intent.semantic` records `externalService: anthropic-claude-cli`,
+  `rawCommandSharedWithModel: true`, model, latency, and a prompt hash.
+- Tuning: `JARVIS_LLM_INTENT_MODEL` (default `haiku`), `JARVIS_LLM_INTENT_TIMEOUT_MS`
+  (default 45000), `JARVIS_LLM_INTENT_COMMAND` (default `claude`).
+- Known limit: the installed `JARVISCoreRuntime` Windows service runs as `LocalSystem`, which has
+  no Claude CLI credentials, so the service path silently falls back to the local parser. Run the
+  runtime in a user context (or move the service to a user account) to get LLM intent there.
+
 ## Local execution safety
 
 Local PC control is deny-by-default:
