@@ -1861,7 +1861,10 @@ export function resolveBridgeListenOptions(env = process.env) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { bridgeRuntime } = createAgRuntime();
+  // 상시 브리지(폰 실사용)는 승인 시 실제 A-G 계획을 실행한다. 끄려면 JARVIS_BRIDGE_REAL_EXECUTION=0.
+  const { bridgeRuntime } = createAgRuntime({
+    bridgeRealExecution: process.env.JARVIS_BRIDGE_REAL_EXECUTION !== '0'
+  });
   const { host, port } = resolveBridgeListenOptions();
   createBridgeServer(bridgeRuntime).listen(port, host, () => {
     console.log(`JARVIS-D Bridge listening at http://${host}:${port} (${ModuleId.BRIDGE})`);

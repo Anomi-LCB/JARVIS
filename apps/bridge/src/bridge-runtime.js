@@ -5615,7 +5615,7 @@ export class BridgeRuntime {
     }
     let result;
     let verification;
-    if (this.orchestrationWorker) {
+    if (this.orchestrationWorker && this.realExecutionEnabled) {
       // 실제 계획 실행 경로: A 오케스트레이션 워커가 E 능력 발급 → B 노드별 실행 →
       // G 검증 → F 학습까지 수행한다. LLM 분해/초안이 담긴 계획이 그대로 실행된다.
       const run = await this.orchestrationWorker.runTask(handoff.taskId, {

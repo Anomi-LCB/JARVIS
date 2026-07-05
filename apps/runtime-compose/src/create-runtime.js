@@ -79,7 +79,9 @@ export function createAgRuntime(options = {}) {
     clock: options.clock
   });
   // 모바일 승인 → 실행 핸드오프가 스텁 패킷 대신 실제 계획(A-E-B-G-F)을 실행하도록 워커를 노출한다.
+  // realExecutionEnabled가 true일 때만 워커 경로를 쓴다(기본 false: 기존 스텁 계약 유지).
   bridgeRuntime.orchestrationWorker = orchestrationWorker;
+  bridgeRuntime.realExecutionEnabled = options.bridgeRealExecution === true;
   const workerDaemon = new CoreWorkerDaemon({
     worker: orchestrationWorker,
     enabled: options.workerDaemonEnabled ?? true,

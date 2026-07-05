@@ -16,6 +16,7 @@ test('mobile approve + handoff confirm executes the real plan through the worker
     const runtime = createAgRuntime({
       allowedRoots: ['./workspace'],
       auditRoot: dir,
+      bridgeRealExecution: true,
       workerQueueStorePath: null,
       workerLeaseStorePath: null
     });
