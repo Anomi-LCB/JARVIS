@@ -213,8 +213,20 @@ export default function App() {
   const shell = useMemo(() => createMobileAppShell(), []);
   const appStateRef = useRef(AppState.currentState);
   const deepLinkHandlerRef = useRef<(url: string) => boolean>(() => false);
-  const [route, setRoute] = useState<string>(shell.initialRouteName);
+  const [route, setRoute] = useState<string>(MobileRoutes.HomeScreen);
   const [state, setState] = useState<any>(() => createMobileProductState());
+  // 홈(가면) 화면 전용 대화 흐름 상태. 명령→승인→실행→결과를 한 화면에서 따라간다.
+  const [home, setHome] = useState<any>({
+    phase: 'idle',
+    text: '',
+    taskId: null,
+    approval: null,
+    taskStatus: null,
+    result: null,
+    error: null,
+    notice: null
+  });
+  const homeFlowSeq = useRef(0);
   const effectiveBridgeUrl = normalizeBridgeUrlForDevice(state.connection.bridgeUrl);
 
   const selectedApproval = state.approvals.items.find((item: any) => item.approvalId === state.approvals.selectedApprovalId)
@@ -377,6 +389,12 @@ export default function App() {
         },
         screenMessage: `Pairing deep link loaded: ${pairingCode ?? 'no-code'}`
       }));
+      // 코드와 브리지 주소가 모두 담긴 링크는 원터치 페어링으로 바로 확정한다.
+      if (pairingCode && bridgeUrl) {
+        void confirmPairing(pairingCode, bridgeUrl);
+        navigate(MobileRoutes.HomeScreen);
+        return true;
+      }
       navigate(MobileRoutes.PairingScreen);
       return true;
     }
@@ -539,8 +557,10 @@ export default function App() {
     }
   }
 
-  async function confirmPairing(pairingCodeOverride: string | null = null) {
+  async function confirmPairing(pairingCodeOverride: string | null = null, bridgeUrlOverride: string | null = null) {
     const pairingCode = pairingCodeOverride || state.device.pairingCode;
+    const targetBridgeUrl = bridgeUrlOverride ?? state.connection.bridgeUrl;
+    const targetEffectiveUrl = normalizeBridgeUrlForDevice(targetBridgeUrl);
     setState((current: any) => applyLiveBridgeState(current, {
       loading: true,
       lastAction: 'pairing.confirm',
@@ -549,8 +569,12 @@ export default function App() {
     }));
     updateMessage(`D Bridge pairing/confirm 요청 중: ${pairingCode}`);
     try {
-      await SecureStore.setItemAsync(storageKeys.bridgeUrl, state.connection.bridgeUrl);
-      const result = await createBridgeClient(null).confirmPairing({
+      await SecureStore.setItemAsync(storageKeys.bridgeUrl, targetBridgeUrl);
+      const result = await new BridgeClient({
+        bridgeUrl: targetEffectiveUrl,
+        tokenProvider: () => null,
+        timeoutMs: defaultBridgeClientTimeoutMs
+      }).confirmPairing({
         deviceId: state.device.deviceId,
         deviceName: state.device.deviceName,
         pairingCode
@@ -564,7 +588,8 @@ export default function App() {
         connection: {
           ...current.connection,
           connected: true,
-          effectiveBridgeUrl,
+          bridgeUrl: targetBridgeUrl,
+          effectiveBridgeUrl: targetEffectiveUrl,
           lastCheckedAt: new Date().toISOString(),
           latencyMs: 0,
           error: null
@@ -593,7 +618,7 @@ export default function App() {
         deviceTokenPreview: tokenPreview(result.deviceToken),
         error: null
       }));
-      navigate(MobileRoutes.CommandScreen);
+      navigate(MobileRoutes.HomeScreen);
       return result;
     } catch (error) {
       const message = errorMessage(error);
@@ -1513,6 +1538,194 @@ export default function App() {
     }
   }
 
+  // ── 홈(가면) 대화 흐름: 명령 → 계획/승인 → 실행 → 결과를 한 화면에서 자동 추적 ──
+  function homeClient(timeoutMs = defaultBridgeClientTimeoutMs) {
+    return new BridgeClient({
+      bridgeUrl: effectiveBridgeUrl,
+      tokenProvider: () => state.liveBridge.deviceToken ?? null,
+      timeoutMs
+    });
+  }
+
+  function homeSleep(ms: number) {
+    return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+  }
+
+  function homeTaskStatusOf(statusResult: any) {
+    return statusResult?.status ?? statusResult?.task?.status ?? null;
+  }
+
+  async function homeSubmit() {
+    const rawText = String(home.text ?? '').trim();
+    if (!rawText) {
+      setHome((current: any) => ({ ...current, error: '자비스에게 시킬 일을 입력해 주세요.' }));
+      return;
+    }
+    if (!state.device.paired || !state.liveBridge.deviceToken) {
+      setHome((current: any) => ({ ...current, error: '먼저 아래에서 PC와 연결해 주세요.' }));
+      return;
+    }
+    const seq = ++homeFlowSeq.current;
+    setHome((current: any) => ({
+      ...current,
+      phase: 'submitting',
+      taskId: null,
+      approval: null,
+      taskStatus: null,
+      result: null,
+      error: null,
+      notice: '자비스가 명령을 이해하고 계획을 세우는 중입니다...'
+    }));
+    try {
+      const request = {
+        requestId: `req_home_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+        source: { module: 'C_MOBILE', deviceId: state.device.deviceId, inputMode: 'text' },
+        command: { rawText, locale: 'ko-KR' },
+        context: { currentScreen: MobileRoutes.HomeScreen, userTimezone: 'Asia/Seoul' }
+      };
+      // LLM 계획/초안 생성이 수십 초 걸릴 수 있어 홈 제출은 타임아웃을 길게 잡는다.
+      const created = await homeClient(120000).createTask(request);
+      if (created?.success === false || !created?.taskId) {
+        throw new Error(bridgeFailureMessage(created, 'task-create-failed'));
+      }
+      if (homeFlowSeq.current !== seq) return;
+      setHome((current: any) => ({
+        ...current,
+        phase: 'waiting-approval',
+        taskId: created.taskId,
+        notice: '계획이 준비되었습니다. 승인 카드를 불러오는 중...'
+      }));
+      await homeTrackApproval(created.taskId, seq);
+    } catch (error) {
+      if (homeFlowSeq.current !== seq) return;
+      setHome((current: any) => ({ ...current, phase: 'idle', notice: null, error: errorMessage(error) }));
+    }
+  }
+
+  async function homeTrackApproval(taskId: string, seq: number) {
+    const client = homeClient();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (homeFlowSeq.current !== seq) return;
+      try {
+        const approvals = await client.getApprovals();
+        const card = (approvals?.items ?? []).find((item: any) => (
+          item.taskId === taskId && !['cancelled', 'expired', 'decided'].includes(String(item.status ?? 'pending'))
+        ));
+        if (card) {
+          setHome((current: any) => ({ ...current, phase: 'approval', approval: card, notice: null }));
+          return;
+        }
+        const status = homeTaskStatusOf(await client.getTaskStatus(taskId));
+        if (['COMPLETED', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(String(status))) {
+          await homeFinish(taskId, String(status), seq);
+          return;
+        }
+      } catch {
+        // 폴링 중 일시 오류는 다음 시도에서 회복한다.
+      }
+      await homeSleep(1500);
+    }
+    if (homeFlowSeq.current !== seq) return;
+    setHome((current: any) => ({
+      ...current,
+      phase: 'idle',
+      notice: null,
+      error: '승인 카드를 기다리다 시간이 초과됐습니다. 전문가 모드의 승인 대기 화면을 확인해 주세요.'
+    }));
+  }
+
+  async function homeDecide(decision: 'approve' | 'reject') {
+    const card = home.approval;
+    if (!card) return;
+    if (decision === 'approve' && Number(card.riskTier ?? 5) <= 3) {
+      setHome((current: any) => ({
+        ...current,
+        notice: '위험도가 높은 작업이라 모바일 단독 승인이 차단됩니다. PC에서 직접 확인해 주세요.'
+      }));
+      return;
+    }
+    const seq = homeFlowSeq.current;
+    setHome((current: any) => ({
+      ...current,
+      phase: 'deciding',
+      error: null,
+      notice: decision === 'approve' ? '승인을 전송하는 중...' : '거절을 전송하는 중...'
+    }));
+    try {
+      const client = homeClient();
+      const result = await client.sendApprovalDecision(card.approvalId, { decision });
+      if (result?.success === false) {
+        throw new Error(bridgeFailureMessage(result, 'approval-decision-failed'));
+      }
+      if (decision !== 'approve') {
+        setHome((current: any) => ({
+          ...current,
+          phase: 'done',
+          taskStatus: 'CANCELLED',
+          notice: '작업을 거절했습니다. 실행되지 않습니다.'
+        }));
+        return;
+      }
+      if (result?.handoffId) {
+        const confirmed = await client.confirmExecution(result.handoffId);
+        if (confirmed?.success === false) {
+          throw new Error(bridgeFailureMessage(confirmed, 'execution-confirm-failed'));
+        }
+      }
+      setHome((current: any) => ({ ...current, phase: 'executing', notice: 'PC에서 실행하는 중입니다...' }));
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (homeFlowSeq.current !== seq) return;
+        const status = homeTaskStatusOf(await client.getTaskStatus(card.taskId).catch(() => null));
+        if (['COMPLETED', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(String(status))) {
+          await homeFinish(card.taskId, String(status), seq);
+          return;
+        }
+        await homeSleep(1500);
+      }
+      setHome((current: any) => ({
+        ...current,
+        notice: '실행이 오래 걸리고 있습니다. 잠시 후 전문가 모드의 작업 상태 화면에서 확인할 수 있어요.'
+      }));
+    } catch (error) {
+      setHome((current: any) => ({ ...current, phase: 'approval', notice: null, error: errorMessage(error) }));
+    }
+  }
+
+  async function homeFinish(taskId: string, status: string, seq: number) {
+    let result: any = null;
+    try {
+      const fetched = await homeClient().getResult(taskId);
+      if (fetched?.success !== false) result = fetched;
+    } catch {
+      // 결과 조회 실패 시 상태만 표시한다.
+    }
+    if (homeFlowSeq.current !== seq) return;
+    setHome((current: any) => ({
+      ...current,
+      phase: 'done',
+      taskStatus: status,
+      result,
+      notice: status === 'COMPLETED' ? '작업이 완료되었습니다.' : null,
+      error: status === 'COMPLETED' ? null : `작업이 ${status} 상태로 끝났습니다.`
+    }));
+  }
+
+  function homeReset() {
+    homeFlowSeq.current += 1;
+    setHome((current: any) => ({
+      ...current,
+      phase: 'idle',
+      text: '',
+      taskId: null,
+      approval: null,
+      taskStatus: null,
+      result: null,
+      error: null,
+      notice: null
+    }));
+  }
+
   function completeTask() {
     setState((current: any) => appendAudit({
       ...current,
@@ -1846,6 +2059,153 @@ export default function App() {
         ? '세션 잠금을 해제했습니다. 민감 작업 승인 전 재확인을 통과한 상태입니다.'
         : '세션을 잠갔습니다. 민감 작업은 다시 PIN/생체 인증이 필요합니다.'
     }, current.security.locked ? 'Mobile session unlocked.' : 'Mobile session locked.'));
+  }
+
+  function renderHomeScreen() {
+    const paired = state.device.paired && Boolean(state.liveBridge.deviceToken);
+    const busy = ['submitting', 'waiting-approval', 'deciding', 'executing'].includes(home.phase);
+    const approvalCard = home.phase === 'approval' ? home.approval : null;
+    return (
+      <View testID="screen-content-HomeScreen" style={styles.screenStack}>
+        {!paired ? (
+          <View style={styles.homeCard}>
+            <Text style={styles.homeCardTitle}>PC와 연결하기</Text>
+            <Text style={styles.homeHint}>
+              PC에서 발급한 8자리 코드를 입력하세요. QR이나 링크로 열면 자동으로 연결됩니다.
+            </Text>
+            <TextInput
+              testID="home-bridge-url-input"
+              value={state.connection.bridgeUrl}
+              onChangeText={(value) => setState((current: any) => ({
+                ...current,
+                connection: {
+                  ...current.connection,
+                  bridgeUrl: value,
+                  effectiveBridgeUrl: normalizeBridgeUrlForDevice(value)
+                }
+              }))}
+              placeholder="브리지 주소 (http://...)"
+              placeholderTextColor={colors.muted}
+              autoCapitalize="none"
+              style={styles.input}
+            />
+            <TextInput
+              testID="home-pairing-code-input"
+              value={state.device.pairingCode}
+              onChangeText={(value) => setState((current: any) => ({
+                ...current,
+                device: { ...current.device, pairingCode: value, pairingStatus: 'pairing' }
+              }))}
+              placeholder="페어링 코드 8자리"
+              placeholderTextColor={colors.muted}
+              keyboardType="number-pad"
+              style={styles.input}
+            />
+            <Pressable
+              testID="home-pair-button"
+              accessibilityRole="button"
+              accessibilityLabel="PC와 연결"
+              disabled={state.liveBridge.loading}
+              onPress={() => void confirmPairing()}
+              style={[styles.homePrimaryButton, state.liveBridge.loading ? styles.homeButtonDisabled : null]}
+            >
+              <Text style={styles.homePrimaryButtonText}>{state.liveBridge.loading ? '연결 중...' : '연결하기'}</Text>
+            </Pressable>
+            {state.liveBridge.error ? <Text style={styles.warningText}>{state.liveBridge.error}</Text> : null}
+          </View>
+        ) : null}
+
+        <View style={styles.homeCard}>
+          <Text style={styles.homeCardTitle}>무엇을 할까요?</Text>
+          <TextInput
+            testID="home-command-input"
+            value={home.text}
+            onChangeText={(value) => setHome((current: any) => ({ ...current, text: value, error: null }))}
+            placeholder="예: 주간 정산표 엑셀로 만들어줘"
+            placeholderTextColor={colors.muted}
+            multiline
+            editable={!busy}
+            style={styles.homeInput}
+          />
+          <Pressable
+            testID="home-submit-button"
+            accessibilityRole="button"
+            accessibilityLabel="자비스에게 시키기"
+            disabled={busy || !paired}
+            onPress={() => void homeSubmit()}
+            style={[styles.homePrimaryButton, busy || !paired ? styles.homeButtonDisabled : null]}
+          >
+            <Text style={styles.homePrimaryButtonText}>{busy ? '자비스가 일하는 중...' : '자비스에게 시키기'}</Text>
+          </Pressable>
+          {home.notice ? <Text style={styles.homeNotice}>{home.notice}</Text> : null}
+          {home.error ? <Text style={styles.warningText}>{home.error}</Text> : null}
+        </View>
+
+        {approvalCard ? (
+          <View style={[styles.homeCard, styles.homeApprovalCard]}>
+            <Text style={styles.homeCardTitle}>이렇게 진행할까요?</Text>
+            <Text style={styles.homeApprovalTitle}>{approvalCard.title}</Text>
+            {approvalCard.interpretedIntent ? (
+              <Text style={styles.homeHint}>{approvalCard.interpretedIntent}</Text>
+            ) : null}
+            {(approvalCard.planSteps ?? []).slice(0, 3).map((step: string, index: number) => (
+              <Text key={`${index}-${step}`} style={styles.homePlanStep}>· {step}</Text>
+            ))}
+            <View style={styles.homeDecideRow}>
+              <Pressable
+                testID="home-approve-button"
+                accessibilityRole="button"
+                accessibilityLabel="승인"
+                onPress={() => void homeDecide('approve')}
+                style={[styles.homeDecideButton, styles.homeApproveButton]}
+              >
+                <Text style={styles.homePrimaryButtonText}>승인</Text>
+              </Pressable>
+              <Pressable
+                testID="home-reject-button"
+                accessibilityRole="button"
+                accessibilityLabel="거절"
+                onPress={() => void homeDecide('reject')}
+                style={[styles.homeDecideButton, styles.homeRejectButton]}
+              >
+                <Text style={styles.homePrimaryButtonText}>거절</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {home.phase === 'done' ? (
+          <View style={styles.homeCard}>
+            <Text style={styles.homeCardTitle}>
+              {home.taskStatus === 'COMPLETED' ? '✅ 완료했습니다' : `결과: ${home.taskStatus ?? '알 수 없음'}`}
+            </Text>
+            {home.result?.summary ? <Text style={styles.homeHint}>{home.result.summary}</Text> : null}
+            {(home.result?.outputPaths ?? []).map((path: string) => (
+              <Text key={path} style={styles.homePath}>{path}</Text>
+            ))}
+            <Pressable
+              testID="home-new-command-button"
+              accessibilityRole="button"
+              accessibilityLabel="새 명령"
+              onPress={homeReset}
+              style={styles.homePrimaryButton}
+            >
+              <Text style={styles.homePrimaryButtonText}>새 명령 시키기</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <Pressable
+          testID="home-expert-button"
+          accessibilityRole="button"
+          accessibilityLabel="전문가 모드 열기"
+          onPress={() => navigate(MobileRoutes.CommandScreen)}
+          style={styles.homeExpertLink}
+        >
+          <Text style={styles.homeExpertLinkText}>전문가 모드 열기 ›</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   function renderPairingScreen() {
@@ -2368,6 +2728,8 @@ export default function App() {
 
   function renderScreen() {
     switch (route) {
+      case MobileRoutes.HomeScreen:
+        return renderHomeScreen();
       case MobileRoutes.PairingScreen:
         return renderPairingScreen();
       case MobileRoutes.CommandScreen:
@@ -2394,6 +2756,20 @@ export default function App() {
   function renderRouteDock() {
     return (
       <View testID="route-dock" style={styles.routeDock}>
+        <Pressable
+          key={MobileRoutes.HomeScreen}
+          testID={`route-button-${MobileRoutes.HomeScreen}`}
+          accessibilityRole="button"
+          accessibilityLabel="navigate to HomeScreen"
+          accessibilityState={{ selected: route === MobileRoutes.HomeScreen }}
+          hitSlop={6}
+          onPress={() => navigate(MobileRoutes.HomeScreen)}
+          style={[styles.routeButton, route === MobileRoutes.HomeScreen ? styles.routeButtonActive : null]}
+        >
+          <Text style={[styles.routeButtonText, route === MobileRoutes.HomeScreen ? styles.routeButtonTextActive : null]}>
+            홈
+          </Text>
+        </Pressable>
         {shell.routes.map((item: string) => (
           <Pressable
             key={item}
@@ -2414,41 +2790,61 @@ export default function App() {
     );
   }
 
+  const isHome = route === MobileRoutes.HomeScreen;
+
   return (
     <SafeAreaView testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <Text testID="jarvis-mobile-title" accessibilityRole="header" style={styles.title}>JARVIS Mobile</Text>
-          <Text testID="jarvis-current-route" accessibilityLabel={`current route ${route}`} style={styles.currentRoute}>
-            현재 화면: {route}
+          <Text testID="jarvis-mobile-title" accessibilityRole="header" style={styles.title}>
+            {isHome ? 'JARVIS' : 'JARVIS Mobile'}
           </Text>
-          <Text style={styles.routeDescription}>{routeMeta[route as keyof typeof routeMeta]?.description}</Text>
+          <Text
+            testID="jarvis-current-route"
+            accessibilityLabel={`current route ${route}`}
+            style={isHome ? styles.homeSubtitle : styles.currentRoute}
+          >
+            {isHome ? '무엇이든 시키세요' : `현재 화면: ${route}`}
+          </Text>
+          {!isHome ? (
+            <Text style={styles.routeDescription}>{routeMeta[route as keyof typeof routeMeta]?.description}</Text>
+          ) : null}
         </View>
 
         <ConnectionStatusBar connected={state.connection.connected} bridgeUrl={state.connection.bridgeUrl} />
 
-        <NativeRuntimeProbe />
+        {!isHome ? <NativeRuntimeProbe /> : null}
 
-        {renderRouteDock()}
+        {!isHome ? renderRouteDock() : null}
 
-        <View style={styles.statusStrip}>
-          <DataRow label="paired" value={state.device.paired ? 'yes' : 'no'} tone={state.device.paired ? 'good' : 'warning'} />
-          <DataRow label="approval" value={`${state.approvals.items.length} waiting`} tone="warning" />
-          <DataRow label="task" value={state.task.current.status} tone={state.task.current.status === 'COMPLETED' ? 'good' : 'neutral'} />
-          <DataRow label="notifications" value={`${state.notifications.unreadCount} unread`} />
-        </View>
+        {!isHome ? (
+          <View style={styles.statusStrip}>
+            <DataRow label="paired" value={state.device.paired ? 'yes' : 'no'} tone={state.device.paired ? 'good' : 'warning'} />
+            <DataRow label="approval" value={`${state.approvals.items.length} waiting`} tone="warning" />
+            <DataRow label="task" value={state.task.current.status} tone={state.task.current.status === 'COMPLETED' ? 'good' : 'neutral'} />
+            <DataRow label="notifications" value={`${state.notifications.unreadCount} unread`} />
+          </View>
+        ) : null}
 
-        <View style={styles.messageBox}>
-          <Text testID="screen-message" style={styles.messageText}>{state.screenMessage}</Text>
-        </View>
+        {!isHome ? (
+          <View style={styles.messageBox}>
+            <Text testID="screen-message" style={styles.messageText}>{state.screenMessage}</Text>
+          </View>
+        ) : null}
 
         {renderScreen()}
 
-        <Section title="감사 로그" caption="C 입력은 최종 의사로 기록">
-          {state.auditTrail.map((item: any) => (
-            <Text key={item.eventId} style={styles.mutedText}>{item.createdAt} · {item.label}</Text>
-          ))}
-        </Section>
+        {!isHome ? (
+          <Section title="감사 로그" caption="C 입력은 최종 의사로 기록">
+            {state.auditTrail.map((item: any) => (
+              <Text key={item.eventId} style={styles.mutedText}>{item.createdAt} · {item.label}</Text>
+            ))}
+          </Section>
+        ) : (
+          <View style={styles.homeProbeFooter}>
+            <NativeRuntimeProbe />
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -2458,6 +2854,104 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.background
+  },
+  homeSubtitle: {
+    color: colors.muted,
+    fontSize: 15
+  },
+  homeCard: {
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 12,
+    backgroundColor: colors.surface
+  },
+  homeCardTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700'
+  },
+  homeHint: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20
+  },
+  homeInput: {
+    minHeight: 88,
+    padding: spacing.sm,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 8,
+    color: colors.text,
+    fontSize: 17,
+    textAlignVertical: 'top',
+    backgroundColor: colors.background
+  },
+  homePrimaryButton: {
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: colors.accent
+  },
+  homeButtonDisabled: {
+    opacity: 0.45
+  },
+  homePrimaryButtonText: {
+    color: colors.background,
+    fontSize: 17,
+    fontWeight: '700'
+  },
+  homeNotice: {
+    color: colors.accent,
+    fontSize: 14,
+    lineHeight: 20
+  },
+  homeApprovalCard: {
+    borderColor: colors.accent
+  },
+  homeApprovalTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600'
+  },
+  homePlanStep: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18
+  },
+  homeDecideRow: {
+    flexDirection: 'row',
+    gap: spacing.sm
+  },
+  homeDecideButton: {
+    flex: 1,
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10
+  },
+  homeApproveButton: {
+    backgroundColor: colors.accent
+  },
+  homeRejectButton: {
+    backgroundColor: colors.danger
+  },
+  homePath: {
+    color: colors.text,
+    fontSize: 13
+  },
+  homeExpertLink: {
+    alignItems: 'center',
+    paddingVertical: spacing.sm
+  },
+  homeExpertLinkText: {
+    color: colors.muted,
+    fontSize: 14
+  },
+  homeProbeFooter: {
+    opacity: 0.55
   },
   content: {
     padding: spacing.md,

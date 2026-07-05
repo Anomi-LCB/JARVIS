@@ -1,4 +1,8 @@
 export const routeMeta = {
+  HomeScreen: {
+    label: '홈',
+    description: '자비스에게 시키고, 승인하고, 결과를 받는 단일 화면입니다.'
+  },
   PairingScreen: {
     label: '페어링',
     description: 'D Bridge URL과 pairing code로 PC 브릿지에 연결합니다.'

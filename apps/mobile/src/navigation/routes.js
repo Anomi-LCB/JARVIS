@@ -1,4 +1,5 @@
 export const MobileRoutes = Object.freeze({
+  HomeScreen: 'HomeScreen',
   PairingScreen: 'PairingScreen',
   CommandScreen: 'CommandScreen',
   ApprovalQueueScreen: 'ApprovalQueueScreen',
