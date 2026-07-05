@@ -1,5 +1,6 @@
 import { CoreFacade } from '../../../packages/core/src/core-facade.js';
 import { createIntentParserFromEnv } from '../../../packages/core/src/intent/claude-cli-intent-adapter.js';
+import { createTaskPlannerFromEnv } from '../../../packages/core/src/planning/claude-cli-task-planner.js';
 import { CoreOrchestrationWorker } from '../../../packages/core/src/orchestration/core-orchestration-worker.js';
 import { CoreWorkerDaemon } from '../../../packages/core/src/runtime/core-worker-daemon.js';
 import { PolicySecurityRuntime } from '../../policy-security/src/policy-runtime.js';
@@ -40,6 +41,7 @@ export function createAgRuntime(options = {}) {
     memoryStore: growthRuntime,
     verificationEngine: verificationRuntime,
     intentParser: options.intentParser ?? createIntentParserFromEnv({ env: options.env ?? process.env }),
+    taskPlanner: options.taskPlanner ?? createTaskPlannerFromEnv({ env: options.env ?? process.env }),
     clock: options.clock,
     cwd: options.cwd,
     desktopContextProvider: options.desktopContextProvider,

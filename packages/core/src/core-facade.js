@@ -26,7 +26,8 @@ export class CoreFacade {
     desktopContextProvider = null,
     desktopContextCollector = null,
     inputProviderRegistry = null,
-    intentParser = null
+    intentParser = null,
+    taskPlanner = null
   } = {}) {
     this.policyEngine = policyEngine;
     this.memoryStore = memoryStore;
@@ -38,7 +39,7 @@ export class CoreFacade {
     this.intentParser = intentParser ?? new IntentParser();
     this.ambiguityResolver = new AmbiguityResolver({ clock });
     this.contextBuilder = new ContextSnapshotBuilder({ cwd, clock, desktopContextProvider, desktopContextCollector });
-    this.taskPlanner = new TaskPlanner();
+    this.taskPlanner = taskPlanner ?? new TaskPlanner();
     this.skillRouter = new SkillRouter();
     this.orchestrator = new AgentOrchestratorLite({
       clock,

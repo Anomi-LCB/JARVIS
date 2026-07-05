@@ -6,7 +6,7 @@ import { LocalSemanticIntentAdapter, PolicyGatedSemanticIntentAdapter } from './
 
 // LLM은 actionType 선택만 담당한다. 리스크 메타데이터는 이 고정 테이블에서만 부여되므로
 // 모델 출력이 위험 등급을 낮추거나 카테고리를 조작할 수 없다.
-const actionProfiles = Object.freeze({
+export const actionProfiles = Object.freeze({
   [ActionType.CREATE_FILE]: { label: '로컬 산출물 생성', category: 'document', riskHint: 'local-reversible' },
   [ActionType.LIST_FILES]: { label: '파일 목록 조회', category: 'filesystem', riskHint: 'read-only-local' },
   [ActionType.COPY_FILE]: { label: '파일 복사', category: 'filesystem', riskHint: 'local-change' },
@@ -41,6 +41,15 @@ export function buildIntentPrompt(commandText) {
   ].join('\n');
 }
 
+export function createClaudeCliRunner({
+  command = 'claude',
+  model = null,
+  timeoutMs = 45000,
+  shell = process.platform === 'win32'
+} = {}) {
+  return defaultRunner({ command, model, timeoutMs, shell });
+}
+
 function defaultRunner({ command, model, timeoutMs, shell }) {
   return (prompt) => {
     const args = ['-p', '--output-format', 'json'];
@@ -71,7 +80,7 @@ function defaultRunner({ command, model, timeoutMs, shell }) {
   };
 }
 
-function extractJsonObject(text) {
+export function extractJsonObject(text) {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return null;

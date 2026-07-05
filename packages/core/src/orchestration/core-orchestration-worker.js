@@ -705,6 +705,11 @@ export class CoreOrchestrationWorker {
       approvalId: decision.approvalId,
       action: {
         ...task.plan.action,
+        // LLM 이종 복합 계획: 노드가 자체 actionType/toolName을 가지면 토큰도 그 범위로 좁혀 발급한다.
+        // 대표 액션은 가장 위험한 조각으로 승격돼 있으므로 노드 액션은 항상 평가된 위험 이하다.
+        actionType: node.actionType ?? task.plan.action.actionType,
+        toolName: node.toolName ?? task.plan.action.toolName,
+        skillId: node.skillId ?? task.plan.action.skillId,
         capabilityTokenSalt: node.nodeId
       },
       allowedPaths: this.allowedPaths
@@ -718,6 +723,9 @@ export class CoreOrchestrationWorker {
       packetId: stableId('packet', `${basePacket.taskId}:${node.nodeId}`, createdAt),
       action: {
         ...basePacket.action,
+        actionType: node.actionType ?? basePacket.action.actionType,
+        toolName: node.toolName ?? basePacket.action.toolName,
+        skillId: node.skillId ?? basePacket.action.skillId,
         arguments: node.arguments ?? basePacket.action.arguments,
         planGraphNode: {
           nodeId: node.nodeId,

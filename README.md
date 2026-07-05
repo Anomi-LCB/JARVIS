@@ -141,6 +141,31 @@ npm run core:dev -- "요즘 로키드 글래스 신형 나왔는지 궁금하네
   no Claude CLI credentials, so the service path silently falls back to the local parser. Run the
   runtime in a user context (or move the service to a user account) to get LLM intent there.
 
+## LLM plan decomposition (Claude planner)
+
+The A TaskPlanner can decompose composite commands into heterogeneous multi-action DAG plans
+through `packages/core/src/planning/claude-cli-task-planner.js`. Off by default; enable with
+`JARVIS_LLM_PLANNER=1`.
+
+```bash
+set JARVIS_LLM_PLANNER=1
+npm run core:dev -- "주간 정산표 엑셀로 만들고 그리고 로키드 글래스 최신 뉴스도 검색해줘"
+```
+
+- Trigger: only commands where the rule parser detects composite complexity
+  (`needsPlanDecomposition`) pay the LLM round trip; simple commands keep the base planner.
+- Decomposition: each part gets its own `actionType`, skill route, and arguments
+  (e.g. `excel.createWorkbook` + `browser.search` in one plan). Worker node packets and node
+  capability tokens follow the per-node action.
+- Safety: the plan's primary action is escalated to the riskiest part (same tier table as the E
+  default risk map), so `E.evaluatePlan` always judges the worst case and a risky fragment
+  (delete/external transfer) inside a composite command cannot slip past policy. LLM failure or
+  malformed output falls back to the base planner decomposition.
+- Evidence: the plan carries `llmPlanning` (model, latency, part count, riskEscalated flag) and
+  per-part risk notes on the approval card.
+- Tuning: `JARVIS_LLM_PLANNER_MODEL` (default `haiku`), `JARVIS_LLM_PLANNER_TIMEOUT_MS`
+  (default 45000), `JARVIS_LLM_PLANNER_COMMAND` (default `claude`).
+
 ## Local execution safety
 
 Local PC control is deny-by-default:
