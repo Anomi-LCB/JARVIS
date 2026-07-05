@@ -327,6 +327,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File dist/core-service-package/ru
 
 The package generation step is safe and does not install the service by itself. The install/update/start/stop/restart/uninstall/install-all PowerShell scripts require an Administrator shell.
 
+## Always-on bridge (mobile deployment)
+
+```bash
+npm run bridge:install-autostart
+npm run bridge:pair
+```
+
+`bridge:install-autostart` registers the `JarvisBridge` logon scheduled task. It runs the D
+bridge in the **user session** (so the Claude CLI LLM features stay available), binds
+`0.0.0.0:17777` (the built-in network guard still rejects non-private clients), auto-detects the
+LAN IP for `JARVIS_BRIDGE_URL` so pairing QR payloads advertise a phone-reachable address, and
+restarts up to 3 times on failure. An inbound firewall rule for TCP 17777 (Private/Domain
+profiles) is required once: `New-NetFirewallRule -DisplayName "JARVIS Bridge 17777" -Direction
+Inbound -Action Allow -Protocol TCP -LocalPort 17777 -Profile Private,Domain` from an
+Administrator shell. Logs: `logs/bridge-runtime.out.log`, `logs/bridge-launcher.log`.
+
+`bridge:pair` starts a 5-minute pairing session and prints the bridge URL + 8-digit code to
+enter in the mobile app's pairing screen.
+
 ## Mobile verification
 
 ```bash

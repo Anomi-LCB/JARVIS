@@ -74,6 +74,8 @@
     "shadow:approval-soak": "node scripts/shadow-approval-soak.mjs",
     "browser:replay-soak": "node scripts/browser-replay-soak.mjs",
     "bridge:dev": "node apps/bridge/src/main.mjs",
+    "bridge:pair": "node scripts/bridge-pairing-start.mjs",
+    "bridge:install-autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-bridge-autostart.ps1",
     "policy:dev": "node apps/policy-security/src/main.mjs",
     "growth:dev": "node apps/growth-memory/src/main.mjs",
     "growth:quality": "node scripts/growth-quality-corpus.mjs",
