@@ -38,6 +38,16 @@ import {
 import { colors } from './theme/colors';
 import { spacing } from './theme/spacing';
 import {
+  approvalSpeech,
+  resultSpeech,
+  speak,
+  startListening,
+  stopListening,
+  stopSpeaking,
+  useVoiceEvents,
+  voiceSupport
+} from './voice/voiceMode';
+import {
   createMobileProductState,
   decisionLabels,
   feedbackLabels,
@@ -225,9 +235,58 @@ export default function App() {
     taskStatus: null,
     result: null,
     error: null,
-    notice: null
+    notice: null,
+    listening: false,
+    voiceOn: true
   });
   const homeFlowSeq = useRef(0);
+  // TTS on/off는 비동기 흐름(승인 폴링/완료)에서도 최신값을 읽어야 하므로 ref로 미러링한다.
+  const homeVoiceOnRef = useRef(true);
+
+  // ── 음성 대화모드: 마이크 인식 결과 → 명령 입력, 최종 인식 시 자동 제출 ──
+  useVoiceEvents({
+    onResult: (transcript, isFinal) => {
+      setHome((current: any) => ({ ...current, text: transcript, error: null }));
+      if (isFinal) {
+        setHome((current: any) => ({ ...current, listening: false }));
+        void homeSubmit(transcript);
+      }
+    },
+    onEnd: () => {
+      setHome((current: any) => ({ ...current, listening: false }));
+    },
+    onError: (message) => {
+      setHome((current: any) => ({ ...current, listening: false, error: message }));
+    }
+  });
+
+  async function homeToggleListening() {
+    if (home.listening) {
+      stopListening();
+      setHome((current: any) => ({ ...current, listening: false }));
+      return;
+    }
+    stopSpeaking();
+    try {
+      await startListening();
+      setHome((current: any) => ({ ...current, listening: true, error: null, text: '' }));
+    } catch (error) {
+      setHome((current: any) => ({ ...current, listening: false, error: errorMessage(error) }));
+    }
+  }
+
+  function homeToggleVoice() {
+    setHome((current: any) => {
+      const next = !current.voiceOn;
+      homeVoiceOnRef.current = next;
+      if (!next) stopSpeaking();
+      return { ...current, voiceOn: next };
+    });
+  }
+
+  function homeSpeak(text: string) {
+    speak(text, { enabled: homeVoiceOnRef.current });
+  }
   const effectiveBridgeUrl = normalizeBridgeUrlForDevice(state.connection.bridgeUrl);
 
   const selectedApproval = state.approvals.items.find((item: any) => item.approvalId === state.approvals.selectedApprovalId)
@@ -1615,6 +1674,7 @@ export default function App() {
         ));
         if (card) {
           setHome((current: any) => ({ ...current, phase: 'approval', approval: card, notice: null }));
+          homeSpeak(approvalSpeech(card));
           return;
         }
         const status = homeTaskStatusOf(await client.getTaskStatus(taskId));
@@ -1717,6 +1777,7 @@ export default function App() {
       notice: status === 'COMPLETED' ? '작업이 완료되었습니다.' : null,
       error: status === 'COMPLETED' ? null : `작업이 ${status} 상태로 끝났습니다.`
     }));
+    homeSpeak(resultSpeech(status, result));
   }
 
   function homeReset() {
@@ -2135,27 +2196,60 @@ export default function App() {
         ) : null}
 
         <View style={styles.homeCard}>
-          <Text style={styles.homeCardTitle}>무엇을 할까요?</Text>
+          <View style={styles.homeCardTitleRow}>
+            <Text style={styles.homeCardTitle}>무엇을 할까요?</Text>
+            {voiceSupport.tts ? (
+              <Pressable
+                testID="home-voice-toggle"
+                accessibilityRole="button"
+                accessibilityLabel={home.voiceOn ? '음성 답변 끄기' : '음성 답변 켜기'}
+                onPress={homeToggleVoice}
+                style={styles.homeVoiceToggle}
+              >
+                <Text style={styles.homeVoiceToggleText}>{home.voiceOn ? '🔊 음성 답변 켬' : '🔇 음성 답변 끔'}</Text>
+              </Pressable>
+            ) : null}
+          </View>
           <TextInput
             testID="home-command-input"
             value={home.text}
             onChangeText={(value) => setHome((current: any) => ({ ...current, text: value, error: null }))}
-            placeholder="예: 주간 정산표 엑셀로 만들어줘"
+            placeholder={home.listening ? '듣고 있어요... 말씀해 주세요' : '예: 주간 정산표 엑셀로 만들어줘'}
             placeholderTextColor={colors.muted}
             multiline
-            editable={!busy}
+            editable={!busy && !home.listening}
             style={styles.homeInput}
           />
-          <Pressable
-            testID="home-submit-button"
-            accessibilityRole="button"
-            accessibilityLabel="자비스에게 시키기"
-            disabled={busy || !paired}
-            onPress={() => void homeSubmit()}
-            style={[styles.homePrimaryButton, busy || !paired ? styles.homeButtonDisabled : null]}
-          >
-            <Text style={styles.homePrimaryButtonText}>{busy ? '자비스가 일하는 중...' : '자비스에게 시키기'}</Text>
-          </Pressable>
+          <View style={styles.homeCommandButtonRow}>
+            {voiceSupport.stt ? (
+              <Pressable
+                testID="home-mic-button"
+                accessibilityRole="button"
+                accessibilityLabel={home.listening ? '음성 인식 중지' : '말로 시키기'}
+                disabled={busy || !paired}
+                onPress={() => void homeToggleListening()}
+                style={[
+                  styles.homeMicButton,
+                  home.listening ? styles.homeMicButtonActive : null,
+                  busy || !paired ? styles.homeButtonDisabled : null
+                ]}
+              >
+                <Text style={home.listening ? styles.homePrimaryButtonText : styles.homeMicButtonText}>
+                  {home.listening ? '🎙️ 듣는 중' : '🎤 말하기'}
+                </Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              testID="home-submit-button"
+              accessibilityRole="button"
+              accessibilityLabel="자비스에게 시키기"
+              disabled={busy || !paired}
+              onPress={() => void homeSubmit()}
+              style={[styles.homePrimaryButton, styles.homeSubmitButton, busy || !paired ? styles.homeButtonDisabled : null]}
+            >
+              <Text style={styles.homePrimaryButtonText}>{busy ? '자비스가 일하는 중...' : '자비스에게 시키기'}</Text>
+            </Pressable>
+          </View>
           {home.notice ? <Text style={styles.homeNotice}>{home.notice}</Text> : null}
           {home.error ? <Text style={styles.warningText}>{home.error}</Text> : null}
         </View>
@@ -2915,6 +3009,48 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 10,
     backgroundColor: colors.accent
+  },
+  homeCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  homeVoiceToggle: {
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line
+  },
+  homeVoiceToggleText: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  homeCommandButtonRow: {
+    flexDirection: 'row',
+    gap: spacing.sm
+  },
+  homeMicButton: {
+    minHeight: 52,
+    minWidth: 110,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    backgroundColor: colors.background
+  },
+  homeMicButtonActive: {
+    backgroundColor: colors.warning,
+    borderColor: colors.warning
+  },
+  homeMicButtonText: {
+    color: colors.accent,
+    fontSize: 17,
+    fontWeight: '700'
+  },
+  homeSubmitButton: {
+    flex: 1
   },
   homeButtonDisabled: {
     opacity: 0.45
