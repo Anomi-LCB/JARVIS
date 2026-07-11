@@ -57,6 +57,32 @@ export function buildPlanDecompositionPrompt(commandText, { preferenceHints = []
   ].join('\n');
 }
 
+// 명령에 "실제로 채워 넣을 내용/주제"가 있는지 판별한다.
+// "메모 만들어"처럼 생성 동사와 파일 종류만 있는 명령은 LLM이 만들어봐야
+// 플레이스홀더 템플릿뿐이므로, 로컬 기본 템플릿으로 즉시 처리하고 CLI 왕복(수십 초)을 건너뛴다.
+// 구체 주제·수치·항목이 담긴 명령만 콘텐츠 LLM을 태운다.
+const contentStopWords = new Set([
+  '메모', '문서', '파일', '엑셀', '시트', '표', '보고서', '회의록', '노트', '텍스트',
+  '만들어', '만들어줘', '만들기', '생성', '생성해', '생성해줘', '작성', '작성해', '작성해줘',
+  '해줘', '해', '줘', '좀', '하나', '새', '새로', '새로운', 'please', '만들', '적어', '적어줘',
+  '기록', '기록해', '남겨', '남겨줘', 'txt', 'xlsx', 'csv'
+]);
+
+export function commandHasDraftableContent(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return false;
+  // 수치·기간·비율 등 구체 데이터가 있으면 내용이 있다고 본다.
+  if (/\d/.test(raw)) return true;
+  const tokens = raw
+    .replace(/[.,!?~…()[\]{}'"'"「」·:/\\-]/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.replace(/(으로|로|를|을|이|가|는|은|의|에|와|과|도|만)$/u, ''))
+    .filter(Boolean)
+    .filter((token) => !contentStopWords.has(token) && !contentStopWords.has(token.toLowerCase()));
+  // 생성어/파일종류어를 걷어낸 뒤 남는 유의미 토큰이 있으면 구체 주제가 있는 것.
+  return tokens.some((token) => token.length >= 2);
+}
+
 export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [] }) {
   const format = outputFormat === 'xlsx' ? 'xlsx' : 'txt';
   return [
@@ -96,6 +122,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     contentEnabled = false,
     contentModel = 'haiku',
     contentTimeoutMs = 90000,
+    contentSmartSkip = true,
     clarifyEnabled = true,
     clarifyConfidenceThreshold = 0.7,
     runner = null,
@@ -110,6 +137,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     this.contentModel = contentModel;
     this.maxCommandLength = maxCommandLength;
     this.contentEnabled = contentEnabled;
+    this.contentSmartSkip = contentSmartSkip;
     this.clarifyEnabled = clarifyEnabled;
     this.clarifyConfidenceThreshold = clarifyConfidenceThreshold;
     this.clock = clock;
@@ -286,6 +314,8 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const base = super.argumentsFor(intent, taskRequest, contextSnapshot);
     if (!this.contentEnabled || intent.actionType !== ActionType.CREATE_FILE) return base;
     const sourceText = intent.slots?.llmPartText ?? taskRequest.command.rawText;
+    // 채울 내용이 없는 단순 생성 명령은 콘텐츠 LLM을 건너뛰고 로컬 기본 템플릿을 쓴다(수십 초 절감).
+    if (this.contentSmartSkip && !commandHasDraftableContent(sourceText)) return base;
     const draft = this.draftContentFor({
       text: sourceText,
       outputFormat: base.outputFormat ?? intent.slots?.outputFormat ?? 'txt',
@@ -444,6 +474,8 @@ export function createTaskPlannerFromEnv({ env = process.env, runner = null, clo
     // 최고 품질을 원하면 JARVIS_LLM_CONTENT_MODEL=sonnet (지연 편차 큼, 타임아웃도 함께 늘릴 것).
     contentModel: env.JARVIS_LLM_CONTENT_MODEL ?? 'haiku',
     contentTimeoutMs: Number(env.JARVIS_LLM_CONTENT_TIMEOUT_MS ?? 90000),
+    // 내용 없는 단순 생성 명령은 콘텐츠 LLM을 건너뛴다(기본 ON). 끄려면 JARVIS_LLM_CONTENT_SMART_SKIP=0.
+    contentSmartSkip: env.JARVIS_LLM_CONTENT_SMART_SKIP !== '0' && env.JARVIS_LLM_CONTENT_SMART_SKIP !== 'false',
     runner,
     clock
   });
