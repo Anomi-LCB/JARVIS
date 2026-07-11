@@ -31,13 +31,31 @@ export const voiceSupport = {
 // TTS 낭독 상한: Android TTS 엔진의 4000자 제한 아래로 자른다.
 const maxSpeakChars = 3600;
 
+// 말하기 속도(0.1~1.0). 한국어 기본 TTS는 빠르게 들려서 살짝 낮춘 값을 기본으로 둔다.
+// 사용자 설정으로 조절하며, SecureStore 등에서 불러온 값을 setSpeechRate로 주입한다.
+export const speechRatePresets = [
+  { id: 'slow', label: '느리게', rate: 0.6 },
+  { id: 'normal', label: '보통', rate: 0.85 },
+  { id: 'fast', label: '빠르게', rate: 1.1 }
+] as const;
+
+let currentSpeechRate = 0.85;
+
+export function setSpeechRate(rate: number) {
+  if (Number.isFinite(rate) && rate > 0) currentSpeechRate = Math.min(1.6, Math.max(0.3, rate));
+}
+
+export function getSpeechRate(): number {
+  return currentSpeechRate;
+}
+
 export function speak(text: unknown, options: { enabled?: boolean } = {}) {
   if (options.enabled === false || !voiceSupport.tts) return;
   const body = String(text ?? '').trim();
   if (!body) return;
   try {
     Speech.stop();
-    Speech.speak(body.slice(0, maxSpeakChars), { language: 'ko-KR' });
+    Speech.speak(body.slice(0, maxSpeakChars), { language: 'ko-KR', rate: currentSpeechRate });
   } catch {
     // 낭독 실패는 흐름을 막지 않는다.
   }
@@ -62,6 +80,7 @@ export function speakAsync(text: unknown, options: { enabled?: boolean } = {}): 
       Speech.stop();
       Speech.speak(body.slice(0, maxSpeakChars), {
         language: 'ko-KR',
+        rate: currentSpeechRate,
         onDone: () => resolve(),
         onStopped: () => resolve(),
         onError: () => resolve()
@@ -158,12 +177,24 @@ export function approvalSpeech(card: any): string {
   return parts.join(' ');
 }
 
-// 완료 상태를 음성 안내문으로 요약한다.
+// 경로에서 파일명만 뽑는다.
+export function fileNameOf(path: unknown): string {
+  return String(path ?? '').split(/[\\/]/).filter(Boolean).at(-1) ?? '';
+}
+
+// 완료 상태를 음성 안내문으로 요약한다. 무엇을 만들었는지(파일명)를 분명히 말한다.
 export function resultSpeech(status: string, result: any): string {
   if (status === 'COMPLETED') {
+    const files = (result?.outputPaths ?? []).map(fileNameOf).filter(Boolean);
     const summary = result?.summary ? String(result.summary) : '';
-    return summary ? `작업을 완료했습니다. ${summary}` : '작업을 완료했습니다.';
+    if (files.length) {
+      const fileList = files.slice(0, 3).join(', ');
+      const base = `${fileList} 파일을 만들어 PC에 저장했어요.`;
+      return summary ? `${base} ${summary}` : base;
+    }
+    return summary ? `완료했어요. ${summary}` : '요청하신 작업을 완료했어요.';
   }
-  if (status === 'CANCELLED') return '작업을 취소했습니다.';
-  return `작업이 끝났지만 ${status} 상태입니다. 화면을 확인해 주세요.`;
+  if (status === 'CANCELLED') return '작업을 취소했어요.';
+  if (status === 'BLOCKED') return '안전 정책에 걸려 작업을 진행하지 못했어요. 화면을 확인해 주세요.';
+  return `작업이 ${status} 상태로 끝났어요. 화면을 확인해 주세요.`;
 }

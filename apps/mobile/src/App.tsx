@@ -6,6 +6,7 @@ import {
   Platform,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Pressable,
   Text,
@@ -40,9 +41,12 @@ import { colors } from './theme/colors';
 import { spacing } from './theme/spacing';
 import {
   approvalSpeech,
+  getSpeechRate,
   resultSpeech,
+  setSpeechRate,
   speak,
   speakAsync,
+  speechRatePresets,
   startListening,
   stopListening,
   stopSpeaking,
@@ -222,6 +226,12 @@ function applyLiveBridgeState(state: any, patch: Record<string, unknown>) {
   };
 }
 
+// 홈 흐름 폴링: 촘촘한 간격으로 승인 카드/실행 완료를 즉시 감지한다.
+// 총 대기 = interval * max. 콘텐츠 LLM(최대 90s)까지 커버하도록 넉넉히 잡는다.
+const homePollIntervalMs = 500;
+const homeApprovalPollMax = 200; // 최대 ~100초
+const homeExecutePollMax = 160;  // 최대 ~80초
+
 export default function App() {
   const shell = useMemo(() => createMobileAppShell(), []);
   const appStateRef = useRef(AppState.currentState);
@@ -245,6 +255,32 @@ export default function App() {
   const homeFlowSeq = useRef(0);
   // TTS on/off는 비동기 흐름(승인 폴링/완료)에서도 최신값을 읽어야 하므로 ref로 미러링한다.
   const homeVoiceOnRef = useRef(true);
+  // 말하기 속도 프리셋 선택 상태. 저장된 값을 불러와 voiceMode에 주입한다.
+  const [speechRateId, setSpeechRateId] = useState<string>('normal');
+  useEffect(() => {
+    void (async () => {
+      try {
+        const saved = await SecureStore.getItemAsync('jarvis_speech_rate');
+        const preset = speechRatePresets.find((p) => p.id === saved);
+        if (preset) {
+          setSpeechRateId(preset.id);
+          setSpeechRate(preset.rate);
+        } else {
+          setSpeechRate(getSpeechRate());
+        }
+      } catch {
+        // 저장값 없음 — 기본 속도 유지
+      }
+    })();
+  }, []);
+
+  function homeSelectRate(preset: { id: string; rate: number }) {
+    setSpeechRateId(preset.id);
+    setSpeechRate(preset.rate);
+    void SecureStore.setItemAsync('jarvis_speech_rate', preset.id).catch(() => {});
+    // 선택한 속도를 바로 체감하도록 짧게 시연한다.
+    speak('이 속도로 말할게요.', { enabled: true });
+  }
 
   // ── 대화 모드(연속 음성 대화) 상태: 듣기 → 생각 → 말하기 턴이 자동 순환한다 ──
   const [conv, setConv] = useState<{ active: boolean; phase: 'listening' | 'thinking' | 'speaking'; transcript: string }>({
@@ -1840,7 +1876,9 @@ export default function App() {
 
   async function homeTrackApproval(taskId: string, seq: number) {
     const client = homeClient();
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    // 500ms 간격으로 촘촘히 폴링해 승인 카드가 준비되는 즉시 띄운다.
+    // 내용 있는 명령은 콘텐츠 LLM(~35s, 최대 90s)을 타므로 총 대기를 넉넉히 잡는다.
+    for (let attempt = 0; attempt < homeApprovalPollMax; attempt += 1) {
       if (homeFlowSeq.current !== seq) return;
       try {
         const approvals = await client.getApprovals();
@@ -1860,7 +1898,7 @@ export default function App() {
       } catch {
         // 폴링 중 일시 오류는 다음 시도에서 회복한다.
       }
-      await homeSleep(1500);
+      await homeSleep(homePollIntervalMs);
     }
     if (homeFlowSeq.current !== seq) return;
     setHome((current: any) => ({
@@ -1910,14 +1948,14 @@ export default function App() {
         }
       }
       setHome((current: any) => ({ ...current, phase: 'executing', notice: 'PC에서 실행하는 중입니다...' }));
-      for (let attempt = 0; attempt < 40; attempt += 1) {
+      for (let attempt = 0; attempt < homeExecutePollMax; attempt += 1) {
         if (homeFlowSeq.current !== seq) return;
         const status = homeTaskStatusOf(await client.getTaskStatus(card.taskId).catch(() => null));
         if (['COMPLETED', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(String(status))) {
           await homeFinish(card.taskId, String(status), seq);
           return;
         }
-        await homeSleep(1500);
+        await homeSleep(homePollIntervalMs);
       }
       setHome((current: any) => ({
         ...current,
@@ -1935,6 +1973,7 @@ export default function App() {
       if (fetched?.success !== false && fetched) {
         const execution = fetched.executionResult ?? fetched.execution?.executionResult ?? {};
         result = {
+          command: String(homeRef.current.text ?? '').trim(),
           summary: execution.summary ?? fetched.summary ?? null,
           outputPaths: execution.outputPaths ?? fetched.outputPaths ?? [],
           rollbackAvailable: execution.rollbackAvailable ?? fetched.rollbackAvailable ?? false
@@ -2438,6 +2477,25 @@ export default function App() {
               <Text style={styles.convEnterButtonText}>🎙️ 대화 모드 — 말로 주고받기</Text>
             </Pressable>
           ) : null}
+          {voiceSupport.tts ? (
+            <View style={styles.homeRateRow}>
+              <Text style={styles.homeRateLabel}>말 속도</Text>
+              {speechRatePresets.map((preset) => (
+                <Pressable
+                  key={preset.id}
+                  testID={`home-rate-${preset.id}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`말 속도 ${preset.label}`}
+                  onPress={() => homeSelectRate(preset)}
+                  style={[styles.homeRateChip, speechRateId === preset.id ? styles.homeRateChipActive : null]}
+                >
+                  <Text style={[styles.homeRateChipText, speechRateId === preset.id ? styles.homeRateChipTextActive : null]}>
+                    {preset.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           {home.notice ? <Text style={styles.homeNotice}>{home.notice}</Text> : null}
           {home.error ? <Text style={styles.warningText}>{home.error}</Text> : null}
         </View>
@@ -2505,17 +2563,26 @@ export default function App() {
         ) : null}
 
         {home.phase === 'done' ? (
-          <View style={styles.homeCard}>
+          <View style={[styles.homeCard, home.taskStatus === 'COMPLETED' ? styles.homeDoneCard : null]}>
             <Text style={styles.homeCardTitle}>
-              {home.taskStatus === 'COMPLETED' ? '✅ 완료했습니다' : `결과: ${home.taskStatus ?? '알 수 없음'}`}
+              {home.taskStatus === 'COMPLETED' ? '✅ 완료했어요' : `결과: ${home.taskStatus ?? '알 수 없음'}`}
             </Text>
-            {home.result?.summary ? <Text style={styles.homeHint}>{home.result.summary}</Text> : null}
-            {(home.result?.outputPaths ?? []).length ? (
-              <Text style={styles.homeHint}>PC에 결과가 저장되어 화면에 열렸습니다.</Text>
+            {home.result?.command ? (
+              <Text style={styles.homeDoneCommand}>요청: "{home.result.command}"</Text>
             ) : null}
-            {(home.result?.outputPaths ?? []).map((path: string) => (
-              <Text key={path} style={styles.homePath}>{path.split(/[\\/]/).filter(Boolean).at(-1)}</Text>
-            ))}
+            {(home.result?.outputPaths ?? []).length ? (
+              <View style={styles.homeDoneFilesBox}>
+                <Text style={styles.homeDoneLabel}>만든 파일</Text>
+                {(home.result?.outputPaths ?? []).map((path: string) => (
+                  <Text key={path} style={styles.homeDoneFile}>📄 {String(path).split(/[\\/]/).filter(Boolean).at(-1)}</Text>
+                ))}
+                <Text style={styles.homeDoneWhere}>PC에 저장되고 화면에 열렸어요.</Text>
+              </View>
+            ) : null}
+            {home.result?.summary ? <Text style={styles.homeHint}>{home.result.summary}</Text> : null}
+            {home.taskStatus === 'COMPLETED' && !(home.result?.outputPaths ?? []).length && !home.result?.summary ? (
+              <Text style={styles.homeHint}>요청하신 작업을 처리했어요.</Text>
+            ) : null}
             <Pressable
               testID="home-new-command-button"
               accessibilityRole="button"
@@ -3095,8 +3162,13 @@ export default function App() {
   // 사용자 앱은 항상 홈 레이아웃(집사 화면)만 사용한다.
   const isHome = true;
 
+  // Android edge-to-edge에서는 SafeAreaView가 상단 상태바 인셋을 처리하지 못해
+  // 콘텐츠가 시계/배터리 영역으로 파고든다. 상태바 높이만큼 상단 여백을 직접 준다.
+  const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) : 0;
+
   return (
-    <SafeAreaView testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={styles.root}>
+    <SafeAreaView testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={[styles.root, { paddingTop: topInset }]}>
+      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Text testID="jarvis-mobile-title" accessibilityRole="header" style={styles.title}>
@@ -3151,7 +3223,7 @@ export default function App() {
       </ScrollView>
 
       {conv.active ? (
-        <View testID="conversation-overlay" style={styles.convOverlay}>
+        <View testID="conversation-overlay" style={[styles.convOverlay, { paddingTop: topInset + spacing.lg }]}>
           <View style={styles.convTopRow}>
             <Text style={styles.convHint}>"종료"라고 말해도 닫혀요</Text>
             <Pressable
@@ -3277,6 +3349,64 @@ const styles = StyleSheet.create({
   homeVoiceToggleText: {
     color: colors.muted,
     fontSize: 13
+  },
+  homeDoneCard: {
+    borderColor: colors.info
+  },
+  homeDoneCommand: {
+    color: colors.muted,
+    fontSize: 14,
+    fontStyle: 'italic'
+  },
+  homeDoneFilesBox: {
+    gap: 4,
+    padding: spacing.sm,
+    borderRadius: 8,
+    backgroundColor: colors.background
+  },
+  homeDoneLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  homeDoneFile: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600'
+  },
+  homeDoneWhere: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  homeRateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    flexWrap: 'wrap'
+  },
+  homeRateLabel: {
+    color: colors.muted,
+    fontSize: 13,
+    marginRight: spacing.xs
+  },
+  homeRateChip: {
+    paddingVertical: 6,
+    paddingHorizontal: spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.line
+  },
+  homeRateChipActive: {
+    borderColor: colors.accent,
+    backgroundColor: colors.surface
+  },
+  homeRateChipText: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  homeRateChipTextActive: {
+    color: colors.text,
+    fontWeight: '700'
   },
   homeCommandButtonRow: {
     flexDirection: 'row',
