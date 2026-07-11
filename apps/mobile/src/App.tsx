@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   AppState,
   Linking,
   Platform,
@@ -41,12 +42,14 @@ import {
   approvalSpeech,
   resultSpeech,
   speak,
+  speakAsync,
   startListening,
   stopListening,
   stopSpeaking,
   useVoiceEvents,
   voiceSupport
 } from './voice/voiceMode';
+import { classifyUtterance } from './voice/conversation';
 import {
   createMobileProductState,
   decisionLabels,
@@ -243,9 +246,29 @@ export default function App() {
   // TTS on/off는 비동기 흐름(승인 폴링/완료)에서도 최신값을 읽어야 하므로 ref로 미러링한다.
   const homeVoiceOnRef = useRef(true);
 
-  // ── 음성 대화모드: 마이크 인식 결과 → 명령 입력, 최종 인식 시 자동 제출 ──
+  // ── 대화 모드(연속 음성 대화) 상태: 듣기 → 생각 → 말하기 턴이 자동 순환한다 ──
+  const [conv, setConv] = useState<{ active: boolean; phase: 'listening' | 'thinking' | 'speaking'; transcript: string }>({
+    active: false,
+    phase: 'listening',
+    transcript: ''
+  });
+  const convRef = useRef(conv);
+  useEffect(() => { convRef.current = conv; }, [conv]);
+  const homeRef = useRef(home);
+  useEffect(() => { homeRef.current = home; }, [home]);
+  // 같은 승인카드/결과를 중복 낭독하지 않기 위한 키.
+  const convSpokenKeyRef = useRef('');
+  // 인식 오류 연속 재시도 상한 (음성 결과가 나오면 리셋).
+  const convRetryRef = useRef(0);
+
+  // ── 음성 이벤트 라우팅: 단발 마이크(홈 입력)와 대화 모드를 함께 처리한다 ──
   useVoiceEvents({
     onResult: (transcript, isFinal) => {
+      if (convRef.current.active) {
+        setConv((current) => ({ ...current, transcript }));
+        if (isFinal) void convHandleUtterance(transcript);
+        return;
+      }
       setHome((current: any) => ({ ...current, text: transcript, error: null }));
       if (isFinal) {
         setHome((current: any) => ({ ...current, listening: false }));
@@ -253,12 +276,162 @@ export default function App() {
       }
     },
     onEnd: () => {
+      if (convRef.current.active) {
+        // 침묵 등으로 인식이 끝났으면 대화가 이어지도록 조용히 다시 듣는다.
+        if (convRef.current.phase === 'listening') void convListen(600);
+        return;
+      }
       setHome((current: any) => ({ ...current, listening: false }));
     },
     onError: (message) => {
+      if (convRef.current.active) {
+        if (convRef.current.phase === 'listening') {
+          convRetryRef.current += 1;
+          if (convRetryRef.current > 8) {
+            convExit(false);
+            setHome((current: any) => ({ ...current, error: `음성 인식이 계속 실패해 대화 모드를 종료했습니다. (${message})` }));
+            return;
+          }
+          void convListen(900);
+        }
+        return;
+      }
       setHome((current: any) => ({ ...current, listening: false, error: message }));
     }
   });
+
+  async function convListen(delayMs = 0) {
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    if (!convRef.current.active) return;
+    stopSpeaking();
+    try {
+      await startListening();
+      setConv((current) => ({ ...current, phase: 'listening', transcript: '' }));
+    } catch (error) {
+      // 마이크 권한 거부 등 — 대화 모드를 접고 사유를 홈에 표시한다.
+      convExit(false);
+      setHome((current: any) => ({ ...current, error: errorMessage(error) }));
+    }
+  }
+
+  async function convSay(text: string) {
+    stopListening();
+    setConv((current) => ({ ...current, phase: 'speaking' }));
+    await speakAsync(text);
+  }
+
+  async function convSayThenListen(text: string) {
+    await convSay(text);
+    await convListen();
+  }
+
+  async function convHandleUtterance(transcript: string) {
+    convRetryRef.current = 0;
+    setConv((current) => ({ ...current, phase: 'thinking', transcript }));
+    const h = homeRef.current;
+    const awaitingDecision = h.phase === 'approval' && h.approval;
+    const intent = classifyUtterance(transcript, { awaitingDecision: Boolean(awaitingDecision) });
+    if (intent === 'exit') {
+      convExit(true);
+      return;
+    }
+    if (awaitingDecision) {
+      if (intent === 'approve') {
+        await convSay('네, 진행합니다.');
+        void homeDecide('approve');
+        return;
+      }
+      if (intent === 'reject') {
+        await convSay('알겠습니다. 취소합니다.');
+        void homeDecide('reject');
+        return;
+      }
+      // 명료화 답변/추가 정보 → 그 내용으로 다시 계획한다.
+      await convSay('그 정보로 다시 계획해 볼게요.');
+      void homeResubmitWithAnswer(transcript);
+      return;
+    }
+    void homeSubmit(transcript);
+  }
+
+  function convEnter() {
+    if (!voiceSupport.stt) {
+      setHome((current: any) => ({ ...current, error: '이 빌드는 음성 인식을 지원하지 않습니다.' }));
+      return;
+    }
+    stopListening();
+    convSpokenKeyRef.current = '';
+    setConv({ active: true, phase: 'speaking', transcript: '' });
+    void (async () => {
+      await speakAsync('대화 모드를 시작합니다. 무엇을 도와드릴까요?');
+      await convListen();
+    })();
+  }
+
+  function convExit(sayGoodbye: boolean) {
+    stopListening();
+    stopSpeaking();
+    setConv({ active: false, phase: 'listening', transcript: '' });
+    if (sayGoodbye) speak('대화 모드를 종료합니다.', { enabled: true });
+  }
+
+  // 홈 흐름의 국면 전환을 대화 모드가 뒤따라 말한다: 승인카드 도착 → 낭독+결정 듣기, 완료 → 결과 낭독+다음 명령 듣기.
+  useEffect(() => {
+    if (!conv.active) return;
+    if (home.phase === 'approval' && home.approval) {
+      const key = `approval:${home.approval.approvalId ?? home.taskId}`;
+      if (!convSpokenKeyRef.current.startsWith(key)) {
+        convSpokenKeyRef.current = key;
+        const hasQuestions = (home.approval.clarifyingQuestions ?? []).length > 0;
+        const prompt = hasQuestions ? ' 답을 말씀해 주세요.' : ' 진행하려면 승인, 멈추려면 거절이라고 말씀해 주세요.';
+        void convSayThenListen(approvalSpeech(home.approval) + prompt);
+        return;
+      }
+      // 카드 낭독 후 생긴 공지(예: 고위험이라 모바일 승인 차단)도 말해줘야 대화가 멈추지 않는다.
+      if (home.notice) {
+        const noticeKey = `${key}:notice:${home.notice}`;
+        if (convSpokenKeyRef.current !== noticeKey) {
+          convSpokenKeyRef.current = noticeKey;
+          void convSayThenListen(`${home.notice} 다른 명령을 말씀하거나 거절이라고 해주세요.`);
+        }
+      }
+      return;
+    }
+    if (home.phase === 'done') {
+      const key = `done:${home.taskId ?? ''}:${home.taskStatus ?? ''}`;
+      if (convSpokenKeyRef.current !== key) {
+        convSpokenKeyRef.current = key;
+        void (async () => {
+          await convSay(resultSpeech(home.taskStatus, home.result) + ' 다음 할 일을 말씀해 주세요.');
+          homeReset();
+          await convListen();
+        })();
+      }
+      return;
+    }
+    if (home.phase === 'idle' && home.error) {
+      const key = `error:${home.error}`;
+      if (convSpokenKeyRef.current !== key) {
+        convSpokenKeyRef.current = key;
+        void convSayThenListen(`문제가 있었어요. ${home.error} 다시 말씀해 주세요.`);
+      }
+    }
+  }, [conv.active, home.phase, home.approval, home.taskStatus, home.error, home.notice]);
+
+  // 듣는 중 상태를 시각화하는 맥동 애니메이션.
+  const convPulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (conv.active && conv.phase === 'listening') {
+      const loop = Animated.loop(Animated.sequence([
+        Animated.timing(convPulse, { toValue: 1.22, duration: 650, useNativeDriver: true }),
+        Animated.timing(convPulse, { toValue: 1, duration: 650, useNativeDriver: true })
+      ]));
+      loop.start();
+      return () => loop.stop();
+    }
+    convPulse.setValue(conv.phase === 'speaking' ? 1.1 : 1);
+    return undefined;
+  }, [conv.active, conv.phase]);
 
   async function homeToggleListening() {
     if (home.listening) {
@@ -285,6 +458,8 @@ export default function App() {
   }
 
   function homeSpeak(text: string) {
+    // 대화 모드에서는 대화 컨트롤러가 턴에 맞춰 낭독하므로 단발 낭독은 건너뛴다.
+    if (convRef.current.active) return;
     speak(text, { enabled: homeVoiceOnRef.current });
   }
   const effectiveBridgeUrl = normalizeBridgeUrlForDevice(state.connection.bridgeUrl);
@@ -1797,10 +1972,11 @@ export default function App() {
   }
 
   // 명료화 질문에 답하면 원 명령에 답을 덧붙여 더 정확한 계획으로 다시 제출한다.
-  async function homeResubmitWithAnswer() {
-    const answer = String(home.answer ?? '').trim();
+  // 대화 모드에서는 음성으로 받은 답을 overrideAnswer로 넘긴다.
+  async function homeResubmitWithAnswer(overrideAnswer: string | null = null) {
+    const answer = String(overrideAnswer ?? home.answer ?? '').trim();
     if (!answer) return;
-    const baseText = String(home.text ?? '').trim();
+    const baseText = String(homeRef.current.text ?? home.text ?? '').trim();
     const composed = `${baseText} (추가 정보: ${answer})`;
     setHome((current: any) => ({ ...current, text: composed, answer: '', approval: null }));
     await homeSubmit(composed);
@@ -2250,6 +2426,18 @@ export default function App() {
               <Text style={styles.homePrimaryButtonText}>{busy ? '자비스가 일하는 중...' : '자비스에게 시키기'}</Text>
             </Pressable>
           </View>
+          {voiceSupport.stt ? (
+            <Pressable
+              testID="home-conversation-button"
+              accessibilityRole="button"
+              accessibilityLabel="대화 모드 시작"
+              disabled={!paired}
+              onPress={convEnter}
+              style={[styles.convEnterButton, !paired ? styles.homeButtonDisabled : null]}
+            >
+              <Text style={styles.convEnterButtonText}>🎙️ 대화 모드 — 말로 주고받기</Text>
+            </Pressable>
+          ) : null}
           {home.notice ? <Text style={styles.homeNotice}>{home.notice}</Text> : null}
           {home.error ? <Text style={styles.warningText}>{home.error}</Text> : null}
         </View>
@@ -2961,6 +3149,70 @@ export default function App() {
           </View>
         )}
       </ScrollView>
+
+      {conv.active ? (
+        <View testID="conversation-overlay" style={styles.convOverlay}>
+          <View style={styles.convTopRow}>
+            <Text style={styles.convHint}>"종료"라고 말해도 닫혀요</Text>
+            <Pressable
+              testID="conv-exit-button"
+              accessibilityRole="button"
+              accessibilityLabel="대화 모드 종료"
+              onPress={() => convExit(false)}
+              style={styles.convExitButton}
+            >
+              <Text style={styles.convExitButtonText}>✕ 종료</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            testID="conv-orb-area"
+            accessibilityRole="button"
+            accessibilityLabel={conv.phase === 'speaking' ? '탭해서 말 끊고 말하기' : '대화 상태'}
+            onPress={() => { if (conv.phase === 'speaking') stopSpeaking(); }}
+            style={styles.convCenter}
+          >
+            <Animated.View
+              style={[
+                styles.convOrb,
+                conv.phase === 'listening' ? styles.convOrbListening : null,
+                conv.phase === 'thinking' ? styles.convOrbThinking : null,
+                conv.phase === 'speaking' ? styles.convOrbSpeaking : null,
+                { transform: [{ scale: convPulse }] }
+              ]}
+            />
+            <Text style={styles.convStatusText}>
+              {conv.phase === 'listening' ? '듣고 있어요' : conv.phase === 'thinking' ? '자비스가 생각하는 중...' : '말하는 중 — 탭하면 끊고 말할 수 있어요'}
+            </Text>
+            {conv.transcript ? <Text style={styles.convTranscript}>"{conv.transcript}"</Text> : null}
+            {home.notice && conv.phase === 'thinking' ? <Text style={styles.convNotice}>{home.notice}</Text> : null}
+          </Pressable>
+
+          {home.phase === 'approval' && home.approval ? (
+            <View style={styles.convApprovalBox}>
+              <Text style={styles.convApprovalTitle}>{home.approval.title}</Text>
+              <View style={styles.homeDecideRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="승인"
+                  onPress={() => void homeDecide('approve')}
+                  style={[styles.homeDecideButton, styles.homeApproveButton]}
+                >
+                  <Text style={styles.homePrimaryButtonText}>승인</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="거절"
+                  onPress={() => void homeDecide('reject')}
+                  style={[styles.homeDecideButton, styles.homeRejectButton]}
+                >
+                  <Text style={styles.homePrimaryButtonText}>거절</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -3048,6 +3300,102 @@ const styles = StyleSheet.create({
     color: colors.accent,
     fontSize: 17,
     fontWeight: '700'
+  },
+  convEnterButton: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.background
+  },
+  convEnterButtonText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600'
+  },
+  convOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: colors.background,
+    padding: spacing.lg,
+    justifyContent: 'space-between'
+  },
+  convTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  convHint: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  convExitButton: {
+    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line
+  },
+  convExitButtonText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600'
+  },
+  convCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.md
+  },
+  convOrb: {
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: colors.line
+  },
+  convOrbListening: {
+    backgroundColor: colors.accent
+  },
+  convOrbThinking: {
+    backgroundColor: colors.line
+  },
+  convOrbSpeaking: {
+    backgroundColor: colors.info
+  },
+  convStatusText: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: '600'
+  },
+  convTranscript: {
+    color: colors.muted,
+    fontSize: 16,
+    textAlign: 'center',
+    paddingHorizontal: spacing.lg
+  },
+  convNotice: {
+    color: colors.accent,
+    fontSize: 14,
+    textAlign: 'center',
+    paddingHorizontal: spacing.lg
+  },
+  convApprovalBox: {
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    backgroundColor: colors.surface
+  },
+  convApprovalTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600'
   },
   homeSubmitButton: {
     flex: 1

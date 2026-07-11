@@ -51,19 +51,59 @@ export function stopSpeaking() {
   }
 }
 
+// 낭독이 끝날 때까지 기다리는 버전. 대화 모드의 턴테이킹(말 끝나면 듣기 시작)에 사용한다.
+// 중단(onStopped)·실패(onError)도 resolve로 처리해 루프가 멈추지 않게 한다.
+export function speakAsync(text: unknown, options: { enabled?: boolean } = {}): Promise<void> {
+  return new Promise((resolve) => {
+    if (options.enabled === false || !voiceSupport.tts) return resolve();
+    const body = String(text ?? '').trim();
+    if (!body) return resolve();
+    try {
+      Speech.stop();
+      Speech.speak(body.slice(0, maxSpeakChars), {
+        language: 'ko-KR',
+        onDone: () => resolve(),
+        onStopped: () => resolve(),
+        onError: () => resolve()
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 마이크 권한을 확인/요청한다. 이미 있으면 팝업을 띄우지 않는다.
+// 방금 부여됐는지 여부(justGranted)를 함께 돌려줘 start 타이밍 보정에 쓴다.
+export async function ensureMicPermission(): Promise<{ granted: boolean; justGranted: boolean }> {
+  if (!voiceSupport.stt) return { granted: false, justGranted: false };
+  const current = await recognitionModule.getPermissionsAsync().catch(() => null);
+  if (current?.granted) return { granted: true, justGranted: false };
+  const requested = await recognitionModule.requestPermissionsAsync();
+  return { granted: Boolean(requested?.granted), justGranted: Boolean(requested?.granted) };
+}
+
 export async function startListening() {
   if (!voiceSupport.stt) {
     throw new Error('이 빌드는 음성 인식을 지원하지 않습니다. 앱을 업데이트해 주세요.');
   }
-  const permission = await recognitionModule.requestPermissionsAsync();
-  if (!permission?.granted) {
+  const { granted, justGranted } = await ensureMicPermission();
+  if (!granted) {
     throw new Error('마이크 권한이 필요합니다. 설정에서 허용해 주세요.');
   }
-  recognitionModule.start({
-    lang: 'ko-KR',
-    interimResults: true,
-    continuous: false
-  });
+  // 권한이 막 부여된 직후에는 마이크 세션이 준비되기 전이라 첫 start가 실패할 수 있다.
+  // 짧게 기다린 뒤 시작하고, 그래도 실패하면 한 번 재시도한다.
+  if (justGranted) await sleep(400);
+  const options = { lang: 'ko-KR', interimResults: true, continuous: false };
+  try {
+    recognitionModule.start(options);
+  } catch (error) {
+    await sleep(500);
+    recognitionModule.start(options);
+  }
 }
 
 export function stopListening() {
