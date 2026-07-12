@@ -3357,6 +3357,120 @@ export class FileListToolAdapter {
   }
 }
 
+// 셸 명령의 위험도를 정적 분류한다. 'blocked'는 어댑터가 승인과 무관하게 절대 실행하지 않는다.
+const shellDenyPatterns = [
+  { re: /(^|\s|;|&|\|)(rm|del|erase|rd|rmdir)(\s|$)|remove-item/i, reason: '파일/폴더 삭제' },
+  // 'format C:' 같은 디스크 포맷만 잡는다. -Format/Format-Table 등 안전한 Format은 제외.
+  { re: /format\s+[a-z]:|format\s+\/[qsxy]|\bformat-volume\b|\bformat-disk\b|diskpart|mkfs|clear-disk|clean\s+all|initialize-disk/i, reason: '디스크 포맷/초기화' },
+  { re: /shutdown|restart-computer|stop-computer|logoff|halt/i, reason: '시스템 종료/재시작' },
+  { re: /reg\s+delete|remove-itemproperty|remove-item\s+hk/i, reason: '레지스트리 삭제' },
+  { re: /\b(takeown|icacls|cacls)\b|set-acl/i, reason: '권한 변경' },
+  { re: /bcdedit|(^|\s)sfc(\s|$)|(^|\s)dism(\s|$)/i, reason: '시스템 구성 변경' },
+  { re: /net\s+user|new-localuser|remove-localuser|net\s+localgroup/i, reason: '계정 변경' },
+  { re: /invoke-webrequest[\s\S]*-method\s+post|curl[\s\S]*(-T|--upload)|\bscp\b|\bftp\b/i, reason: '외부 전송' }
+];
+
+export function classifyShellCommand(command) {
+  const text = String(command ?? '');
+  if (!text.trim()) return { risk: 'blocked', reason: '빈 명령' };
+  for (const rule of shellDenyPatterns) {
+    if (rule.re.test(text)) return { risk: 'blocked', reason: rule.reason };
+  }
+  if (/(^|\s)(mv|move|move-item|copy|cp|copy-item|ni|new-item|set-content|add-content|out-file)(\s|$)|>>?/i.test(text)) {
+    return { risk: 'caution', reason: '파일 생성/수정' };
+  }
+  return { risk: 'safe', reason: '읽기/조회' };
+}
+
+// 자연어를 셸 명령으로 바꿔 실행한다. 실제 명령은 승인 카드에 노출되며,
+// 파괴적 명령은 아래 정적 차단으로 승인 여부와 무관하게 실행되지 않는다.
+export class ShellExecuteToolAdapter {
+  constructor({ shell = 'powershell', timeoutMs = 30000, workingDir = null, maxOutputChars = 4000 } = {}) {
+    this.shell = shell;
+    this.timeoutMs = timeoutMs;
+    this.workingDir = resolve(workingDir ?? process.env.USERPROFILE ?? process.env.HOME ?? './workspace');
+    this.maxOutputChars = maxOutputChars;
+    this.contract = createToolContract({
+      toolName: 'shell.execute',
+      mutatesSystem: true,
+      rollback: false,
+      evidence: ['command', 'shell', 'exitCode', 'stdoutPreview'],
+      blockedOperations: ['destructiveCommand', 'externalTransfer'],
+      modes: ['shadow', 'execute']
+    });
+  }
+
+  commandOf(args) {
+    return String(args?.command ?? args?.shellCommand ?? '').trim();
+  }
+
+  async shadow(args) {
+    const command = this.commandOf(args);
+    const classified = classifyShellCommand(command);
+    return {
+      mode: 'shadow',
+      expectedChangesCount: classified.risk === 'safe' ? 0 : 1,
+      command,
+      shell: this.shell,
+      riskLevel: classified.risk,
+      riskReason: classified.reason,
+      willBlock: classified.risk === 'blocked',
+      warnings: classified.risk === 'blocked' ? [`차단: ${classified.reason} 명령은 실행할 수 없습니다`] : []
+    };
+  }
+
+  async execute(args) {
+    const command = this.commandOf(args);
+    const classified = classifyShellCommand(command);
+    if (classified.risk === 'blocked') {
+      return {
+        status: 'blocked',
+        error: `destructive-command-blocked:${classified.reason}`,
+        command,
+        shell: this.shell,
+        outputPaths: [],
+        rollbackAvailable: false
+      };
+    }
+    // PowerShell 출력을 UTF-8로 강제해 한글이 깨지지 않게 한다.
+    const psCommand = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${command}`;
+    const wrapped = this.shell === 'cmd'
+      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', command] }
+      : { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psCommand] };
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    let timedOut = false;
+    try {
+      stdout = execFileSync(wrapped.file, wrapped.args, {
+        cwd: this.workingDir,
+        timeout: this.timeoutMs,
+        encoding: 'utf8',
+        maxBuffer: 8 * 1024 * 1024,
+        windowsHide: true
+      });
+    } catch (error) {
+      exitCode = typeof error.status === 'number' ? error.status : 1;
+      stdout = error.stdout ? String(error.stdout) : '';
+      stderr = error.stderr ? String(error.stderr) : String(error.message ?? '');
+      timedOut = error.killed === true || String(error.code ?? '') === 'ETIMEDOUT';
+    }
+    const stdoutPreview = String(stdout ?? '').slice(0, this.maxOutputChars);
+    return {
+      status: exitCode === 0 && !timedOut ? 'success' : 'failed',
+      command,
+      shell: this.shell,
+      exitCode,
+      timedOut,
+      stdoutPreview,
+      stderrPreview: String(stderr ?? '').slice(0, this.maxOutputChars),
+      summary: timedOut ? '명령이 시간 초과로 중단됐어요.' : (exitCode === 0 ? '명령을 실행했어요.' : '명령이 오류로 끝났어요.'),
+      outputPaths: [],
+      rollbackAvailable: false
+    };
+  }
+}
+
 export class FileMoveToolAdapter {
   constructor({ allowedRoots = ['./workspace'], undoJournal = new UndoJournal(), toolName = 'filesystem.moveFiles', previewOnly = false } = {}) {
     this.allowedRoots = allowedRoots.map((root) => resolve(root));
@@ -4616,6 +4730,7 @@ export class PcAgentRuntime {
     this.registry.register('filesystem.moveFiles', new FileMoveToolAdapter({ allowedRoots, undoJournal: this.undoJournal }));
     this.registry.register('excel.createWorkbook', new ExcelWorkbookToolAdapter({ allowedRoots, undoJournal: this.undoJournal }));
     this.registry.register('browser.search', new BrowserSearchToolAdapter({ browserDriver: browserDriver ?? undefined }));
+    this.registry.register('shell.execute', new ShellExecuteToolAdapter({}));
     this.logs = [];
     this.results = new Map();
     for (const result of this.packetJournal.results.values()) {

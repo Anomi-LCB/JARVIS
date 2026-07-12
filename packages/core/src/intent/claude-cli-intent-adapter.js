@@ -12,6 +12,7 @@ export const actionProfiles = Object.freeze({
   [ActionType.COPY_FILE]: { label: '파일 복사', category: 'filesystem', riskHint: 'local-change' },
   [ActionType.MOVE_FILE]: { label: '파일 이동', category: 'filesystem', riskHint: 'local-change' },
   [ActionType.BROWSER_SEARCH]: { label: '브라우저 조사', category: 'browser', riskHint: 'read-only-web' },
+  [ActionType.SHELL_EXECUTE]: { label: '셸 명령 실행', category: 'system', riskHint: 'system-command' },
   [ActionType.UPLOAD_FILE]: { label: '외부 전송 요청', category: 'external', riskHint: 'external-transfer' },
   [ActionType.DELETE_FILE]: { label: '삭제 요청', category: 'filesystem', riskHint: 'destructive' },
   [ActionType.MAKE_PAYMENT]: { label: '결제 요청', category: 'external', riskHint: 'forbidden' },

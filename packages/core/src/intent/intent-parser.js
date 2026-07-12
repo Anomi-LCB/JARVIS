@@ -16,6 +16,14 @@ const rules = [
     patterns: [/업로드|전송|공유/i, /메일|이메일|카톡|카카오톡|밴드/i]
   },
   {
+    label: '셸 명령 실행',
+    actionType: ActionType.SHELL_EXECUTE,
+    category: 'system',
+    riskHint: 'system-command',
+    // '실행'처럼 모호한 단어 대신 명확한 셸/시스템 지칭만 매칭한다.
+    patterns: [/cmd|command\s*line|명령어|명령 프롬프트|터미널|파워\s*쉘|powershell|셸\b|쉘\b/i, /프로그램.*(실행|열어|켜)|(실행|열어|켜).*프로그램|앱.*(실행|열어)|스크립트.*실행/i]
+  },
+  {
     label: '브라우저 조사',
     actionType: ActionType.BROWSER_SEARCH,
     category: 'browser',
@@ -140,6 +148,10 @@ export class IntentParser {
     }
     if (actionType === ActionType.LIST_FILES) {
       return { directoryHint: this.extractDirectoryHint(text) };
+    }
+    if (actionType === ActionType.SHELL_EXECUTE) {
+      // 실제 셸 명령은 planner가 LLM으로 생성한다. 여기서는 원문을 넘긴다.
+      return { rawCommand: text, dateHint, topic };
     }
     if (actionType === ActionType.MOVE_FILE) {
       return {

@@ -18,6 +18,10 @@ export const defaultSemanticIntentProfiles = Object.freeze([
     '검색해', '뉴스 조사', '웹에서 찾아', '브라우저로 알아봐', '자료 조사', '정보 찾아봐',
     '보안 뉴스 조사', '일정 조사'
   ]),
+  profile('semantic.shell.execute', ActionType.SHELL_EXECUTE, '셸 명령 실행', 'system', 'system-command', [
+    '명령어 실행해', 'cmd 열어', '터미널에서 실행', '파워쉘 명령', '스크립트 실행',
+    '프로그램 실행해', '메모장 열어', '앱 실행해', '명령 프롬프트로', '시스템 정보 알려줘'
+  ]),
   profile('semantic.upload.file', ActionType.UPLOAD_FILE, '외부 전송 요청', 'external', 'external-transfer', [
     '메일로 보내', '이메일 전송', '카카오톡 공유', '밴드에 공유', '업로드해', '외부로 전송',
     '파일 전달', '보고서 공유'

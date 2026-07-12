@@ -169,6 +169,41 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'shell_execute_skill',
+    version: '1.0.0',
+    label: 'Shell Command Execute',
+    module: ModuleId.PC_AGENT,
+    category: 'system',
+    actionType: ActionType.SHELL_EXECUTE,
+    toolName: 'shell.execute',
+    match: {
+      keywords: ['명령어', '실행', 'cmd', 'powershell', '터미널', '셸', '쉘', '프로그램', '열어', '실행해', '스크립트']
+    },
+    capability: {
+      readsLocalFiles: true,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: true,
+      // 셸은 되돌릴 수 없고 광범위한 영향을 주므로 위험 등급을 높게 둔다(낮을수록 위험).
+      // 삭제/포맷/전송성 명령은 어댑터가 정적 차단하고, 그 외는 승인 카드에 실제 명령을 노출한다.
+      maxRiskTier: 2,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['shell_command'],
+      blockedWhen: ['destructiveCommand=true', 'externalTransfer=true', 'capabilityTokenMissing=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['command', 'shell', 'exitCode', 'stdoutPreview']
+    }
+  },
+  {
     skillId: 'external_transfer_review_skill',
     version: '1.0.0',
     label: 'External Transfer Review',

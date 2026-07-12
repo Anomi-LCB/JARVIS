@@ -83,6 +83,28 @@ export function commandHasDraftableContent(text) {
   return tokens.some((token) => token.length >= 2);
 }
 
+export function buildShellCommandPrompt({ text, locale = 'ko-KR' }) {
+  return [
+    '당신은 사용자의 자연어 요청을 Windows PowerShell 명령으로 정확히 번역하는 어시스턴트입니다.',
+    '반드시 실행 가능한 PowerShell 명령 한 줄만 만듭니다.',
+    '',
+    '안전 규칙(엄격히 준수):',
+    '- 삭제(Remove-Item, rm, del), 포맷, 디스크 초기화, 시스템 종료/재시작, 레지스트리 삭제,',
+    '  권한 변경(icacls/takeown), 계정 변경, 외부 전송(업로드/메일/ftp)은 절대 만들지 않는다.',
+    '- 요청이 위 금지 항목이면 command를 빈 문자열로 둔다.',
+    '- 조회·검색·목록·정보 확인·프로그램 실행 위주로 만든다.',
+    '- 경로가 필요하면 $HOME, $env:USERPROFILE 등 표준 변수를 쓴다.',
+    '- 여러 단계가 필요해도 세미콜론으로 한 줄에 담고, 파괴적 연산은 넣지 않는다.',
+    '',
+    '출력 규칙:',
+    '- JSON 객체 하나만 출력한다: {"command":"<powershell 한 줄>"}',
+    '- 설명, 마크다운, 코드펜스 금지.',
+    `- 응답 언어 기준: ${locale}`,
+    '',
+    `사용자 요청: ${text}`
+  ].join('\n');
+}
+
 export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [] }) {
   const format = outputFormat === 'xlsx' ? 'xlsx' : 'txt';
   return [
@@ -312,6 +334,21 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
 
   argumentsFor(intent, taskRequest, contextSnapshot) {
     const base = super.argumentsFor(intent, taskRequest, contextSnapshot);
+    // 셸 실행: 자연어를 안전한 PowerShell 한 줄 명령으로 LLM 변환한다. 실제 명령은 승인 카드에 노출된다.
+    if (intent.actionType === ActionType.SHELL_EXECUTE) {
+      const command = this.draftShellCommandFor({
+        text: intent.slots?.rawCommand ?? taskRequest.command.rawText,
+        locale: taskRequest.command?.locale ?? 'ko-KR'
+      });
+      if (!command) return { ...base, shell: 'powershell' };
+      return {
+        ...base,
+        command,
+        shell: 'powershell',
+        rawText: taskRequest.command.rawText,
+        shellDraft: { adapterId: this.adapterId, draftedByLlm: true }
+      };
+    }
     if (!this.contentEnabled || intent.actionType !== ActionType.CREATE_FILE) return base;
     const sourceText = intent.slots?.llmPartText ?? taskRequest.command.rawText;
     // 채울 내용이 없는 단순 생성 명령은 콘텐츠 LLM을 건너뛰고 로컬 기본 템플릿을 쓴다(수십 초 절감).
@@ -350,6 +387,24 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
       };
     }
     return base;
+  }
+
+  draftShellCommandFor({ text, locale }) {
+    const trimmed = String(text ?? '').trim().slice(0, this.maxCommandLength);
+    if (!trimmed) return null;
+    let stdout;
+    try {
+      stdout = this.runner(buildShellCommandPrompt({ text: trimmed, locale }));
+    } catch {
+      return null;
+    }
+    const wrapper = extractJsonObject(stdout);
+    const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
+    const command = typeof payload?.command === 'string' ? payload.command.trim() : '';
+    if (!command || command.length > 1000) return null;
+    // 여러 줄/세미콜론 남용을 막고 한 줄 명령만 허용한다(승인 카드 가독성·안전).
+    if (/\r?\n/.test(command)) return null;
+    return command;
   }
 
   draftContentFor({ text, outputFormat, fileName, locale }) {
