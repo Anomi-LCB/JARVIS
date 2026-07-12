@@ -9,11 +9,35 @@ const rules = [
     patterns: [/삭제|delete|remove|휴지통|포맷|format/i]
   },
   {
+    label: '메일 전송',
+    actionType: ActionType.SEND_EMAIL,
+    category: 'external',
+    riskHint: 'external-transfer',
+    // 메일 특정(카톡/밴드는 아래 외부 전송 리뷰로 간다).
+    patterns: [/메일|이메일|email|mail/i, /보내|전송|첨부|발송/i]
+  },
+  {
     label: '외부 전송 요청',
     actionType: ActionType.UPLOAD_FILE,
     category: 'external',
     riskHint: 'external-transfer',
-    patterns: [/업로드|전송|공유/i, /메일|이메일|카톡|카카오톡|밴드/i]
+    patterns: [/업로드|공유/i, /카톡|카카오톡|밴드|드라이브/i]
+  },
+  {
+    label: '파일 검색',
+    actionType: ActionType.SEARCH_FILES,
+    category: 'filesystem',
+    riskHint: 'read-only-local',
+    // 파일/문서 맥락의 찾기. 웹 검색과 구분한다.
+    patterns: [/(파일|문서|폴더|사진|이미지|자료|엑셀|한글|hwp|pdf).*(찾|검색|어디)/i, /(찾아|어디\s*있)/i]
+  },
+  {
+    label: '문서 내용 편집',
+    actionType: ActionType.EDIT_DOCUMENT,
+    category: 'document',
+    riskHint: 'local-change',
+    // 기존 파일 수정. 새로 만드는 생성과 구분한다.
+    patterns: [/(수정|고쳐|바꿔|편집|변경|채워|덮어).*(파일|문서|엑셀|표|셀|한글|내용)|(파일|문서|엑셀|표|셀).*(수정|고쳐|바꿔|편집|채워)/i]
   },
   {
     label: '셸 명령 실행',
@@ -152,6 +176,15 @@ export class IntentParser {
     if (actionType === ActionType.SHELL_EXECUTE) {
       // 실제 셸 명령은 planner가 LLM으로 생성한다. 여기서는 원문을 넘긴다.
       return { rawCommand: text, dateHint, topic };
+    }
+    if (actionType === ActionType.SEARCH_FILES) {
+      return { rawCommand: text, fileName, dateHint, topic };
+    }
+    if (actionType === ActionType.SEND_EMAIL) {
+      return { rawCommand: text, recipient: this.extractRecipient(text, 'email'), fileName, dateHint, topic, externalTransfer: true };
+    }
+    if (actionType === ActionType.EDIT_DOCUMENT) {
+      return { rawCommand: text, fileName, dateHint, topic };
     }
     if (actionType === ActionType.MOVE_FILE) {
       return {

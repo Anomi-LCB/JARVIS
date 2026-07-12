@@ -22,6 +22,18 @@ export const defaultSemanticIntentProfiles = Object.freeze([
     '명령어 실행해', 'cmd 열어', '터미널에서 실행', '파워쉘 명령', '스크립트 실행',
     '프로그램 실행해', '메모장 열어', '앱 실행해', '명령 프롬프트로', '시스템 정보 알려줘'
   ]),
+  profile('semantic.search.files', ActionType.SEARCH_FILES, '파일 검색', 'filesystem', 'read-only-local', [
+    '파일 찾아', '문서 어디 있어', '엑셀 파일 검색', '사진 찾아줘', '이 이름 파일 찾아',
+    '어제 만든 파일 찾아', '보고서 어디 저장했지', 'pdf 찾아'
+  ]),
+  profile('semantic.send.email', ActionType.SEND_EMAIL, '메일 전송', 'external', 'external-transfer', [
+    '메일로 보내', '이메일 전송', '이 파일 메일로', '메일 발송', '첨부해서 메일 보내',
+    '메일로 전달', '이메일로 보내줘'
+  ]),
+  profile('semantic.edit.document', ActionType.EDIT_DOCUMENT, '문서 내용 편집', 'document', 'local-change', [
+    '엑셀 수정해', '표 내용 바꿔', '이 파일 고쳐', '셀 값 수정', '문서 내용 편집',
+    '기존 파일에 채워', '엑셀 값 변경'
+  ]),
   profile('semantic.upload.file', ActionType.UPLOAD_FILE, '외부 전송 요청', 'external', 'external-transfer', [
     '메일로 보내', '이메일 전송', '카카오톡 공유', '밴드에 공유', '업로드해', '외부로 전송',
     '파일 전달', '보고서 공유'

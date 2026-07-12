@@ -83,6 +83,53 @@ export function commandHasDraftableContent(text) {
   return tokens.some((token) => token.length >= 2);
 }
 
+export function buildSearchCriteriaPrompt({ text }) {
+  return [
+    '사용자의 파일 찾기 요청을 검색 조건 JSON으로 변환하세요.',
+    '- query: 파일명에 포함될 핵심 단어(공백 구분, 없으면 빈 문자열)',
+    '- extensions: 확장자 배열(예 ["xlsx","pdf"]). 특정 안 하면 빈 배열',
+    '- modifiedWithinDays: "어제/최근/이번주" 같은 표현을 일수로(없으면 null)',
+    '- contentQuery: 파일 "내용"에서 찾아야 하면 그 문자열(파일명 검색이면 빈 문자열)',
+    '- scope: "home"(사용자 폴더 전체) | "desktop" | "documents" | "downloads" 중 하나(모르면 "home")',
+    '',
+    'JSON 객체 하나만 출력한다. 설명/코드펜스 금지.',
+    '형식: {"query":"","extensions":[],"modifiedWithinDays":null,"contentQuery":"","scope":"home"}',
+    '',
+    `사용자 요청: ${text}`
+  ].join('\n');
+}
+
+export function buildEmailPrompt({ text }) {
+  return [
+    '사용자의 메일 전송 요청을 JSON으로 변환하세요. 실제 발송은 사용자 승인 후에만 이뤄집니다.',
+    '- to: 수신자 이메일 주소(요청에 있으면). 이름만 있으면 name에 넣고 to는 빈 문자열',
+    '- name: 수신자 이름(있으면)',
+    '- subject: 제목(추론해서 자연스럽게)',
+    '- body: 본문(요청 맥락에 맞는 정중한 한국어 본문. 서명은 넣지 않는다)',
+    '- attachmentQuery: 첨부할 파일을 찾을 이름 키워드(첨부 언급 없으면 빈 문자열)',
+    '',
+    'JSON 객체 하나만 출력한다. 설명/코드펜스 금지.',
+    '형식: {"to":"","name":"","subject":"","body":"","attachmentQuery":""}',
+    '',
+    `사용자 요청: ${text}`
+  ].join('\n');
+}
+
+export function buildDocumentEditPrompt({ text }) {
+  return [
+    '사용자의 문서 수정 요청을 JSON으로 변환하세요. 지금은 엑셀(xlsx) 편집만 지원합니다.',
+    '- targetQuery: 수정할 파일을 찾을 이름 키워드',
+    '- sheet: 시트명(모르면 null → 첫 시트)',
+    '- edits: [{"cell":"B2","value":"새 값"}] 형태의 셀 편집 배열. 셀 주소를 모르면',
+    '  [{"findText":"찾을 기존값","value":"바꿀 값"}] 형태로 대체 지시',
+    '',
+    'JSON 객체 하나만 출력한다. 설명/코드펜스 금지.',
+    '형식: {"targetQuery":"","sheet":null,"edits":[]}',
+    '',
+    `사용자 요청: ${text}`
+  ].join('\n');
+}
+
 export function buildShellCommandPrompt({ text, locale = 'ko-KR' }) {
   return [
     '당신은 사용자의 자연어 요청을 Windows PowerShell 명령으로 정확히 번역하는 어시스턴트입니다.',
@@ -349,6 +396,21 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
         shellDraft: { adapterId: this.adapterId, draftedByLlm: true }
       };
     }
+    // 파일 검색: 자연어에서 검색 조건(이름/확장자/기간/내용)을 뽑는다.
+    if (intent.actionType === ActionType.SEARCH_FILES) {
+      const criteria = this.draftJsonFor(buildSearchCriteriaPrompt, { text: intent.slots?.rawCommand ?? taskRequest.command.rawText });
+      return { ...base, rawText: taskRequest.command.rawText, ...(criteria ?? {}) };
+    }
+    // 메일 전송: 수신자/제목/본문/첨부 힌트를 뽑는다. 실제 전송은 승인 후 B가 수행.
+    if (intent.actionType === ActionType.SEND_EMAIL) {
+      const mail = this.draftJsonFor(buildEmailPrompt, { text: intent.slots?.rawCommand ?? taskRequest.command.rawText });
+      return { ...base, rawText: taskRequest.command.rawText, ...(mail ?? {}) };
+    }
+    // 문서 편집: 대상 파일과 편집 지시(셀/값)를 뽑는다.
+    if (intent.actionType === ActionType.EDIT_DOCUMENT) {
+      const edit = this.draftJsonFor(buildDocumentEditPrompt, { text: intent.slots?.rawCommand ?? taskRequest.command.rawText });
+      return { ...base, rawText: taskRequest.command.rawText, ...(edit ?? {}) };
+    }
     if (!this.contentEnabled || intent.actionType !== ActionType.CREATE_FILE) return base;
     const sourceText = intent.slots?.llmPartText ?? taskRequest.command.rawText;
     // 채울 내용이 없는 단순 생성 명령은 콘텐츠 LLM을 건너뛰고 로컬 기본 템플릿을 쓴다(수십 초 절감).
@@ -387,6 +449,21 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
       };
     }
     return base;
+  }
+
+  // 프롬프트 빌더로 LLM을 호출하고 JSON 객체를 돌려준다(검색/메일/편집 인자 추출용 공통 경로).
+  draftJsonFor(promptBuilder, args) {
+    const trimmed = String(args?.text ?? '').trim().slice(0, this.maxCommandLength);
+    if (!trimmed) return null;
+    let stdout;
+    try {
+      stdout = this.runner(promptBuilder({ ...args, text: trimmed }));
+    } catch {
+      return null;
+    }
+    const wrapper = extractJsonObject(stdout);
+    const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
+    return payload && typeof payload === 'object' ? payload : null;
   }
 
   draftShellCommandFor({ text, locale }) {

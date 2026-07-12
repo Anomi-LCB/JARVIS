@@ -204,6 +204,108 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'file_search_skill',
+    version: '1.0.0',
+    label: 'File Search',
+    module: ModuleId.PC_AGENT,
+    category: 'filesystem',
+    actionType: ActionType.SEARCH_FILES,
+    toolName: 'filesystem.searchFiles',
+    match: {
+      keywords: ['찾아', '검색', '어디', '파일 찾', '문서 찾', 'find', 'search']
+    },
+    capability: {
+      readsLocalFiles: true,
+      writesLocalFiles: false,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: true,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.LOCAL_FILE_CONTENT,
+      dataClasses: ['file_metadata', 'file_path'],
+      blockedWhen: ['outsideAllowedRoots=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['query', 'matchCount', 'roots']
+    }
+  },
+  {
+    skillId: 'email_send_skill',
+    version: '1.0.0',
+    label: 'Email Send',
+    module: ModuleId.PC_AGENT,
+    category: 'external',
+    actionType: ActionType.SEND_EMAIL,
+    toolName: 'email.send',
+    match: {
+      keywords: ['메일', '이메일', '메일로', '보내', '전송', 'email', 'mail']
+    },
+    capability: {
+      readsLocalFiles: true,
+      writesLocalFiles: false,
+      externalNetwork: true,
+      externalTransfer: true,
+      reversible: false,
+      requiresApproval: true,
+      requiresDesktopApproval: true,
+      // 외부로 데이터가 나가므로 최고 위험 등급. 첨부·수신자·본문이 승인 카드에 노출된다.
+      maxRiskTier: 2,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['potential_sensitive_file', 'recipient_address'],
+      blockedWhen: ['recipientMissing=true', 'smtpNotConfigured=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['to', 'subject', 'attachmentCount']
+    }
+  },
+  {
+    skillId: 'document_edit_skill',
+    version: '1.0.0',
+    label: 'Document Edit',
+    module: ModuleId.PC_AGENT,
+    category: 'document',
+    actionType: ActionType.EDIT_DOCUMENT,
+    toolName: 'document.edit',
+    match: {
+      outputFormats: ['xlsx'],
+      keywords: ['수정', '고쳐', '바꿔', '편집', '변경', '채워', '입력', '표에']
+    },
+    capability: {
+      readsLocalFiles: true,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 3,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.LOCAL_FILE_CONTENT,
+      dataClasses: ['user_text', 'file_content'],
+      blockedWhen: ['outsideAllowedRoots=true', 'targetFileMissing=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['targetPath', 'editedCells', 'backupPath']
+    }
+  },
+  {
     skillId: 'external_transfer_review_skill',
     version: '1.0.0',
     label: 'External Transfer Review',

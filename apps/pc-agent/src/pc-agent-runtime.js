@@ -3471,6 +3471,339 @@ export class ShellExecuteToolAdapter {
   }
 }
 
+// PC 전체에서 파일을 이름/확장자/기간/내용으로 찾는다. 읽기 전용이라 안전하다.
+export class FileSearchToolAdapter {
+  constructor({ maxResults = 100, maxDepth = 6, timeoutMs = 15000 } = {}) {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
+    this.roots = {
+      home,
+      desktop: resolve(home, 'Desktop'),
+      documents: resolve(home, 'Documents'),
+      downloads: resolve(home, 'Downloads')
+    };
+    this.maxResults = maxResults;
+    this.maxDepth = maxDepth;
+    this.timeoutMs = timeoutMs;
+    this.excludeDirs = new Set(['node_modules', '.git', '.next', '.venv', 'AppData', '$Recycle.Bin', 'Windows', 'Program Files', 'Program Files (x86)']);
+    this.contract = createToolContract({
+      toolName: 'filesystem.searchFiles',
+      readOnly: true,
+      evidence: ['query', 'matchCount', 'roots'],
+      blockedOperations: ['fileContentWrite']
+    });
+  }
+
+  criteriaOf(args) {
+    return {
+      query: String(args?.query ?? '').trim().toLowerCase(),
+      extensions: Array.isArray(args?.extensions) ? args.extensions.map((e) => String(e).replace(/^\./, '').toLowerCase()) : [],
+      modifiedWithinDays: Number.isFinite(args?.modifiedWithinDays) ? args.modifiedWithinDays : null,
+      contentQuery: String(args?.contentQuery ?? '').trim().toLowerCase(),
+      scope: ['home', 'desktop', 'documents', 'downloads'].includes(args?.scope) ? args.scope : 'home'
+    };
+  }
+
+  async shadow(args) {
+    const c = this.criteriaOf(args);
+    return {
+      mode: 'shadow',
+      expectedChangesCount: 0,
+      query: c.query,
+      extensions: c.extensions,
+      scope: c.scope,
+      root: this.roots[c.scope] ?? this.roots.home,
+      warnings: []
+    };
+  }
+
+  async execute(args) {
+    const c = this.criteriaOf(args);
+    const root = this.roots[c.scope] ?? this.roots.home;
+    const deadline = Date.now() + this.timeoutMs;
+    const cutoff = c.modifiedWithinDays != null ? Date.now() - c.modifiedWithinDays * 86400000 : null;
+    const queryWords = c.query ? c.query.split(/\s+/).filter(Boolean) : [];
+    const matches = [];
+    const walk = async (dir, depth) => {
+      if (matches.length >= this.maxResults || Date.now() > deadline || depth > this.maxDepth) return;
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (matches.length >= this.maxResults || Date.now() > deadline) return;
+        const full = resolve(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (this.excludeDirs.has(entry.name) || entry.name.startsWith('.')) continue;
+          await walk(full, depth + 1);
+        } else {
+          const name = entry.name.toLowerCase();
+          const ext = extname(name).replace(/^\./, '');
+          if (queryWords.length && !queryWords.every((w) => name.includes(w))) continue;
+          if (c.extensions.length && !c.extensions.includes(ext)) continue;
+          let st;
+          try {
+            st = await stat(full);
+          } catch {
+            continue;
+          }
+          if (cutoff && st.mtimeMs < cutoff) continue;
+          if (c.contentQuery) {
+            if (st.size > 2 * 1024 * 1024) continue;
+            try {
+              const body = await readFile(full, 'utf8');
+              if (!body.toLowerCase().includes(c.contentQuery)) continue;
+            } catch {
+              continue;
+            }
+          }
+          matches.push({ name: entry.name, path: full, size: st.size, modifiedAt: st.mtime.toISOString() });
+        }
+      }
+    };
+    await walk(root, 0);
+    matches.sort((a, b) => Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt));
+    return {
+      status: 'success',
+      query: c.query,
+      scope: c.scope,
+      root,
+      matchCount: matches.length,
+      matches,
+      summary: matches.length ? `${matches.length}개 파일을 찾았어요.` : '조건에 맞는 파일을 찾지 못했어요.',
+      outputPaths: [],
+      rollbackAvailable: false
+    };
+  }
+}
+
+// 사용자 폴더에서 이름 키워드로 파일 1개를 찾는다(첨부·편집 대상 해석용 공통 헬퍼).
+async function findFileByQuery(query, { roots, extensions = [], maxDepth = 6, excludeDirs } = {}) {
+  const words = String(query ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const deadline = Date.now() + 10000;
+  let best = null;
+  const walk = async (dir, depth) => {
+    if (best || Date.now() > deadline || depth > maxDepth) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (best || Date.now() > deadline) return;
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (excludeDirs?.has(entry.name) || entry.name.startsWith('.')) continue;
+        await walk(full, depth + 1);
+      } else {
+        const name = entry.name.toLowerCase();
+        const ext = extname(name).replace(/^\./, '');
+        if (extensions.length && !extensions.includes(ext)) continue;
+        if (!words.every((w) => name.includes(w))) continue;
+        let st;
+        try {
+          st = await stat(full);
+        } catch {
+          continue;
+        }
+        if (!best || st.mtimeMs > best.mtimeMs) best = { path: full, name: entry.name, mtimeMs: st.mtimeMs };
+      }
+    }
+  };
+  for (const root of roots) await walk(root, 0);
+  return best;
+}
+
+// 기존 엑셀(xlsx) 파일의 셀 내용을 수정한다. 편집 전 백업을 만들어 되돌릴 수 있게 한다.
+export class DocumentEditToolAdapter {
+  constructor({ maxDepth = 6 } = {}) {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
+    this.searchRoots = [resolve(home, 'Desktop'), resolve(home, 'Documents'), resolve(home, 'Downloads'), resolve('./workspace')];
+    this.excludeDirs = new Set(['node_modules', '.git', 'AppData', '$Recycle.Bin', 'Windows']);
+    this.maxDepth = maxDepth;
+    this.contract = createToolContract({
+      toolName: 'document.edit',
+      mutatesSystem: true,
+      rollback: true,
+      evidence: ['targetPath', 'editedCells', 'backupPath'],
+      blockedOperations: ['targetFileMissing', 'unsupportedFormat']
+    });
+  }
+
+  async loadExcelJS() {
+    try {
+      const mod = await import('exceljs');
+      return mod.default ?? mod;
+    } catch {
+      return null;
+    }
+  }
+
+  async resolveTarget(args) {
+    if (args?.targetPath && existsSync(args.targetPath)) return { path: resolve(args.targetPath), name: basename(args.targetPath) };
+    return findFileByQuery(args?.targetQuery ?? args?.targetPath, {
+      roots: this.searchRoots,
+      extensions: ['xlsx'],
+      maxDepth: this.maxDepth,
+      excludeDirs: this.excludeDirs
+    });
+  }
+
+  async shadow(args) {
+    const target = await this.resolveTarget(args);
+    const edits = Array.isArray(args?.edits) ? args.edits : [];
+    return {
+      mode: 'shadow',
+      expectedChangesCount: edits.length,
+      targetPath: target?.path ?? null,
+      targetFound: Boolean(target),
+      edits,
+      warnings: target ? [] : ['수정할 엑셀 파일을 찾지 못했습니다']
+    };
+  }
+
+  async execute(args) {
+    const target = await this.resolveTarget(args);
+    if (!target) {
+      return { status: 'failed', error: 'target-file-missing', outputPaths: [], rollbackAvailable: false };
+    }
+    if (extname(target.path).toLowerCase() !== '.xlsx') {
+      return { status: 'failed', error: `unsupported-format:${extname(target.path)}`, targetPath: target.path, outputPaths: [], rollbackAvailable: false };
+    }
+    const ExcelJS = await this.loadExcelJS();
+    if (!ExcelJS) {
+      return { status: 'failed', error: 'exceljs-not-installed', targetPath: target.path, outputPaths: [], rollbackAvailable: false };
+    }
+    const edits = Array.isArray(args?.edits) ? args.edits : [];
+    const backupPath = `${target.path}.bak-${Date.now()}`;
+    try {
+      await copyFile(target.path, backupPath);
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.readFile(target.path);
+      const ws = (args?.sheet && wb.getWorksheet(args.sheet)) || wb.worksheets[0];
+      const editedCells = [];
+      for (const edit of edits) {
+        if (edit?.cell) {
+          ws.getCell(edit.cell).value = edit.value;
+          editedCells.push(edit.cell);
+        } else if (edit?.findText != null) {
+          ws.eachRow((row) => {
+            row.eachCell((cell) => {
+              if (String(cell.value ?? '') === String(edit.findText)) {
+                cell.value = edit.value;
+                editedCells.push(cell.address);
+              }
+            });
+          });
+        }
+      }
+      await wb.xlsx.writeFile(target.path);
+      return {
+        status: 'success',
+        targetPath: target.path,
+        editedCells,
+        backupPath,
+        summary: `${basename(target.path)}에서 ${editedCells.length}개 셀을 수정했어요.`,
+        outputPaths: [target.path],
+        rollbackAvailable: true
+      };
+    } catch (error) {
+      return { status: 'failed', error: String(error?.message ?? error), targetPath: target.path, backupPath, outputPaths: [], rollbackAvailable: existsSync(backupPath) };
+    }
+  }
+}
+
+// 첨부 파일과 함께 메일을 보낸다. SMTP 자격증명(JARVIS_SMTP_USER/PASS)이 있어야 실제 발송한다.
+export class EmailSendToolAdapter {
+  constructor() {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
+    this.searchRoots = [resolve(home, 'Desktop'), resolve(home, 'Documents'), resolve(home, 'Downloads'), resolve('./workspace')];
+    this.excludeDirs = new Set(['node_modules', '.git', 'AppData', '$Recycle.Bin', 'Windows']);
+    this.contract = createToolContract({
+      toolName: 'email.send',
+      mutatesSystem: false,
+      rollback: false,
+      evidence: ['to', 'subject', 'attachmentCount'],
+      blockedOperations: ['recipientMissing', 'smtpNotConfigured']
+    });
+  }
+
+  async loadNodemailer() {
+    try {
+      const mod = await import('nodemailer');
+      return mod.default ?? mod;
+    } catch {
+      return null;
+    }
+  }
+
+  smtpConfig() {
+    const user = process.env.JARVIS_SMTP_USER;
+    const pass = process.env.JARVIS_SMTP_PASS;
+    if (!user || !pass) return null;
+    return { user, pass, service: process.env.JARVIS_SMTP_SERVICE ?? 'gmail' };
+  }
+
+  async resolveAttachment(query) {
+    if (!query) return null;
+    return findFileByQuery(query, { roots: this.searchRoots, excludeDirs: this.excludeDirs });
+  }
+
+  async shadow(args) {
+    const attachment = await this.resolveAttachment(args?.attachmentQuery);
+    return {
+      mode: 'shadow',
+      expectedChangesCount: 0,
+      to: args?.to ?? '',
+      subject: args?.subject ?? '',
+      attachmentPath: attachment?.path ?? null,
+      attachmentCount: attachment ? 1 : 0,
+      smtpConfigured: Boolean(this.smtpConfig()),
+      warnings: this.smtpConfig() ? [] : ['메일 계정이 설정되지 않아 실제 발송은 되지 않습니다']
+    };
+  }
+
+  async execute(args) {
+    const to = String(args?.to ?? '').trim();
+    if (!to || !/@/.test(to)) {
+      return { status: 'blocked', error: 'recipient-missing-or-invalid', to, outputPaths: [], rollbackAvailable: false };
+    }
+    const config = this.smtpConfig();
+    if (!config) {
+      return { status: 'blocked', error: 'smtp-not-configured', to, outputPaths: [], rollbackAvailable: false };
+    }
+    const nodemailer = await this.loadNodemailer();
+    if (!nodemailer) {
+      return { status: 'failed', error: 'nodemailer-not-installed', to, outputPaths: [], rollbackAvailable: false };
+    }
+    const attachment = await this.resolveAttachment(args?.attachmentQuery);
+    try {
+      const transporter = nodemailer.createTransport({ service: config.service, auth: { user: config.user, pass: config.pass } });
+      await transporter.sendMail({
+        from: config.user,
+        to,
+        subject: String(args?.subject ?? '(제목 없음)'),
+        text: String(args?.body ?? ''),
+        attachments: attachment ? [{ path: attachment.path, filename: attachment.name }] : []
+      });
+      return {
+        status: 'success',
+        to,
+        subject: String(args?.subject ?? ''),
+        attachmentCount: attachment ? 1 : 0,
+        summary: `${to}로 메일을 보냈어요${attachment ? ` (첨부: ${attachment.name})` : ''}.`,
+        outputPaths: [],
+        rollbackAvailable: false
+      };
+    } catch (error) {
+      return { status: 'failed', error: String(error?.message ?? error), to, outputPaths: [], rollbackAvailable: false };
+    }
+  }
+}
+
 export class FileMoveToolAdapter {
   constructor({ allowedRoots = ['./workspace'], undoJournal = new UndoJournal(), toolName = 'filesystem.moveFiles', previewOnly = false } = {}) {
     this.allowedRoots = allowedRoots.map((root) => resolve(root));
@@ -4731,6 +5064,9 @@ export class PcAgentRuntime {
     this.registry.register('excel.createWorkbook', new ExcelWorkbookToolAdapter({ allowedRoots, undoJournal: this.undoJournal }));
     this.registry.register('browser.search', new BrowserSearchToolAdapter({ browserDriver: browserDriver ?? undefined }));
     this.registry.register('shell.execute', new ShellExecuteToolAdapter({}));
+    this.registry.register('filesystem.searchFiles', new FileSearchToolAdapter({}));
+    this.registry.register('document.edit', new DocumentEditToolAdapter({}));
+    this.registry.register('email.send', new EmailSendToolAdapter({}));
     this.logs = [];
     this.results = new Map();
     for (const result of this.packetJournal.results.values()) {
