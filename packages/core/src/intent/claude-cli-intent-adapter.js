@@ -56,6 +56,7 @@ export function createClaudeCliRunner({
 
 function defaultRunner({ command, model, timeoutMs, shell }) {
   return (prompt) => {
+    const _startedAt = Date.now();
     const args = ['-p', '--output-format', 'json'];
     if (model) args.push('--model', model);
     // 인자는 전부 고정 리터럴이고 사용자 텍스트는 stdin으로만 전달된다.
@@ -79,6 +80,10 @@ function defaultRunner({ command, model, timeoutMs, shell }) {
     if (result.error) throw result.error;
     if (result.status !== 0) {
       throw new Error(`claude-cli exited with ${result.status}: ${String(result.stderr ?? '').slice(0, 400)}`);
+    }
+    if (process.env.JARVIS_TIMING) {
+      const head = String(prompt ?? '').slice(0, 50).replace(/\s+/g, ' ');
+      process.stderr.write(`[LLM ${Date.now() - _startedAt}ms ${model ?? 'default'}] ${head}\n`);
     }
     return String(result.stdout ?? '');
   };

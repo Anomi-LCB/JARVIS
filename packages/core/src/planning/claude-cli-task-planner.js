@@ -254,9 +254,13 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const planExplanation = plan.llmPlanning?.summary
       ? `명령을 "${plan.llmPlanning.summary}"(으)로 이해하고 ${partCount}단계로 계획했습니다.`
       : `명령을 "${intent.title ?? intent.label}" 작업으로 이해하고 ${partCount}단계로 계획했습니다.`;
-    const ambiguous = intent.unknown === true
+    // 복합 명령은 분해 단계에서 이미 의도가 파악됐으므로 별도의 확인 질문(느린 LLM 호출)을 만들지 않는다.
+    const isCompound = Number(plan.llmPlanning?.partCount ?? 1) > 1;
+    const ambiguous = !isCompound && (
+      intent.unknown === true
       || Number(intent.confidence ?? 1) < this.clarifyConfidenceThreshold
-      || (Array.isArray(intent.missingSlots) && intent.missingSlots.includes('intent'));
+      || (Array.isArray(intent.missingSlots) && intent.missingSlots.includes('intent'))
+    );
     const clarifyingQuestions = (this.clarifyEnabled && ambiguous)
       ? this.clarifyingQuestionsFor(taskRequest.command.rawText, intent)
       : [];
