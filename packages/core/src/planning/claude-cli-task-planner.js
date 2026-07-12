@@ -582,6 +582,8 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     if (!this.pendingDecomposition) {
       return super.actionNodesFor({ taskRequest, intent, action, affectedItems, skill });
     }
+    // 노드 간 데이터 흐름: 앞 노드가 만든 파일을 뒤의 전송/편집 노드가 이어받게 한다.
+    let lastProducedFile = null;
     return this.pendingDecomposition.parts.map((part, index) => {
       const partIntent = {
         actionType: part.actionType,
@@ -596,6 +598,20 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
         : this.skillRouter.route(partIntent);
       const partSkill = partRoute?.skill ?? skill;
       const partArguments = this.argumentsFor(partIntent, taskRequest, null);
+      // 파일을 만드는 노드면 그 이름을 기억한다.
+      if (part.actionType === ActionType.CREATE_FILE) {
+        lastProducedFile = partArguments.fileName ?? partArguments.path ?? null;
+      }
+      // 메일/편집 노드에 첨부·대상이 비어 있으면 앞에서 만든 파일로 연결한다.
+      if (lastProducedFile) {
+        const stem = String(lastProducedFile).split(/[\\/]/).filter(Boolean).at(-1)?.replace(/\.[^.]+$/, '') ?? lastProducedFile;
+        if (part.actionType === ActionType.SEND_EMAIL && !partArguments.attachmentQuery) {
+          partArguments.attachmentQuery = stem;
+        }
+        if (part.actionType === ActionType.EDIT_DOCUMENT && !partArguments.targetQuery && !partArguments.targetPath) {
+          partArguments.targetQuery = stem;
+        }
+      }
       const partAffected = this.affectedItemsFor(partIntent, partArguments);
       return {
         nodeId: `action_${index + 1}`,

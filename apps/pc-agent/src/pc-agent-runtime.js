@@ -3940,9 +3940,17 @@ export class EmailSendToolAdapter {
   }
 
   async execute(args) {
-    const to = String(args?.to ?? '').trim();
+    let to = String(args?.to ?? '').trim();
+    // "내 메일/내 구글메일/나에게" 같은 본인 발송이면 SMTP 계정 주소로 채운다.
     if (!to || !/@/.test(to)) {
-      return { status: 'blocked', error: 'recipient-missing-or-invalid', to, outputPaths: [], rollbackAvailable: false };
+      const rawText = String(args?.rawText ?? '');
+      const cfg = this.smtpConfig();
+      if (cfg && /(내|제)\s*(구글\s*)?(이|e)?메일|나(에게|한테|한테로)|본인(에게)?|self|스스로/i.test(rawText)) {
+        to = cfg.user;
+      }
+    }
+    if (!to || !/@/.test(to)) {
+      return { status: 'blocked', error: 'recipient-missing-or-invalid', to, summary: '받는 사람 이메일 주소를 못 찾았어요. 주소를 알려주시거나 "내 메일로"라고 해주세요.', outputPaths: [], rollbackAvailable: false };
     }
     // 첨부 후보가 여러 개면 임의로 보내지 않는다(잘못된 파일 외부 유출 방지). 어느 파일인지 되묻는다.
     const attachments = await this.resolveAttachments(args?.attachmentQuery);
