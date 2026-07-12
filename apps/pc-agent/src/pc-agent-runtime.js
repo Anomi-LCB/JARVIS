@@ -3385,7 +3385,7 @@ export function classifyShellCommand(command) {
 // 자연어를 셸 명령으로 바꿔 실행한다. 실제 명령은 승인 카드에 노출되며,
 // 파괴적 명령은 아래 정적 차단으로 승인 여부와 무관하게 실행되지 않는다.
 export class ShellExecuteToolAdapter {
-  constructor({ shell = 'powershell', timeoutMs = 30000, workingDir = null, maxOutputChars = 4000 } = {}) {
+  constructor({ shell = 'powershell', timeoutMs = 60000, workingDir = null, maxOutputChars = 6000 } = {}) {
     this.shell = shell;
     this.timeoutMs = timeoutMs;
     this.workingDir = resolve(workingDir ?? process.env.USERPROFILE ?? process.env.HOME ?? './workspace');

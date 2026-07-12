@@ -132,19 +132,25 @@ export function buildDocumentEditPrompt({ text }) {
 
 export function buildShellCommandPrompt({ text, locale = 'ko-KR' }) {
   return [
-    '당신은 사용자의 자연어 요청을 Windows PowerShell 명령으로 정확히 번역하는 어시스턴트입니다.',
-    '반드시 실행 가능한 PowerShell 명령 한 줄만 만듭니다.',
+    '당신은 사용자의 자연어 요청을 Windows PowerShell 스크립트로 정확히 번역하는 어시스턴트입니다.',
+    '간단한 일은 한 줄, 여러 단계가 필요한 일은 여러 줄 스크립트로 만듭니다.',
+    '',
+    '할 수 있는 일의 예:',
+    '- 파일/폴더 조회·정리·집계, 시스템 정보 확인',
+    '- 프로그램 실행(Start-Process), 앱 창 제어',
+    '- COM 자동화: Excel(New-Object -ComObject Excel.Application), 한글(HWPFrame.HwpObject) 등 설치된 앱 조작',
+    '- UI 자동화(Add-Type -AssemblyName UIAutomationClient, System.Windows.Forms.SendKeys)로 GUI 프로그램 조작',
+    '- 여러 단계를 순서대로 수행하는 자동화 스크립트',
     '',
     '안전 규칙(엄격히 준수):',
-    '- 삭제(Remove-Item, rm, del), 포맷, 디스크 초기화, 시스템 종료/재시작, 레지스트리 삭제,',
+    '- 파일 삭제(Remove-Item/rm/del), 포맷, 디스크 초기화, 시스템 종료/재시작, 레지스트리 삭제,',
     '  권한 변경(icacls/takeown), 계정 변경, 외부 전송(업로드/메일/ftp)은 절대 만들지 않는다.',
     '- 요청이 위 금지 항목이면 command를 빈 문자열로 둔다.',
-    '- 조회·검색·목록·정보 확인·프로그램 실행 위주로 만든다.',
     '- 경로가 필요하면 $HOME, $env:USERPROFILE 등 표준 변수를 쓴다.',
-    '- 여러 단계가 필요해도 세미콜론으로 한 줄에 담고, 파괴적 연산은 넣지 않는다.',
+    '- COM 객체는 작업 후 반드시 정리하고(Quit/ReleaseComObject), 변경 작업은 대상이 존재할 때만 한다.',
     '',
     '출력 규칙:',
-    '- JSON 객체 하나만 출력한다: {"command":"<powershell 한 줄>"}',
+    '- JSON 객체 하나만 출력한다: {"command":"<powershell 스크립트, 여러 줄이면 \\n 포함>"}',
     '- 설명, 마크다운, 코드펜스 금지.',
     `- 응답 언어 기준: ${locale}`,
     '',
@@ -478,9 +484,9 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const wrapper = extractJsonObject(stdout);
     const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
     const command = typeof payload?.command === 'string' ? payload.command.trim() : '';
-    if (!command || command.length > 1000) return null;
-    // 여러 줄/세미콜론 남용을 막고 한 줄 명령만 허용한다(승인 카드 가독성·안전).
-    if (/\r?\n/.test(command)) return null;
+    // 여러 단계 자동화(COM/GUI/멀티스텝)를 위해 여러 줄 스크립트를 허용한다.
+    // 안전은 어댑터의 정적 차단(classifyShellCommand)이 줄 단위로 담당한다.
+    if (!command || command.length > 8000) return null;
     return command;
   }
 
