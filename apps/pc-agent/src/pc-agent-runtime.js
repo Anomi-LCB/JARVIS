@@ -3869,7 +3869,7 @@ export class DocumentEditToolAdapter {
   async execute(args) {
     const targets = await this.resolveTargets(args);
     if (targets.length === 0) {
-      return { status: 'failed', error: 'target-file-missing', outputPaths: [], rollbackAvailable: false };
+      return { status: 'failed', error: 'target-file-missing', summary: '수정할 파일을 찾지 못했어요. 파일 이름을 더 정확히 알려주시거나, 어느 폴더에 있는지 말씀해 주세요.', outputPaths: [], rollbackAvailable: false };
     }
     // 대상 파일이 여러 개면 임의로 고르지 않고 어느 파일인지 되묻는다.
     if (targets.length > 1) {
@@ -3883,11 +3883,11 @@ export class DocumentEditToolAdapter {
     }
     const target = targets[0];
     if (extname(target.path).toLowerCase() !== '.xlsx') {
-      return { status: 'failed', error: `unsupported-format:${extname(target.path)}`, targetPath: target.path, outputPaths: [], rollbackAvailable: false };
+      return { status: 'failed', error: `unsupported-format:${extname(target.path)}`, targetPath: target.path, summary: `지금은 엑셀(xlsx) 파일만 편집할 수 있어요. "${basename(target.path)}"은(는) ${extname(target.path)} 형식이라 아직 안 돼요.`, outputPaths: [], rollbackAvailable: false };
     }
     const ExcelJS = await this.loadExcelJS();
     if (!ExcelJS) {
-      return { status: 'failed', error: 'exceljs-not-installed', targetPath: target.path, outputPaths: [], rollbackAvailable: false };
+      return { status: 'failed', error: 'exceljs-not-installed', targetPath: target.path, summary: '엑셀 편집 기능이 준비되지 않았어요. 잠시 후 다시 시도해 주세요.', outputPaths: [], rollbackAvailable: false };
     }
     const edits = Array.isArray(args?.edits) ? args.edits : [];
     try {
@@ -4058,7 +4058,7 @@ export class EmailSendToolAdapter {
     const attachment = attachments[0] ?? null;
     const config = this.smtpConfig();
     if (!config) {
-      return { status: 'blocked', error: 'smtp-not-configured', to, outputPaths: [], rollbackAvailable: false };
+      return { status: 'blocked', error: 'smtp-not-configured', to, summary: '메일 계정이 아직 연결되지 않았어요. Gmail 앱 비밀번호를 설정하면 발송할 수 있어요.', outputPaths: [], rollbackAvailable: false };
     }
     const nodemailer = await this.loadNodemailer();
     if (!nodemailer) {
