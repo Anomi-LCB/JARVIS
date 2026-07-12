@@ -3389,23 +3389,34 @@ export class FileListToolAdapter {
   }
 }
 
-// 셸 명령의 위험도를 정적 분류한다. 'blocked'는 어댑터가 승인과 무관하게 절대 실행하지 않는다.
-// 문자열 denylist는 난독화로 우회 가능하므로, 정적 검사를 무력화하는 "동적 실행"을 먼저 차단한다.
-const shellDenyPatterns = [
-  // 동적 실행/난독화: iex 등은 그 안의 코드를 검사할 수 없어 denylist 자체를 무력화한다 → 원천 차단.
-  { re: /(^|\s|;|&|\||\()(iex|icm)(\s|$)|invoke-expression|invoke-command\b|-encodedcommand|-enc\b|-e\s+[A-Za-z0-9+/=]{16,}|frombase64string|\[scriptblock\]|\.invoke\(/i, reason: '동적 코드 실행' },
-  { re: /downloadstring|downloadfile|downloaddata|start-bitstransfer|invoke-webrequest|invoke-restmethod|\biwr\b|\bcurl\b|\bwget\b|net\.webclient/i, reason: '원격 다운로드/실행' },
-  // 삭제(별칭 포함): ri/rbp는 Remove-Item 별칭.
+// 셸 명령 위험 분류(사용자 정책 2026-07-13): 삭제·포맷·자비스 자체 종료·보안 우회만 완전 차단(blocked),
+// 시스템 변경·프로그램 조작·웹 등은 'high'(강화 동의: 승인받으면 실행). 나머지는 caution/safe.
+
+// 완전 차단: 승인으로도 실행 불가.
+const shellHardBlockPatterns = [
+  // 동적 실행/난독화: 그 안의 코드를 검사할 수 없어 정적 방어를 무력화한다 → 기능이 아니라 우회 수단이므로 원천 차단.
+  { re: /(^|\s|;|&|\||\()(iex|icm)(\s|$)|invoke-expression|-encodedcommand|-enc\b|-e\s+[A-Za-z0-9+/=]{16,}|frombase64string|\[scriptblock\]|\.invoke\(/i, reason: '동적 코드 실행(보안 차단)' },
+  { re: /downloadstring|downloaddata|net\.webclient[\s\S]{0,40}download/i, reason: '원격 코드 메모리 실행(보안 차단)' },
+  // 삭제(별칭 포함). 사용자 지시로 거의 완전 봉쇄.
   { re: /(^|\s|;|&|\||\()(rm|del|erase|rd|rmdir|ri|rbp|rmo|rjb)(\s|$|\s*-)|remove-item|remove-psdrive|clear-recyclebin/i, reason: '파일/폴더 삭제' },
-  // 파일 내용 삭제/비우기
   { re: /clear-content|clear-item\b|(^|\s|;|\|)clc(\s|$)|(^|\s|;|\|)cli(\s|$)/i, reason: '파일 내용 삭제' },
   { re: /format\s+[a-z]:|format\s+\/[qsxy]|\bformat-volume\b|\bformat-disk\b|diskpart|mkfs|clear-disk|clean\s+all|initialize-disk/i, reason: '디스크 포맷/초기화' },
+  // 자비스 자체 종료/제거 금지(자기 보호).
+  { re: /(stop-service|remove-service|stop-process|taskkill|\bkill\b|disable-scheduledtask|unregister-scheduledtask)[\s\S]{0,80}(jarvis|jarvispcagent|jarviscoreruntime|jarvisbridge|jarviscoreruntimehost)|(jarvis|jarvispcagent|jarviscoreruntime|jarvisbridge)[\s\S]{0,80}(stop-service|stop-process|taskkill|\bkill\b|remove|disable|unregister)/i, reason: '자비스 자체 종료/제거(금지)' }
+];
+
+// 강화 동의: 위험하지만 사용자가 승인하면 실행한다. 승인 카드에 강한 경고를 띄운다.
+const shellHighRiskPatterns = [
   { re: /shutdown|restart-computer|stop-computer|logoff|halt/i, reason: '시스템 종료/재시작' },
-  { re: /reg\s+delete|remove-itemproperty|remove-item\s+hk|new-itemproperty\s+.*hklm/i, reason: '레지스트리 변경' },
+  { re: /reg\s+delete|reg\s+add|remove-itemproperty|(new|set)-itemproperty\s+[\s\S]*hk(lm|cu)/i, reason: '레지스트리 변경' },
   { re: /\b(takeown|icacls|cacls)\b|set-acl/i, reason: '권한 변경' },
   { re: /bcdedit|(^|\s)sfc(\s|$)|(^|\s)dism(\s|$)|set-executionpolicy/i, reason: '시스템 구성 변경' },
   { re: /net\s+user|new-localuser|remove-localuser|net\s+localgroup|add-localgroupmember/i, reason: '계정 변경' },
-  { re: /-method\s+post|(-T|--upload)\b|\bscp\b|\bftp\b|send-mailmessage|smtp/i, reason: '외부 전송' }
+  { re: /-method\s+post|(-T|--upload)\b|\bscp\b|\bftp\b|send-mailmessage|\bsmtp\b/i, reason: '외부 전송' },
+  { re: /downloadfile|start-bitstransfer|invoke-webrequest|invoke-restmethod|\biwr\b|\bcurl\b|\bwget\b/i, reason: '웹 다운로드' },
+  { re: /stop-service|start-service|restart-service|set-service/i, reason: '서비스 제어' },
+  { re: /stop-process|taskkill|(^|\s|;|\|)kill(\s|$)|(^|\s|;|\|)spps(\s|$)/i, reason: '프로세스 종료' },
+  { re: /msiexec|winget\s+install|choco\s+install|install-module|install-package|start-process[\s\S]{0,40}setup/i, reason: '프로그램 설치' }
 ];
 
 // 민감정보 파일 접근은 차단까진 안 하되 주의(caution)로 올려 승인 카드에서 확인하게 한다.
@@ -3414,14 +3425,14 @@ const shellSensitivePattern = /id_rsa|id_ed25519|\.ssh[\\/]|\.pem\b|\.ppk\b|\.en
 export function classifyShellCommand(command) {
   const text = String(command ?? '');
   if (!text.trim()) return { risk: 'blocked', reason: '빈 명령' };
-  for (const rule of shellDenyPatterns) {
+  for (const rule of shellHardBlockPatterns) {
     if (rule.re.test(text)) return { risk: 'blocked', reason: rule.reason };
+  }
+  for (const rule of shellHighRiskPatterns) {
+    if (rule.re.test(text)) return { risk: 'high', reason: rule.reason };
   }
   if (shellSensitivePattern.test(text)) {
     return { risk: 'caution', reason: '민감정보 파일 접근' };
-  }
-  if (/stop-process|taskkill|(^|\s|;|\|)kill(\s|$)|(^|\s|;|\|)spps(\s|$)/i.test(text)) {
-    return { risk: 'caution', reason: '프로세스 종료' };
   }
   if (/(^|\s)(mv|move|move-item|copy|cp|copy-item|ni|new-item|set-content|add-content|out-file|sc|ac)(\s|$)|>>?/i.test(text)) {
     return { risk: 'caution', reason: '파일 생성/수정' };
@@ -3504,7 +3515,12 @@ export class ShellExecuteToolAdapter {
       riskLevel: classified.risk,
       riskReason: classified.reason,
       willBlock: classified.risk === 'blocked',
-      warnings: classified.risk === 'blocked' ? [`차단: ${classified.reason} 명령은 실행할 수 없습니다`] : []
+      requiresStrongConsent: classified.risk === 'high',
+      warnings: classified.risk === 'blocked'
+        ? [`차단: ${classified.reason} 명령은 실행할 수 없습니다`]
+        : classified.risk === 'high'
+          ? [`⚠️ 강한 주의 — ${classified.reason}. 승인하시면 실행합니다.`]
+          : []
     };
   }
 
@@ -3536,8 +3552,9 @@ export class ShellExecuteToolAdapter {
       }
       const fix = extractJsonLoose(fixOut);
       const fixCmd = typeof fix?.command === 'string' ? fix.command.trim() : '';
-      // 교정안이 없거나, 그대로거나, 파괴적이면 중단(자동 재시도로 위험을 만들지 않는다).
-      if (!fixCmd || fixCmd === command || classifyShellCommand(fixCmd).risk === 'blocked') break;
+      // 교정안이 없거나, 그대로거나, 위험(차단·강화동의)하면 중단한다.
+      // 자동 재시도가 사용자 승인 없이 시스템 변경/설치/삭제를 저지르지 않게 safe/caution만 허용.
+      if (!fixCmd || fixCmd === command || !['safe', 'caution'].includes(classifyShellCommand(fixCmd).risk)) break;
       command = fixCmd;
       verifyCommand = typeof fix?.verify === 'string' && fix.verify.trim() ? fix.verify.trim() : verifyCommand;
       run = this.runShellOnce(command);
