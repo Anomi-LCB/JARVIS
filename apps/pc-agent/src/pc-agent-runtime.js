@@ -1,6 +1,6 @@
 import { access, copyFile, mkdir, readFile, readdir, stat, writeFile, rm, rename, realpath } from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { basename, dirname, extname, resolve, relative } from 'node:path';
 import { ActionType, maskSensitive, ModuleId, stableId, TaskStatus } from '../../../packages/shared/src/types.js';
@@ -3575,6 +3575,97 @@ export class ShellExecuteToolAdapter {
   }
 }
 
+// 한글(HWP) 파일을 생성한다. content를 임시 텍스트로 쓰고 한컴 COM으로 hwp로 변환한다.
+export class HwpCreateToolAdapter {
+  constructor({ timeoutMs = 45000 } = {}) {
+    this.home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
+    this.timeoutMs = timeoutMs;
+    this.contract = createToolContract({
+      toolName: 'hwp.create',
+      mutatesSystem: true,
+      rollback: true,
+      evidence: ['outputPath', 'sha256'],
+      blockedOperations: ['outsideAllowedRoots']
+    });
+  }
+
+  resolveOutPath(args) {
+    let p = args?.path ? String(args.path) : '';
+    if (p) {
+      if (!/\.hwpx?$/i.test(p)) p = p.replace(/\.[^.\\/]+$/, '') + '.hwp';
+      return resolve(p);
+    }
+    const name = String(args?.fileName ?? '문서').replace(/\.[^.\\/]+$/, '') + '.hwp';
+    const hint = args?.targetDirectoryHint;
+    const dir = hint === 'desktop' ? resolve(this.home, 'Desktop')
+      : hint === 'documents' ? resolve(this.home, 'Documents')
+      : hint === 'downloads' ? resolve(this.home, 'Downloads')
+      : resolve('./workspace');
+    return resolve(dir, name);
+  }
+
+  async shadow(args) {
+    return { mode: 'shadow', expectedChangesCount: 1, outputPath: this.resolveOutPath(args), warnings: [] };
+  }
+
+  async execute(args) {
+    const content = String(args?.content ?? args?.text ?? '').trim() || '(내용 없음)';
+    const outPath = this.resolveOutPath(args);
+    const stamp = Date.now();
+    const tmpTxt = resolve(process.env.TEMP ?? '.', `jarvis-hwp-${stamp}.txt`);
+    const tmpPs1 = resolve(process.env.TEMP ?? '.', `jarvis-hwp-${stamp}.ps1`);
+    try {
+      writeFileSync(tmpTxt, '﻿' + content, 'utf8');
+      mkdirSync(dirname(outPath), { recursive: true });
+      const esc = (s) => s.replace(/\\/g, '\\\\');
+      const script = [
+        '$ErrorActionPreference = "Stop"',
+        'try {',
+        '  $hwp = New-Object -ComObject HWPFrame.HwpObject',
+        '  try { $hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule") | Out-Null } catch {}',
+        '  $hwp.XHwpDocuments.Add(0) | Out-Null',
+        `  $text = [IO.File]::ReadAllText("${esc(tmpTxt)}", [Text.Encoding]::UTF8)`,
+        '  $act = $hwp.CreateAction("InsertText"); $set = $act.CreateSet(); $act.GetDefault($set) | Out-Null',
+        '  $set.SetItem("Text", $text)',
+        '  $act.Execute($set) | Out-Null',
+        `  $hwp.SaveAs("${esc(outPath)}", "HWP", "")`,
+        '  $hwp.Quit()',
+        '} catch {',
+        `  $_.Exception.Message | Out-File -FilePath "${esc(outPath)}.err" -Encoding utf8`,
+        '} finally {',
+        '  Get-Process Hwp* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue',
+        '}'
+      ].join('\r\n');
+      writeFileSync(tmpPs1, '﻿' + script, 'utf8');
+      // HWP는 GUI COM이라 node가 직접 부른 powershell 안에서 멈춘다. 독립 프로세스로 띄우고 결과 파일을 폴링한다.
+      const child = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1], { detached: true, stdio: 'ignore' });
+      child.unref();
+      const deadline = Date.now() + this.timeoutMs;
+      while (Date.now() < deadline) {
+        if (existsSync(outPath)) { await new Promise((r) => setTimeout(r, 400)); break; }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      try { process.kill(-child.pid); } catch { /* already exited */ }
+    } catch (error) {
+      try { rmSync(tmpTxt, { force: true }); rmSync(tmpPs1, { force: true }); } catch { /* ignore */ }
+      return { status: 'failed', error: `hwp-create-failed: ${String(error?.message ?? error).slice(0, 200)}`, targetPath: outPath, outputPaths: [], rollbackAvailable: false };
+    }
+    try { rmSync(tmpTxt, { force: true }); rmSync(tmpPs1, { force: true }); } catch { /* ignore */ }
+    if (existsSync(outPath)) {
+      return { status: 'success', outputPaths: [outPath], targetPath: outPath, summary: `한글 파일 "${basename(outPath)}"을 만들었어요.`, rollbackAvailable: true };
+    }
+    return {
+      status: 'failed',
+      error: 'hwp-create-unavailable',
+      targetPath: outPath,
+      summary: '한글(HWP) 파일 생성이 이 환경에서 한컴 자동화 제약으로 실패했어요. 대신 텍스트(txt)나 워드(docx)로 만들어 드릴 수 있어요.',
+      fallbackFormats: ['txt', 'docx'],
+      outputPaths: [],
+      rollbackAvailable: false
+    };
+  }
+}
+
 // PC 전체에서 파일을 이름/확장자/기간/내용으로 찾는다. 읽기 전용이라 안전하다.
 export class FileSearchToolAdapter {
   constructor({ maxResults = 100, maxDepth = 6, timeoutMs = 15000 } = {}) {
@@ -5258,6 +5349,7 @@ export class PcAgentRuntime {
     this.registry.register('browser.search', new BrowserSearchToolAdapter({ browserDriver: browserDriver ?? undefined }));
     this.registry.register('shell.execute', new ShellExecuteToolAdapter({}));
     this.registry.register('filesystem.searchFiles', new FileSearchToolAdapter({}));
+    this.registry.register('hwp.create', new HwpCreateToolAdapter({}));
     this.registry.register('document.edit', new DocumentEditToolAdapter({}));
     this.registry.register('email.send', new EmailSendToolAdapter({}));
     this.logs = [];

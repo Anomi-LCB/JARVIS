@@ -70,6 +70,40 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'hwp_create_skill',
+    version: '1.0.0',
+    label: 'Hangul (HWP) File Create',
+    module: ModuleId.PC_AGENT,
+    category: 'document',
+    actionType: ActionType.CREATE_FILE,
+    toolName: 'hwp.create',
+    match: {
+      outputFormats: ['hwp', 'hwpx'],
+      keywords: ['한글', 'hwp', '아래아']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['user_text'],
+      blockedWhen: ['externalTransfer=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['outputPath', 'sha256']
+    }
+  },
+  {
     skillId: 'file_list_skill',
     version: '1.0.0',
     label: 'File List',

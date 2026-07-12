@@ -79,6 +79,7 @@ const rules = [
 
 const outputFormatPatterns = [
   { format: 'xlsx', pattern: /엑셀|xlsx|스프레드시트/i },
+  { format: 'hwp', pattern: /한글|hwp|hwpx|아래아/i },
   { format: 'docx', pattern: /워드|docx/i },
   { format: 'pdf', pattern: /pdf/i },
   { format: 'txt', pattern: /메모|텍스트|txt/i }
@@ -261,7 +262,7 @@ export class IntentParser {
         .join('-');
       if (phrase) return this.normalizeFileName(phrase, outputFormat);
     }
-    const extension = text.match(/([가-힣\w-]+)\.(xlsx|docx|pdf|txt)\b/i);
+    const extension = text.match(/([가-힣\w-]+)\.(xlsx|docx|pdf|txt|hwp)\b/i);
     if (extension) return extension[0];
     return null;
   }
@@ -273,7 +274,7 @@ export class IntentParser {
       .replace(/\s+/g, '-')
       .replace(/^-+|-+$/g, '');
     if (!cleaned) return null;
-    if (/\.(xlsx|docx|pdf|txt)$/i.test(cleaned)) return cleaned;
+    if (/\.(xlsx|docx|pdf|txt|hwp)$/i.test(cleaned)) return cleaned;
     return `${cleaned}.${outputFormat ?? 'txt'}`;
   }
 
@@ -312,7 +313,7 @@ export class IntentParser {
   }
 
   extractTopic(text, fileName) {
-    if (fileName) return fileName.replace(/\.(xlsx|docx|pdf|txt)$/i, '');
+    if (fileName) return fileName.replace(/\.(xlsx|docx|pdf|txt|hwp)$/i, '');
     const cleaned = this.cleanupCommandText(text.replace(/검색|조사|찾아|브라우저|목록|리스트|파일|폴더|보여|만들|작성|생성|전송|공유|업로드/gi, ''));
     return cleaned || null;
   }
