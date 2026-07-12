@@ -4,7 +4,6 @@ import {
   AppState,
   Linking,
   Platform,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -16,6 +15,20 @@ import {
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  Mic,
+  AudioLines,
+  Volume2,
+  VolumeX,
+  FileText,
+  X,
+  Check,
+  Sparkles,
+  Lightbulb,
+  ChevronRight,
+  CircleCheck
+} from 'lucide-react-native';
 import { createMobileAppShell } from './App.js';
 import { BridgeClient, defaultBridgeClientTimeoutMs } from './api/BridgeClient.js';
 import { canNavigate, MobileRoutes } from './navigation/routes.js';
@@ -38,7 +51,8 @@ import {
   createApprovalTimeline
 } from './approval/approval-history.js';
 import { colors } from './theme/colors';
-import { spacing } from './theme/spacing';
+import { spacing, radius, shadow } from './theme/spacing';
+import { typography } from './theme/typography';
 import {
   approvalSpeech,
   getSpeechRate,
@@ -226,13 +240,25 @@ function applyLiveBridgeState(state: any, patch: Record<string, unknown>) {
   };
 }
 
-// 홈 흐름 폴링: 촘촘한 간격으로 승인 카드/실행 완료를 즉시 감지한다.
-// 총 대기 = interval * max. 콘텐츠 LLM(최대 90s)까지 커버하도록 넉넉히 잡는다.
-const homePollIntervalMs = 500;
-const homeApprovalPollMax = 200; // 최대 ~100초
-const homeExecutePollMax = 160;  // 최대 ~80초
+// 처음 쓰는 사람을 위한 단계별 명령 예시. 기초 → 중급 → 고급 순으로 눈높이를 올린다.
+// 목회 사역 맥락(신혼교구·심방 등)을 섞어 실제로 바로 써보게 유도한다.
+const commandExamples: { level: string; tone: 'basic' | 'mid' | 'adv'; items: string[] }[] = [
+  { level: '기초', tone: 'basic', items: ['메모 만들어', '오늘 할 일 정리해줘'] },
+  { level: '중급', tone: 'mid', items: ['이번 주 사역 점검표 엑셀로 만들어', '심방 일정 목록 정리해줘'] },
+  { level: '고급', tone: 'adv', items: ['이번달 가계부 엑셀 만들고 수입·지출 항목 넣어줘', '신혼교구 새가족 명단 표로 정리해줘'] }
+];
 
-export default function App() {
+// 홈 흐름 폴링: 적응형 백오프. 대부분의 단순 작업은 1초 안에 끝나므로 초반은 아주 촘촘히(즉각 반응),
+// 콘텐츠 LLM처럼 오래 걸리는 작업은 간격을 늘려 서버 부담을 줄인다. "빠를 땐 빠르게, 오래 걸리면 여유롭게".
+const homePollTotalBudgetMs = 100_000;
+function homeBackoffDelay(attempt: number): number {
+  if (attempt < 12) return 250;   // 첫 3초: 즉각 반응
+  if (attempt < 30) return 600;   // ~14초
+  return 1200;                    // 그 이후: 여유
+}
+
+function AppInner() {
+  const insets = useSafeAreaInsets();
   const shell = useMemo(() => createMobileAppShell(), []);
   const appStateRef = useRef(AppState.currentState);
   const deepLinkHandlerRef = useRef<(url: string) => boolean>(() => false);
@@ -280,6 +306,69 @@ export default function App() {
     void SecureStore.setItemAsync('jarvis_speech_rate', preset.id).catch(() => {});
     // 선택한 속도를 바로 체감하도록 짧게 시연한다.
     speak('이 속도로 말할게요.', { enabled: true });
+  }
+
+  // ── 온보딩 예시 추천 on/off (기본 켜짐, SecureStore에 저장) ──
+  const [examplesOn, setExamplesOn] = useState<boolean>(true);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const saved = await SecureStore.getItemAsync('jarvis_examples_on');
+        if (saved === '0') setExamplesOn(false);
+      } catch {
+        // 저장값 없음 — 기본 켜짐 유지
+      }
+    })();
+  }, []);
+  function toggleExamples(next: boolean) {
+    setExamplesOn(next);
+    void SecureStore.setItemAsync('jarvis_examples_on', next ? '1' : '0').catch(() => {});
+  }
+
+  // ── 반복 작업 추천: 실행한 명령을 로컬에 누적해 자주(2회+) 하는 일을 홈에 추천한다 ──
+  const [suggestions, setSuggestions] = useState<{ text: string; count: number }[]>([]);
+
+  async function loadCommandHistory(): Promise<{ text: string; count: number; lastAt: number }[]> {
+    try {
+      const raw = await SecureStore.getItemAsync('jarvis_command_history');
+      const list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function computeSuggestions(list: { text: string; count: number; lastAt: number }[]) {
+    return list
+      .filter((entry) => entry.count >= 2)
+      .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt)
+      .slice(0, 4)
+      .map((entry) => ({ text: entry.text, count: entry.count }));
+  }
+
+  useEffect(() => {
+    void (async () => setSuggestions(computeSuggestions(await loadCommandHistory())))();
+  }, []);
+
+  async function recordCommand(text: string) {
+    const trimmed = String(text ?? '').trim();
+    // 너무 길거나 추가정보가 붙은 재계획 명령은 추천 후보에서 제외한다.
+    if (!trimmed || trimmed.length > 60 || trimmed.includes('(추가 정보:')) return;
+    const list = await loadCommandHistory();
+    const existing = list.find((entry) => entry.text === trimmed);
+    if (existing) {
+      existing.count += 1;
+      existing.lastAt = Date.now();
+    } else {
+      list.push({ text: trimmed, count: 1, lastAt: Date.now() });
+    }
+    const kept = list.sort((a, b) => b.lastAt - a.lastAt).slice(0, 40);
+    try {
+      await SecureStore.setItemAsync('jarvis_command_history', JSON.stringify(kept));
+    } catch {
+      // 저장 실패는 무시 — 추천은 부가 기능이다.
+    }
+    setSuggestions(computeSuggestions(kept));
   }
 
   // ── 대화 모드(연속 음성 대화) 상태: 듣기 → 생각 → 말하기 턴이 자동 순환한다 ──
@@ -1860,6 +1949,8 @@ export default function App() {
       if (created?.success === false || !created?.taskId) {
         throw new Error(bridgeFailureMessage(created, 'task-create-failed'));
       }
+      // 성공적으로 접수된 명령만 추천 히스토리에 기록한다.
+      void recordCommand(rawText);
       if (homeFlowSeq.current !== seq) return;
       setHome((current: any) => ({
         ...current,
@@ -1876,9 +1967,10 @@ export default function App() {
 
   async function homeTrackApproval(taskId: string, seq: number) {
     const client = homeClient();
-    // 500ms 간격으로 촘촘히 폴링해 승인 카드가 준비되는 즉시 띄운다.
-    // 내용 있는 명령은 콘텐츠 LLM(~35s, 최대 90s)을 타므로 총 대기를 넉넉히 잡는다.
-    for (let attempt = 0; attempt < homeApprovalPollMax; attempt += 1) {
+    // 적응형 백오프로 폴링: 승인 카드가 준비되는 즉시(초반 250ms) 띄우고,
+    // 오래 걸리는 콘텐츠 LLM 작업은 점차 간격을 늘린다.
+    let elapsed = 0;
+    for (let attempt = 0; elapsed < homePollTotalBudgetMs; attempt += 1) {
       if (homeFlowSeq.current !== seq) return;
       try {
         const approvals = await client.getApprovals();
@@ -1898,7 +1990,9 @@ export default function App() {
       } catch {
         // 폴링 중 일시 오류는 다음 시도에서 회복한다.
       }
-      await homeSleep(homePollIntervalMs);
+      const delay = homeBackoffDelay(attempt);
+      await homeSleep(delay);
+      elapsed += delay;
     }
     if (homeFlowSeq.current !== seq) return;
     setHome((current: any) => ({
@@ -1948,14 +2042,17 @@ export default function App() {
         }
       }
       setHome((current: any) => ({ ...current, phase: 'executing', notice: 'PC에서 실행하는 중입니다...' }));
-      for (let attempt = 0; attempt < homeExecutePollMax; attempt += 1) {
+      let elapsed = 0;
+      for (let attempt = 0; elapsed < homePollTotalBudgetMs; attempt += 1) {
         if (homeFlowSeq.current !== seq) return;
         const status = homeTaskStatusOf(await client.getTaskStatus(card.taskId).catch(() => null));
         if (['COMPLETED', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(String(status))) {
           await homeFinish(card.taskId, String(status), seq);
           return;
         }
-        await homeSleep(homePollIntervalMs);
+        const delay = homeBackoffDelay(attempt);
+        await homeSleep(delay);
+        elapsed += delay;
       }
       setHome((current: any) => ({
         ...current,
@@ -2357,7 +2454,6 @@ export default function App() {
   }
 
   function renderHomeScreen() {
-    const paired = state.device.paired && Boolean(state.liveBridge.deviceToken);
     const busy = ['submitting', 'waiting-approval', 'deciding', 'executing'].includes(home.phase);
     const approvalCard = home.phase === 'approval' ? home.approval : null;
     return (
@@ -2421,7 +2517,10 @@ export default function App() {
                 onPress={homeToggleVoice}
                 style={styles.homeVoiceToggle}
               >
-                <Text style={styles.homeVoiceToggleText}>{home.voiceOn ? '🔊 음성 답변 켬' : '🔇 음성 답변 끔'}</Text>
+                {home.voiceOn
+                  ? <Volume2 size={16} color={colors.muted} strokeWidth={2} />
+                  : <VolumeX size={16} color={colors.muted} strokeWidth={2} />}
+                <Text style={styles.homeVoiceToggleText}>{home.voiceOn ? '음성 답변' : '음소거'}</Text>
               </Pressable>
             ) : null}
           </View>
@@ -2449,8 +2548,9 @@ export default function App() {
                   busy || !paired ? styles.homeButtonDisabled : null
                 ]}
               >
+                <Mic size={18} color={home.listening ? colors.onAccent : colors.text} strokeWidth={2.2} />
                 <Text style={home.listening ? styles.homePrimaryButtonText : styles.homeMicButtonText}>
-                  {home.listening ? '🎙️ 듣는 중' : '🎤 말하기'}
+                  {home.listening ? '듣는 중' : '음성입력'}
                 </Text>
               </Pressable>
             ) : null}
@@ -2462,7 +2562,7 @@ export default function App() {
               onPress={() => void homeSubmit()}
               style={[styles.homePrimaryButton, styles.homeSubmitButton, busy || !paired ? styles.homeButtonDisabled : null]}
             >
-              <Text style={styles.homePrimaryButtonText}>{busy ? '자비스가 일하는 중...' : '자비스에게 시키기'}</Text>
+              <Text style={styles.homePrimaryButtonText}>{busy ? '처리 중...' : '실행'}</Text>
             </Pressable>
           </View>
           {voiceSupport.stt ? (
@@ -2474,7 +2574,8 @@ export default function App() {
               onPress={convEnter}
               style={[styles.convEnterButton, !paired ? styles.homeButtonDisabled : null]}
             >
-              <Text style={styles.convEnterButtonText}>🎙️ 대화 모드 — 말로 주고받기</Text>
+              <AudioLines size={18} color={colors.accent} strokeWidth={2.2} />
+              <Text style={styles.convEnterButtonText}>대화모드</Text>
             </Pressable>
           ) : null}
           {voiceSupport.tts ? (
@@ -2499,6 +2600,90 @@ export default function App() {
           {home.notice ? <Text style={styles.homeNotice}>{home.notice}</Text> : null}
           {home.error ? <Text style={styles.warningText}>{home.error}</Text> : null}
         </View>
+
+        {paired && suggestions.length && home.phase === 'idle' ? (
+          <View style={styles.homeSuggestCard}>
+            <Text style={styles.homeSuggestTitle}>자주 하는 일</Text>
+            <View style={styles.homeSuggestWrap}>
+              {suggestions.map((item) => (
+                <Pressable
+                  key={item.text}
+                  testID={`home-suggest-${item.text}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.text} 실행`}
+                  disabled={busy}
+                  onPress={() => {
+                    setHome((current: any) => ({ ...current, text: item.text }));
+                    void homeSubmit(item.text);
+                  }}
+                  style={styles.homeSuggestChip}
+                >
+                  <Text style={styles.homeSuggestChipText} numberOfLines={1}>{item.text}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {home.phase === 'idle' ? (
+          examplesOn ? (
+            <View style={styles.homeExampleCard}>
+              <View style={styles.homeExampleHeader}>
+                <View style={styles.homeExampleHeaderLeft}>
+                  <Lightbulb size={16} color={colors.accent} strokeWidth={2} />
+                  <Text style={styles.homeExampleTitle}>이런 걸 시켜보세요</Text>
+                </View>
+                <Pressable
+                  testID="home-examples-off"
+                  accessibilityRole="button"
+                  accessibilityLabel="예시 숨기기"
+                  hitSlop={8}
+                  onPress={() => toggleExamples(false)}
+                  style={styles.homeExampleClose}
+                >
+                  <X size={15} color={colors.muted} strokeWidth={2.2} />
+                </Pressable>
+              </View>
+              {commandExamples.map((group) => (
+                <View key={group.level} style={styles.homeExampleGroup}>
+                  <View style={[styles.homeExampleBadge, styles[`exampleBadge_${group.tone}` as const]]}>
+                    <Text style={[styles.homeExampleBadgeText, styles[`exampleBadgeText_${group.tone}` as const]]}>{group.level}</Text>
+                  </View>
+                  <View style={styles.homeExampleItems}>
+                    {group.items.map((text) => (
+                      <Pressable
+                        key={text}
+                        testID={`home-example-${text}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`예시 실행: ${text}`}
+                        disabled={busy}
+                        onPress={() => {
+                          setHome((current: any) => ({ ...current, text }));
+                          if (paired) void homeSubmit(text);
+                        }}
+                        style={styles.homeExampleItem}
+                      >
+                        <Text style={styles.homeExampleItemText}>{text}</Text>
+                        <ChevronRight size={15} color={colors.muted} strokeWidth={2} />
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <Pressable
+              testID="home-examples-on"
+              accessibilityRole="button"
+              accessibilityLabel="명령 예시 보기"
+              onPress={() => toggleExamples(true)}
+              style={styles.homeExampleReopen}
+            >
+              <Lightbulb size={15} color={colors.muted} strokeWidth={2} />
+              <Text style={styles.homeExampleReopenText}>명령 예시 보기</Text>
+            </Pressable>
+          )
+        ) : null}
 
         {approvalCard ? (
           <View style={[styles.homeCard, styles.homeApprovalCard]}>
@@ -2547,6 +2732,7 @@ export default function App() {
                 onPress={() => void homeDecide('approve')}
                 style={[styles.homeDecideButton, styles.homeApproveButton]}
               >
+                <Check size={18} color={colors.onAccent} strokeWidth={2.6} />
                 <Text style={styles.homePrimaryButtonText}>승인</Text>
               </Pressable>
               <Pressable
@@ -2556,6 +2742,7 @@ export default function App() {
                 onPress={() => void homeDecide('reject')}
                 style={[styles.homeDecideButton, styles.homeRejectButton]}
               >
+                <X size={18} color={colors.onAccent} strokeWidth={2.6} />
                 <Text style={styles.homePrimaryButtonText}>거절</Text>
               </Pressable>
             </View>
@@ -2564,9 +2751,12 @@ export default function App() {
 
         {home.phase === 'done' ? (
           <View style={[styles.homeCard, home.taskStatus === 'COMPLETED' ? styles.homeDoneCard : null]}>
-            <Text style={styles.homeCardTitle}>
-              {home.taskStatus === 'COMPLETED' ? '✅ 완료했어요' : `결과: ${home.taskStatus ?? '알 수 없음'}`}
-            </Text>
+            <View style={styles.homeDoneTitleRow}>
+              {home.taskStatus === 'COMPLETED' ? <CircleCheck size={20} color={colors.success} strokeWidth={2.2} /> : null}
+              <Text style={styles.homeCardTitle}>
+                {home.taskStatus === 'COMPLETED' ? '완료했어요' : `결과: ${home.taskStatus ?? '알 수 없음'}`}
+              </Text>
+            </View>
             {home.result?.command ? (
               <Text style={styles.homeDoneCommand}>요청: "{home.result.command}"</Text>
             ) : null}
@@ -2574,7 +2764,10 @@ export default function App() {
               <View style={styles.homeDoneFilesBox}>
                 <Text style={styles.homeDoneLabel}>만든 파일</Text>
                 {(home.result?.outputPaths ?? []).map((path: string) => (
-                  <Text key={path} style={styles.homeDoneFile}>📄 {String(path).split(/[\\/]/).filter(Boolean).at(-1)}</Text>
+                  <View key={path} style={styles.homeDoneFileRow}>
+                    <FileText size={16} color={colors.text} strokeWidth={2} />
+                    <Text style={styles.homeDoneFile}>{String(path).split(/[\\/]/).filter(Boolean).at(-1)}</Text>
+                  </View>
                 ))}
                 <Text style={styles.homeDoneWhere}>PC에 저장되고 화면에 열렸어요.</Text>
               </View>
@@ -3162,31 +3355,46 @@ export default function App() {
   // 사용자 앱은 항상 홈 레이아웃(집사 화면)만 사용한다.
   const isHome = true;
 
-  // Android edge-to-edge에서는 SafeAreaView가 상단 상태바 인셋을 처리하지 못해
-  // 콘텐츠가 시계/배터리 영역으로 파고든다. 상태바 높이만큼 상단 여백을 직접 준다.
-  const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) : 0;
+  // edge-to-edge에서 상태바/제스처 영역과 콘텐츠가 겹치지 않도록 실제 인셋을 적용한다.
+  // useSafeAreaInsets는 레이아웃 이후 정확한 값을 주므로 StatusBar.currentHeight보다 안정적이다.
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0) + spacing.sm;
+  const bottomInset = Math.max(insets.bottom, spacing.md);
+  const paired = state.device.paired && Boolean(state.liveBridge.deviceToken);
 
   return (
-    <SafeAreaView testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={[styles.root, { paddingTop: topInset }]}>
+    <View testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={[styles.root, { paddingTop: topInset }]}>
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xl }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.header}>
-          <Text testID="jarvis-mobile-title" accessibilityRole="header" style={styles.title}>
-            {isHome ? 'JARVIS' : 'JARVIS Mobile'}
-          </Text>
+          <View style={styles.headerRow}>
+            <Text testID="jarvis-mobile-title" accessibilityRole="header" style={styles.title}>
+              {isHome ? 'Jarvis' : 'JARVIS Mobile'}
+            </Text>
+            {isHome ? (
+              <View style={[styles.connPill, paired ? styles.connPillOn : styles.connPillOff]}>
+                <View style={[styles.connDot, paired ? styles.connDotOn : styles.connDotOff]} />
+                <Text style={[styles.connPillText, paired ? styles.connPillTextOn : styles.connPillTextOff]}>
+                  {paired ? '연결됨' : '연결 필요'}
+                </Text>
+              </View>
+            ) : null}
+          </View>
           <Text
             testID="jarvis-current-route"
             accessibilityLabel={`current route ${route}`}
             style={isHome ? styles.homeSubtitle : styles.currentRoute}
           >
-            {isHome ? '무엇이든 시키세요' : `현재 화면: ${route}`}
+            {isHome ? '무엇을 도와드릴까요?' : `현재 화면: ${route}`}
           </Text>
           {!isHome ? (
             <Text style={styles.routeDescription}>{routeMeta[route as keyof typeof routeMeta]?.description}</Text>
           ) : null}
         </View>
 
-        <ConnectionStatusBar connected={state.connection.connected} bridgeUrl={state.connection.bridgeUrl} />
+        {!isHome ? <ConnectionStatusBar connected={state.connection.connected} bridgeUrl={state.connection.bridgeUrl} /> : null}
 
         {!isHome ? <NativeRuntimeProbe /> : null}
 
@@ -3215,15 +3423,11 @@ export default function App() {
               <Text key={item.eventId} style={styles.mutedText}>{item.createdAt} · {item.label}</Text>
             ))}
           </Section>
-        ) : (
-          <View style={styles.homeProbeFooter}>
-            <NativeRuntimeProbe />
-          </View>
-        )}
+        ) : null}
       </ScrollView>
 
       {conv.active ? (
-        <View testID="conversation-overlay" style={[styles.convOverlay, { paddingTop: topInset + spacing.lg }]}>
+        <View testID="conversation-overlay" style={[styles.convOverlay, { paddingTop: topInset + spacing.lg, paddingBottom: bottomInset + spacing.lg }]}>
           <View style={styles.convTopRow}>
             <Text style={styles.convHint}>"종료"라고 말해도 닫혀요</Text>
             <Pressable
@@ -3233,7 +3437,8 @@ export default function App() {
               onPress={() => convExit(false)}
               style={styles.convExitButton}
             >
-              <Text style={styles.convExitButtonText}>✕ 종료</Text>
+              <X size={16} color={colors.textSecondary} strokeWidth={2.4} />
+              <Text style={styles.convExitButtonText}>종료</Text>
             </Pressable>
           </View>
 
@@ -3285,7 +3490,15 @@ export default function App() {
           ) : null}
         </View>
       ) : null}
-    </SafeAreaView>
+    </View>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppInner />
+    </SafeAreaProvider>
   );
 }
 
@@ -3294,44 +3507,76 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background
   },
+  header: {
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+    gap: spacing.xs
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  title: {
+    color: colors.text,
+    fontSize: typography.largeTitle,
+    fontWeight: '800',
+    letterSpacing: typography.tightTracking
+  },
   homeSubtitle: {
     color: colors.muted,
-    fontSize: 15
+    fontSize: typography.subtitle
   },
+  connPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill
+  },
+  connPillOn: { backgroundColor: colors.successSoft },
+  connPillOff: { backgroundColor: colors.warningSoft },
+  connDot: { width: 8, height: 8, borderRadius: 4 },
+  connDotOn: { backgroundColor: colors.success },
+  connDotOff: { backgroundColor: colors.warning },
+  connPillText: { fontSize: typography.caption, fontWeight: '700' },
+  connPillTextOn: { color: colors.success },
+  connPillTextOff: { color: colors.warning },
   homeCard: {
-    gap: spacing.sm,
-    padding: spacing.md,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 12,
-    backgroundColor: colors.surface
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.xl,
+    backgroundColor: colors.surface,
+    ...shadow.card
   },
   homeCardTitle: {
     color: colors.text,
-    fontSize: 18,
-    fontWeight: '700'
+    fontSize: typography.headline,
+    fontWeight: '700',
+    letterSpacing: -0.2
   },
   homeHint: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20
+    fontSize: typography.callout,
+    lineHeight: 21
   },
   homeInput: {
-    minHeight: 88,
-    padding: spacing.sm,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 8,
+    minHeight: 96,
+    padding: spacing.md,
+    borderRadius: radius.lg,
     color: colors.text,
-    fontSize: 17,
+    fontSize: typography.subtitle,
+    lineHeight: 22,
     textAlignVertical: 'top',
-    backgroundColor: colors.background
+    backgroundColor: colors.surfaceMuted
   },
   homePrimaryButton: {
-    minHeight: 52,
+    minHeight: 54,
+    paddingHorizontal: spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
+    borderRadius: radius.lg,
     backgroundColor: colors.accent
   },
   homeCardTitleRow: {
@@ -3340,43 +3585,161 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between'
   },
   homeVoiceToggle: {
-    paddingVertical: 4,
-    paddingHorizontal: spacing.sm,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceMuted
   },
   homeVoiceToggleText: {
     color: colors.muted,
-    fontSize: 13
+    fontSize: typography.caption,
+    fontWeight: '600'
+  },
+  homeExampleCard: {
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.xl,
+    backgroundColor: colors.surface,
+    ...shadow.card
+  },
+  homeExampleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  homeExampleHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
+  },
+  homeExampleTitle: {
+    color: colors.text,
+    fontSize: typography.subtitle,
+    fontWeight: '700'
+  },
+  homeExampleClose: {
+    padding: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceMuted
+  },
+  homeExampleGroup: {
+    gap: spacing.sm
+  },
+  homeExampleBadge: {
+    alignSelf: 'flex-start',
+    paddingVertical: 3,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.sm
+  },
+  exampleBadge_basic: { backgroundColor: colors.successSoft },
+  exampleBadge_mid: { backgroundColor: 'rgba(100,210,255,0.16)' },
+  exampleBadge_adv: { backgroundColor: colors.accentSoft },
+  homeExampleBadgeText: {
+    fontSize: typography.caption,
+    fontWeight: '700'
+  },
+  exampleBadgeText_basic: { color: colors.success },
+  exampleBadgeText_mid: { color: colors.info },
+  exampleBadgeText_adv: { color: colors.accent },
+  homeExampleItems: {
+    gap: spacing.xs
+  },
+  homeExampleItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingVertical: 11,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted
+  },
+  homeExampleItemText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: typography.callout,
+    fontWeight: '500'
+  },
+  homeExampleReopen: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface
+  },
+  homeExampleReopenText: {
+    color: colors.muted,
+    fontSize: typography.callout,
+    fontWeight: '600'
+  },
+  homeSuggestCard: {
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xs
+  },
+  homeSuggestTitle: {
+    color: colors.muted,
+    fontSize: typography.caption,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5
+  },
+  homeSuggestWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm
+  },
+  homeSuggestChip: {
+    maxWidth: '100%',
+    paddingVertical: 9,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface
+  },
+  homeSuggestChipText: {
+    color: colors.textSecondary,
+    fontSize: typography.callout,
+    fontWeight: '500'
   },
   homeDoneCard: {
-    borderColor: colors.info
+    borderWidth: 1,
+    borderColor: colors.successSoft
+  },
+  homeDoneTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7
   },
   homeDoneCommand: {
     color: colors.muted,
-    fontSize: 14,
+    fontSize: typography.callout,
     fontStyle: 'italic'
   },
   homeDoneFilesBox: {
-    gap: 4,
-    padding: spacing.sm,
-    borderRadius: 8,
-    backgroundColor: colors.background
+    gap: spacing.xs,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted
   },
   homeDoneLabel: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700'
+    fontSize: typography.caption,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5
   },
   homeDoneFile: {
     color: colors.text,
-    fontSize: 16,
+    fontSize: typography.subtitle,
     fontWeight: '600'
   },
   homeDoneWhere: {
     color: colors.muted,
-    fontSize: 13
+    fontSize: typography.caption
   },
   homeRateRow: {
     flexDirection: 'row',
@@ -3386,26 +3749,25 @@ const styles = StyleSheet.create({
   },
   homeRateLabel: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: typography.caption,
     marginRight: spacing.xs
   },
   homeRateChip: {
-    paddingVertical: 6,
+    paddingVertical: 7,
     paddingHorizontal: spacing.md,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.line
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceMuted
   },
   homeRateChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.surface
+    backgroundColor: colors.accent
   },
   homeRateChipText: {
     color: colors.muted,
-    fontSize: 13
+    fontSize: typography.caption,
+    fontWeight: '600'
   },
   homeRateChipTextActive: {
-    color: colors.text,
+    color: colors.onAccent,
     fontWeight: '700'
   },
   homeCommandButtonRow: {
@@ -3413,37 +3775,36 @@ const styles = StyleSheet.create({
     gap: spacing.sm
   },
   homeMicButton: {
-    minHeight: 52,
-    minWidth: 110,
+    minHeight: 54,
+    minWidth: 118,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.accent,
-    backgroundColor: colors.background
+    gap: 7,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surfaceMuted
   },
   homeMicButtonActive: {
-    backgroundColor: colors.warning,
-    borderColor: colors.warning
+    backgroundColor: colors.danger
   },
   homeMicButtonText: {
-    color: colors.accent,
-    fontSize: 17,
+    color: colors.text,
+    fontSize: typography.subtitle,
     fontWeight: '700'
   },
   convEnterButton: {
-    minHeight: 48,
+    minHeight: 50,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.background
+    gap: 6,
+    borderRadius: radius.lg,
+    backgroundColor: colors.accentSoft
   },
   convEnterButtonText: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600'
+    color: colors.accent,
+    fontSize: typography.callout,
+    fontWeight: '700'
   },
   convOverlay: {
     position: 'absolute',
@@ -3452,7 +3813,8 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     backgroundColor: colors.background,
-    padding: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xxl,
     justifyContent: 'space-between'
   },
   convTopRow: {
@@ -3462,128 +3824,144 @@ const styles = StyleSheet.create({
   },
   convHint: {
     color: colors.muted,
-    fontSize: 13
+    fontSize: typography.caption
   },
   convExitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingVertical: 8,
     paddingHorizontal: spacing.md,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceMuted
+  },
+  homeDoneFileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
   },
   convExitButtonText: {
-    color: colors.text,
-    fontSize: 15,
+    color: colors.textSecondary,
+    fontSize: typography.callout,
     fontWeight: '600'
   },
   convCenter: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.md
+    gap: spacing.xl
   },
   convOrb: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: colors.line
+    width: 168,
+    height: 168,
+    borderRadius: 84,
+    backgroundColor: colors.surfaceMuted
   },
   convOrbListening: {
-    backgroundColor: colors.accent
+    backgroundColor: colors.accent,
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 32,
+    elevation: 10
   },
   convOrbThinking: {
-    backgroundColor: colors.line
+    backgroundColor: colors.surfaceMuted
   },
   convOrbSpeaking: {
-    backgroundColor: colors.info
+    backgroundColor: colors.info,
+    shadowColor: colors.info,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 28,
+    elevation: 10
   },
   convStatusText: {
     color: colors.text,
-    fontSize: 17,
-    fontWeight: '600'
+    fontSize: typography.headline,
+    fontWeight: '600',
+    textAlign: 'center'
   },
   convTranscript: {
-    color: colors.muted,
-    fontSize: 16,
+    color: colors.textSecondary,
+    fontSize: typography.subtitle,
     textAlign: 'center',
-    paddingHorizontal: spacing.lg
+    paddingHorizontal: spacing.lg,
+    lineHeight: 24
   },
   convNotice: {
     color: colors.accent,
-    fontSize: 14,
+    fontSize: typography.callout,
     textAlign: 'center',
     paddingHorizontal: spacing.lg
   },
   convApprovalBox: {
-    gap: spacing.sm,
-    padding: spacing.md,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.accent,
-    backgroundColor: colors.surface
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.xl,
+    backgroundColor: colors.surface,
+    ...shadow.floating
   },
   convApprovalTitle: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '600'
+    fontSize: typography.subtitle,
+    fontWeight: '600',
+    textAlign: 'center'
   },
   homeSubmitButton: {
     flex: 1
   },
   homeButtonDisabled: {
-    opacity: 0.45
+    opacity: 0.4
   },
   homePrimaryButtonText: {
-    color: colors.background,
-    fontSize: 17,
+    color: colors.onAccent,
+    fontSize: typography.subtitle,
     fontWeight: '700'
   },
   homeNotice: {
     color: colors.accent,
-    fontSize: 14,
+    fontSize: typography.callout,
     lineHeight: 20
   },
   homeApprovalCard: {
-    borderColor: colors.accent
+    borderWidth: 1,
+    borderColor: colors.accentSoft
   },
   homeClarifyBox: {
-    gap: spacing.xs,
-    padding: spacing.sm,
-    borderRadius: 8,
-    backgroundColor: colors.background,
-    borderColor: colors.warning,
-    borderWidth: 1
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.warningSoft
   },
   homeClarifyTitle: {
     color: colors.warning,
-    fontSize: 14,
+    fontSize: typography.callout,
     fontWeight: '700'
   },
   homeClarifyQuestion: {
     color: colors.text,
-    fontSize: 14,
+    fontSize: typography.callout,
     lineHeight: 20
   },
   homeClarifyInput: {
-    minHeight: 60,
-    padding: spacing.sm,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 8,
+    minHeight: 64,
+    padding: spacing.md,
+    borderRadius: radius.md,
     color: colors.text,
-    fontSize: 15,
+    fontSize: typography.callout,
     textAlignVertical: 'top',
-    backgroundColor: colors.surface
+    backgroundColor: colors.surfaceMuted
   },
   homeApprovalTitle: {
     color: colors.text,
-    fontSize: 16,
+    fontSize: typography.subtitle,
     fontWeight: '600'
   },
   homePlanStep: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18
+    fontSize: typography.callout,
+    lineHeight: 19
   },
   homeDecideRow: {
     flexDirection: 'row',
@@ -3591,10 +3969,12 @@ const styles = StyleSheet.create({
   },
   homeDecideButton: {
     flex: 1,
-    minHeight: 52,
+    minHeight: 54,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10
+    gap: 7,
+    borderRadius: radius.lg
   },
   homeApproveButton: {
     backgroundColor: colors.accent
@@ -3618,17 +3998,9 @@ const styles = StyleSheet.create({
     opacity: 0.55
   },
   content: {
-    padding: spacing.md,
+    paddingHorizontal: spacing.lg,
     gap: spacing.md,
-    paddingBottom: spacing.xl
-  },
-  header: {
-    gap: spacing.xs
-  },
-  title: {
-    color: colors.accent,
-    fontSize: 26,
-    fontWeight: '700'
+    paddingBottom: spacing.xxl
   },
   currentRoute: {
     color: colors.text,
