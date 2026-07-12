@@ -3471,15 +3471,47 @@ export class ShellExecuteToolAdapter {
       timedOut = error.killed === true || String(error.code ?? '') === 'ETIMEDOUT';
     }
     const stdoutPreview = String(stdout ?? '').slice(0, this.maxOutputChars);
+    const executed = exitCode === 0 && !timedOut;
+
+    // 자기검증: 작업이 실제로 성공했는지 읽기 전용 verify 셸로 확인한다(인간의 "눈으로 확인"을 형식 검증으로).
+    let verification = null;
+    const verifyCommand = String(args?.verifyCommand ?? '').trim();
+    if (executed && verifyCommand) {
+      // verify는 반드시 안전(읽기 전용)해야만 실행한다. 파괴적이면 검증하지 않는다.
+      if (classifyShellCommand(verifyCommand).risk === 'safe') {
+        try {
+          const vout = execFileSync('powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${verifyCommand}`],
+            { cwd: this.workingDir, timeout: 15000, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true });
+          const out = String(vout ?? '').trim();
+          // 검증 통과 판정: 출력이 있고 False/0/없음 같은 부정 신호가 아니면 확인된 것으로 본다.
+          const negative = /^(false|0|없음|not found|아니오|no)$/i.test(out);
+          verification = { verified: out.length > 0 && !negative, output: out.slice(0, 600), verifyCommand };
+        } catch {
+          verification = { verified: false, output: '', verifyCommand, error: 'verify-failed' };
+        }
+      } else {
+        verification = { verified: null, output: '', verifyCommand, error: 'verify-not-readonly' };
+      }
+    }
+
+    let summary = timedOut ? '명령이 시간 초과로 중단됐어요.' : (executed ? '명령을 실행했어요.' : '명령이 오류로 끝났어요.');
+    if (executed && verification) {
+      summary += verification.verified === true ? ' 결과도 확인했어요. ✓'
+        : verification.verified === false ? ' 다만 결과 확인이 기대와 달라요 — 다시 살펴볼게요.'
+        : '';
+    }
+
     return {
-      status: exitCode === 0 && !timedOut ? 'success' : 'failed',
+      status: executed ? 'success' : 'failed',
       command,
       shell: this.shell,
       exitCode,
       timedOut,
       stdoutPreview,
       stderrPreview: String(stderr ?? '').slice(0, this.maxOutputChars),
-      summary: timedOut ? '명령이 시간 초과로 중단됐어요.' : (exitCode === 0 ? '명령을 실행했어요.' : '명령이 오류로 끝났어요.'),
+      verification,
+      summary,
       outputPaths: [],
       rollbackAvailable: false
     };

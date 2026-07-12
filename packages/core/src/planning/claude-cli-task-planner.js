@@ -162,7 +162,10 @@ export function buildShellCommandPrompt({ text, locale = 'ko-KR' }) {
     '- COM 객체는 작업 후 반드시 정리하고(Quit/ReleaseComObject), 변경 작업은 대상이 존재할 때만 한다.',
     '',
     '출력 규칙:',
-    '- JSON 객체 하나만 출력한다: {"command":"<powershell 스크립트, 여러 줄이면 \\n 포함>"}',
+    '- JSON 객체 하나만 출력한다: {"command":"<powershell 스크립트>", "verify":"<검증 셸>"}',
+    '- verify: 작업이 실제로 성공했는지 확인하는 "읽기 전용" 셸 한 줄. 결과를 텍스트로 출력해야 한다.',
+    '  예) 파일 생성이면 "Test-Path \\"$HOME\\Desktop\\report.txt\\"", 값 변경이면 그 값을 다시 읽어 출력.',
+    '  파괴적 명령을 verify에 넣지 말 것. 검증이 무의미하면 verify는 빈 문자열.',
     '- 설명, 마크다운, 코드펜스 금지.',
     `- 응답 언어 기준: ${locale}`,
     '',
@@ -401,14 +404,15 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const base = super.argumentsFor(intent, taskRequest, contextSnapshot);
     // 셸 실행: 자연어를 안전한 PowerShell 한 줄 명령으로 LLM 변환한다. 실제 명령은 승인 카드에 노출된다.
     if (intent.actionType === ActionType.SHELL_EXECUTE) {
-      const command = this.draftShellCommandFor({
+      const drafted = this.draftShellCommandFor({
         text: intent.slots?.rawCommand ?? taskRequest.command.rawText,
         locale: taskRequest.command?.locale ?? 'ko-KR'
       });
-      if (!command) return { ...base, shell: 'powershell' };
+      if (!drafted) return { ...base, shell: 'powershell' };
       return {
         ...base,
-        command,
+        command: drafted.command,
+        verifyCommand: drafted.verify || null,
         shell: 'powershell',
         rawText: taskRequest.command.rawText,
         shellDraft: { adapterId: this.adapterId, draftedByLlm: true }
@@ -499,7 +503,9 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     // 여러 단계 자동화(COM/GUI/멀티스텝)를 위해 여러 줄 스크립트를 허용한다.
     // 안전은 어댑터의 정적 차단(classifyShellCommand)이 줄 단위로 담당한다.
     if (!command || command.length > 8000) return null;
-    return command;
+    // 자기검증: LLM이 "성공을 확인하는 읽기 전용 셸"도 함께 낸다. 실행 후 이걸로 결과를 형식 검증한다.
+    const verify = typeof payload?.verify === 'string' ? payload.verify.trim().slice(0, 1000) : '';
+    return { command, verify };
   }
 
   draftContentFor({ text, outputFormat, fileName, locale }) {
