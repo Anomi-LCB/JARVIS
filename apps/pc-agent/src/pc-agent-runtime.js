@@ -3678,40 +3678,90 @@ export class DocumentEditToolAdapter {
       return { status: 'failed', error: 'exceljs-not-installed', targetPath: target.path, outputPaths: [], rollbackAvailable: false };
     }
     const edits = Array.isArray(args?.edits) ? args.edits : [];
-    const backupPath = `${target.path}.bak-${Date.now()}`;
     try {
-      await copyFile(target.path, backupPath);
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.readFile(target.path);
       const ws = (args?.sheet && wb.getWorksheet(args.sheet)) || wb.worksheets[0];
+
+      // 1단계(변경 없이 스캔): findText가 여러 셀에 걸리고 범위가 불명확하면 실행하지 않고 선택지를 돌려준다.
+      const collectHits = (findText) => {
+        const needle = String(findText);
+        const hits = [];
+        ws.eachRow((row, rowNumber) => {
+          row.eachCell((cell) => {
+            if (String(cell.value ?? '').includes(needle)) {
+              hits.push({ address: cell.address, row: rowNumber, current: String(cell.value ?? '') });
+            }
+          });
+        });
+        return hits;
+      };
+      const ambiguous = [];
+      for (const edit of edits) {
+        if (edit?.cell || edit?.findText == null) continue;
+        const scope = String(edit.scope ?? 'ask');
+        const hits = collectHits(edit.findText);
+        if (hits.length > 1 && scope !== 'all' && scope !== 'first') {
+          ambiguous.push({ findText: String(edit.findText), value: edit.value, matchCount: hits.length, locations: hits.slice(0, 12) });
+        }
+      }
+      if (ambiguous.length) {
+        // 모호함: 파일을 건드리지 않고, 발견 위치와 맥락을 사용자에게 제시한다.
+        const first = ambiguous[0];
+        const preview = first.locations.map((h) => `${h.address}: "${h.current}"`).join(' / ');
+        return {
+          status: 'needs_choice',
+          targetPath: target.path,
+          ambiguous,
+          summary: `"${first.first ?? first.findText}"이(가) ${first.matchCount}곳에 있어요: ${preview}. 전체를 바꿀까요, 아니면 특정 셀(예: ${first.locations[0].address})만 바꿀까요?`,
+          choicePrompt: `"${first.findText}"을(를) 모두 바꾸려면 "전부 바꿔줘", 특정 위치만 바꾸려면 셀 주소(예: ${first.locations[0].address})나 위치를 말해 주세요.`,
+          outputPaths: [],
+          rollbackAvailable: false
+        };
+      }
+
+      // 2단계(실제 편집): 백업 후 적용. 백업이 있으므로 되돌릴 수 있다.
+      const backupPath = `${target.path}.bak-${Date.now()}`;
+      await copyFile(target.path, backupPath);
       const editedCells = [];
+      const notFound = [];
       for (const edit of edits) {
         if (edit?.cell) {
           ws.getCell(edit.cell).value = edit.value;
           editedCells.push(edit.cell);
         } else if (edit?.findText != null) {
-          ws.eachRow((row) => {
-            row.eachCell((cell) => {
-              if (String(cell.value ?? '') === String(edit.findText)) {
-                cell.value = edit.value;
-                editedCells.push(cell.address);
-              }
-            });
-          });
+          const scope = String(edit.scope ?? 'ask');
+          const hits = collectHits(edit.findText);
+          if (hits.length === 0) {
+            notFound.push(String(edit.findText));
+            continue;
+          }
+          const targets = scope === 'first' ? hits.slice(0, 1) : hits; // 1개거나 scope=all이면 전부
+          for (const h of targets) {
+            const cell = ws.getCell(h.address);
+            // 문자열이면 부분 치환, 그 외에는 값 통째 교체.
+            cell.value = typeof cell.value === 'string'
+              ? cell.value.split(String(edit.findText)).join(String(edit.value))
+              : edit.value;
+            editedCells.push(h.address);
+          }
         }
       }
       await wb.xlsx.writeFile(target.path);
+      const parts = [`${editedCells.length}개 셀을 수정했어요`];
+      if (notFound.length) parts.push(`("${notFound.join('", "')}"은(는) 찾지 못함)`);
       return {
         status: 'success',
         targetPath: target.path,
         editedCells,
+        notFound,
         backupPath,
-        summary: `${basename(target.path)}에서 ${editedCells.length}개 셀을 수정했어요.`,
+        summary: `${basename(target.path)}에서 ${parts.join(' ')}.`,
         outputPaths: [target.path],
         rollbackAvailable: true
       };
     } catch (error) {
-      return { status: 'failed', error: String(error?.message ?? error), targetPath: target.path, backupPath, outputPaths: [], rollbackAvailable: existsSync(backupPath) };
+      return { status: 'failed', error: String(error?.message ?? error), targetPath: target.path, outputPaths: [], rollbackAvailable: false };
     }
   }
 }

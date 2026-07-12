@@ -120,11 +120,15 @@ export function buildDocumentEditPrompt({ text }) {
     '사용자의 문서 수정 요청을 JSON으로 변환하세요. 지금은 엑셀(xlsx) 편집만 지원합니다.',
     '- targetQuery: 수정할 파일을 찾을 이름 키워드',
     '- sheet: 시트명(모르면 null → 첫 시트)',
-    '- edits: [{"cell":"B2","value":"새 값"}] 형태의 셀 편집 배열. 셀 주소를 모르면',
-    '  [{"findText":"찾을 기존값","value":"바꿀 값"}] 형태로 대체 지시',
+    '- edits: 편집 배열. 두 형태를 쓸 수 있다:',
+    '  · 셀 주소를 알면 {"cell":"B2","value":"새 값"}',
+    '  · 값으로 찾아 바꾸려면 {"findText":"찾을 값","value":"바꿀 값","scope":"..."}',
+    '- scope(찾아바꾸기에서만): 사용자가 "모두/전부/다 바꿔"라고 하면 "all",',
+    '  "첫 번째만/하나만/처음 것"이라고 하면 "first", 몇 개를 바꿀지 불명확하면 "ask".',
+    '  범위를 지레짐작하지 말고, 명시가 없으면 반드시 "ask"로 둔다(시스템이 사용자에게 되묻는다).',
     '',
     'JSON 객체 하나만 출력한다. 설명/코드펜스 금지.',
-    '형식: {"targetQuery":"","sheet":null,"edits":[]}',
+    '형식: {"targetQuery":"","sheet":null,"edits":[{"findText":"","value":"","scope":"ask"}]}',
     '',
     `사용자 요청: ${text}`
   ].join('\n');
