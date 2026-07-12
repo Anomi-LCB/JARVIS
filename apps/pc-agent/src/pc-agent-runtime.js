@@ -3358,17 +3358,26 @@ export class FileListToolAdapter {
 }
 
 // 셸 명령의 위험도를 정적 분류한다. 'blocked'는 어댑터가 승인과 무관하게 절대 실행하지 않는다.
+// 문자열 denylist는 난독화로 우회 가능하므로, 정적 검사를 무력화하는 "동적 실행"을 먼저 차단한다.
 const shellDenyPatterns = [
-  { re: /(^|\s|;|&|\|)(rm|del|erase|rd|rmdir)(\s|$)|remove-item/i, reason: '파일/폴더 삭제' },
-  // 'format C:' 같은 디스크 포맷만 잡는다. -Format/Format-Table 등 안전한 Format은 제외.
+  // 동적 실행/난독화: iex 등은 그 안의 코드를 검사할 수 없어 denylist 자체를 무력화한다 → 원천 차단.
+  { re: /(^|\s|;|&|\||\()(iex|icm)(\s|$)|invoke-expression|invoke-command\b|-encodedcommand|-enc\b|-e\s+[A-Za-z0-9+/=]{16,}|frombase64string|\[scriptblock\]|\.invoke\(/i, reason: '동적 코드 실행' },
+  { re: /downloadstring|downloadfile|downloaddata|start-bitstransfer|invoke-webrequest|invoke-restmethod|\biwr\b|\bcurl\b|\bwget\b|net\.webclient/i, reason: '원격 다운로드/실행' },
+  // 삭제(별칭 포함): ri/rbp는 Remove-Item 별칭.
+  { re: /(^|\s|;|&|\||\()(rm|del|erase|rd|rmdir|ri|rbp|rmo|rjb)(\s|$|\s*-)|remove-item|remove-psdrive|clear-recyclebin/i, reason: '파일/폴더 삭제' },
+  // 파일 내용 삭제/비우기
+  { re: /clear-content|clear-item\b|(^|\s|;|\|)clc(\s|$)|(^|\s|;|\|)cli(\s|$)/i, reason: '파일 내용 삭제' },
   { re: /format\s+[a-z]:|format\s+\/[qsxy]|\bformat-volume\b|\bformat-disk\b|diskpart|mkfs|clear-disk|clean\s+all|initialize-disk/i, reason: '디스크 포맷/초기화' },
   { re: /shutdown|restart-computer|stop-computer|logoff|halt/i, reason: '시스템 종료/재시작' },
-  { re: /reg\s+delete|remove-itemproperty|remove-item\s+hk/i, reason: '레지스트리 삭제' },
+  { re: /reg\s+delete|remove-itemproperty|remove-item\s+hk|new-itemproperty\s+.*hklm/i, reason: '레지스트리 변경' },
   { re: /\b(takeown|icacls|cacls)\b|set-acl/i, reason: '권한 변경' },
-  { re: /bcdedit|(^|\s)sfc(\s|$)|(^|\s)dism(\s|$)/i, reason: '시스템 구성 변경' },
-  { re: /net\s+user|new-localuser|remove-localuser|net\s+localgroup/i, reason: '계정 변경' },
-  { re: /invoke-webrequest[\s\S]*-method\s+post|curl[\s\S]*(-T|--upload)|\bscp\b|\bftp\b/i, reason: '외부 전송' }
+  { re: /bcdedit|(^|\s)sfc(\s|$)|(^|\s)dism(\s|$)|set-executionpolicy/i, reason: '시스템 구성 변경' },
+  { re: /net\s+user|new-localuser|remove-localuser|net\s+localgroup|add-localgroupmember/i, reason: '계정 변경' },
+  { re: /-method\s+post|(-T|--upload)\b|\bscp\b|\bftp\b|send-mailmessage|smtp/i, reason: '외부 전송' }
 ];
+
+// 민감정보 파일 접근은 차단까진 안 하되 주의(caution)로 올려 승인 카드에서 확인하게 한다.
+const shellSensitivePattern = /id_rsa|id_ed25519|\.ssh[\\/]|\.pem\b|\.ppk\b|\.env\b|credentials(\.json)?|\.aws[\\/]|unattend\.xml|\bsam\b|ntds\.dit/i;
 
 export function classifyShellCommand(command) {
   const text = String(command ?? '');
@@ -3376,7 +3385,13 @@ export function classifyShellCommand(command) {
   for (const rule of shellDenyPatterns) {
     if (rule.re.test(text)) return { risk: 'blocked', reason: rule.reason };
   }
-  if (/(^|\s)(mv|move|move-item|copy|cp|copy-item|ni|new-item|set-content|add-content|out-file)(\s|$)|>>?/i.test(text)) {
+  if (shellSensitivePattern.test(text)) {
+    return { risk: 'caution', reason: '민감정보 파일 접근' };
+  }
+  if (/stop-process|taskkill|(^|\s|;|\|)kill(\s|$)|(^|\s|;|\|)spps(\s|$)/i.test(text)) {
+    return { risk: 'caution', reason: '프로세스 종료' };
+  }
+  if (/(^|\s)(mv|move|move-item|copy|cp|copy-item|ni|new-item|set-content|add-content|out-file|sc|ac)(\s|$)|>>?/i.test(text)) {
     return { risk: 'caution', reason: '파일 생성/수정' };
   }
   return { risk: 'safe', reason: '읽기/조회' };
@@ -3484,7 +3499,7 @@ export class FileSearchToolAdapter {
     this.maxResults = maxResults;
     this.maxDepth = maxDepth;
     this.timeoutMs = timeoutMs;
-    this.excludeDirs = new Set(['node_modules', '.git', '.next', '.venv', 'AppData', '$Recycle.Bin', 'Windows', 'Program Files', 'Program Files (x86)']);
+    this.excludeDirs = new Set(['node_modules', '.git', '.next', '.venv', 'AppData', '$Recycle.Bin', 'Windows', 'Program Files', 'Program Files (x86)', 'dist', 'build', '.jarvis-backups']);
     this.contract = createToolContract({
       toolName: 'filesystem.searchFiles',
       readOnly: true,
@@ -3578,14 +3593,15 @@ export class FileSearchToolAdapter {
   }
 }
 
-// 사용자 폴더에서 이름 키워드로 파일 1개를 찾는다(첨부·편집 대상 해석용 공통 헬퍼).
-async function findFileByQuery(query, { roots, extensions = [], maxDepth = 6, excludeDirs } = {}) {
+// 사용자 폴더에서 이름 키워드로 파일들을 찾는다(첨부·편집 대상 해석용 공통 헬퍼).
+// 여러 개가 매칭될 수 있으므로 최근순 배열로 돌려주고, 호출부가 모호성을 처리한다.
+async function findFilesByQuery(query, { roots, extensions = [], maxDepth = 6, excludeDirs, limit = 12 } = {}) {
   const words = String(query ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return null;
+  if (!words.length) return [];
   const deadline = Date.now() + 10000;
-  let best = null;
+  const matches = [];
   const walk = async (dir, depth) => {
-    if (best || Date.now() > deadline || depth > maxDepth) return;
+    if (Date.now() > deadline || depth > maxDepth || matches.length >= 200) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -3593,7 +3609,7 @@ async function findFileByQuery(query, { roots, extensions = [], maxDepth = 6, ex
       return;
     }
     for (const entry of entries) {
-      if (best || Date.now() > deadline) return;
+      if (Date.now() > deadline) return;
       const full = resolve(dir, entry.name);
       if (entry.isDirectory()) {
         if (excludeDirs?.has(entry.name) || entry.name.startsWith('.')) continue;
@@ -3609,12 +3625,13 @@ async function findFileByQuery(query, { roots, extensions = [], maxDepth = 6, ex
         } catch {
           continue;
         }
-        if (!best || st.mtimeMs > best.mtimeMs) best = { path: full, name: entry.name, mtimeMs: st.mtimeMs };
+        matches.push({ path: full, name: entry.name, mtimeMs: st.mtimeMs });
       }
     }
   };
   for (const root of roots) await walk(root, 0);
-  return best;
+  matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return matches.slice(0, limit);
 }
 
 // 기존 엑셀(xlsx) 파일의 셀 내용을 수정한다. 편집 전 백업을 만들어 되돌릴 수 있게 한다.
@@ -3622,8 +3639,10 @@ export class DocumentEditToolAdapter {
   constructor({ maxDepth = 6 } = {}) {
     const home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
     this.searchRoots = [resolve(home, 'Desktop'), resolve(home, 'Documents'), resolve(home, 'Downloads'), resolve('./workspace')];
-    this.excludeDirs = new Set(['node_modules', '.git', 'AppData', '$Recycle.Bin', 'Windows']);
+    this.excludeDirs = new Set(['node_modules', '.git', 'AppData', '$Recycle.Bin', 'Windows', 'dist', 'build', '.jarvis-backups']);
     this.maxDepth = maxDepth;
+    // 백업은 사용자 문서 폴더를 어지럽히지 않도록 전용 폴더에 모은다(누적 정리도 이 폴더만 보면 됨).
+    this.backupDir = process.env.JARVIS_BACKUP_DIR ?? resolve(home, '.jarvis-backups');
     this.contract = createToolContract({
       toolName: 'document.edit',
       mutatesSystem: true,
@@ -3642,9 +3661,10 @@ export class DocumentEditToolAdapter {
     }
   }
 
-  async resolveTarget(args) {
-    if (args?.targetPath && existsSync(args.targetPath)) return { path: resolve(args.targetPath), name: basename(args.targetPath) };
-    return findFileByQuery(args?.targetQuery ?? args?.targetPath, {
+  // 대상 파일을 해석한다. 정확한 경로면 그것을, 이름 검색이면 후보 배열을 준다.
+  async resolveTargets(args) {
+    if (args?.targetPath && existsSync(args.targetPath)) return [{ path: resolve(args.targetPath), name: basename(args.targetPath) }];
+    return findFilesByQuery(args?.targetQuery ?? args?.targetPath, {
       roots: this.searchRoots,
       extensions: ['xlsx'],
       maxDepth: this.maxDepth,
@@ -3653,7 +3673,8 @@ export class DocumentEditToolAdapter {
   }
 
   async shadow(args) {
-    const target = await this.resolveTarget(args);
+    const targets = await this.resolveTargets(args);
+    const target = targets[0] ?? null;
     const edits = Array.isArray(args?.edits) ? args.edits : [];
     return {
       mode: 'shadow',
@@ -3666,10 +3687,21 @@ export class DocumentEditToolAdapter {
   }
 
   async execute(args) {
-    const target = await this.resolveTarget(args);
-    if (!target) {
+    const targets = await this.resolveTargets(args);
+    if (targets.length === 0) {
       return { status: 'failed', error: 'target-file-missing', outputPaths: [], rollbackAvailable: false };
     }
+    // 대상 파일이 여러 개면 임의로 고르지 않고 어느 파일인지 되묻는다.
+    if (targets.length > 1) {
+      return {
+        status: 'needs_choice',
+        candidates: targets.map((t) => ({ name: t.name, path: t.path })),
+        summary: `"${args?.targetQuery ?? ''}"에 맞는 파일이 ${targets.length}개 있어요: ${targets.slice(0, 6).map((t) => t.name).join(', ')}. 어느 파일을 수정할까요?`,
+        outputPaths: [],
+        rollbackAvailable: false
+      };
+    }
+    const target = targets[0];
     if (extname(target.path).toLowerCase() !== '.xlsx') {
       return { status: 'failed', error: `unsupported-format:${extname(target.path)}`, targetPath: target.path, outputPaths: [], rollbackAvailable: false };
     }
@@ -3720,8 +3752,9 @@ export class DocumentEditToolAdapter {
         };
       }
 
-      // 2단계(실제 편집): 백업 후 적용. 백업이 있으므로 되돌릴 수 있다.
-      const backupPath = `${target.path}.bak-${Date.now()}`;
+      // 2단계(실제 편집): 백업 후 적용. 백업은 전용 폴더에 두어 원본 옆을 어지럽히지 않는다.
+      mkdirSync(this.backupDir, { recursive: true });
+      const backupPath = resolve(this.backupDir, `${basename(target.path)}.${Date.now()}.bak`);
       await copyFile(target.path, backupPath);
       const editedCells = [];
       const notFound = [];
@@ -3771,7 +3804,7 @@ export class EmailSendToolAdapter {
   constructor() {
     const home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
     this.searchRoots = [resolve(home, 'Desktop'), resolve(home, 'Documents'), resolve(home, 'Downloads'), resolve('./workspace')];
-    this.excludeDirs = new Set(['node_modules', '.git', 'AppData', '$Recycle.Bin', 'Windows']);
+    this.excludeDirs = new Set(['node_modules', '.git', 'AppData', '$Recycle.Bin', 'Windows', 'dist', 'build', '.jarvis-backups']);
     this.contract = createToolContract({
       toolName: 'email.send',
       mutatesSystem: false,
@@ -3797,20 +3830,21 @@ export class EmailSendToolAdapter {
     return { user, pass, service: process.env.JARVIS_SMTP_SERVICE ?? 'gmail' };
   }
 
-  async resolveAttachment(query) {
-    if (!query) return null;
-    return findFileByQuery(query, { roots: this.searchRoots, excludeDirs: this.excludeDirs });
+  async resolveAttachments(query) {
+    if (!query) return [];
+    return findFilesByQuery(query, { roots: this.searchRoots, excludeDirs: this.excludeDirs });
   }
 
   async shadow(args) {
-    const attachment = await this.resolveAttachment(args?.attachmentQuery);
+    const attachments = await this.resolveAttachments(args?.attachmentQuery);
     return {
       mode: 'shadow',
       expectedChangesCount: 0,
       to: args?.to ?? '',
       subject: args?.subject ?? '',
-      attachmentPath: attachment?.path ?? null,
-      attachmentCount: attachment ? 1 : 0,
+      attachmentPath: attachments[0]?.path ?? null,
+      attachmentCount: attachments.length,
+      attachmentAmbiguous: attachments.length > 1,
       smtpConfigured: Boolean(this.smtpConfig()),
       warnings: this.smtpConfig() ? [] : ['메일 계정이 설정되지 않아 실제 발송은 되지 않습니다']
     };
@@ -3821,6 +3855,19 @@ export class EmailSendToolAdapter {
     if (!to || !/@/.test(to)) {
       return { status: 'blocked', error: 'recipient-missing-or-invalid', to, outputPaths: [], rollbackAvailable: false };
     }
+    // 첨부 후보가 여러 개면 임의로 보내지 않는다(잘못된 파일 외부 유출 방지). 어느 파일인지 되묻는다.
+    const attachments = await this.resolveAttachments(args?.attachmentQuery);
+    if (attachments.length > 1) {
+      return {
+        status: 'needs_choice',
+        to,
+        candidates: attachments.map((a) => ({ name: a.name, path: a.path })),
+        summary: `첨부할 파일 후보가 ${attachments.length}개예요: ${attachments.slice(0, 6).map((a) => a.name).join(', ')}. 어느 파일을 보낼까요? (잘못된 파일이 외부로 나가지 않도록 확인합니다)`,
+        outputPaths: [],
+        rollbackAvailable: false
+      };
+    }
+    const attachment = attachments[0] ?? null;
     const config = this.smtpConfig();
     if (!config) {
       return { status: 'blocked', error: 'smtp-not-configured', to, outputPaths: [], rollbackAvailable: false };
@@ -3829,7 +3876,6 @@ export class EmailSendToolAdapter {
     if (!nodemailer) {
       return { status: 'failed', error: 'nodemailer-not-installed', to, outputPaths: [], rollbackAvailable: false };
     }
-    const attachment = await this.resolveAttachment(args?.attachmentQuery);
     try {
       const transporter = nodemailer.createTransport({ service: config.service, auth: { user: config.user, pass: config.pass } });
       await transporter.sendMail({
