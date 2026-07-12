@@ -7,6 +7,38 @@ import { ActionType, maskSensitive, ModuleId, stableId, TaskStatus } from '../..
 import { JsonlAuditLog } from '../../../packages/shared/src/audit-log.js';
 import { appendJsonlSync } from '../../../packages/shared/src/jsonl.js';
 import { ExcelWorkbookWorker, runWorkbookProductFixturePack } from './adapters/excel/excel-worker.js';
+import { createClaudeCliRunner } from '../../../packages/core/src/intent/claude-cli-intent-adapter.js';
+
+// 자기교정용 프롬프트: 실패한 셸 명령의 원인을 주고 수정 명령을 받는다.
+function buildShellCorrectionPrompt({ rawText, command, stderr, verifyOutput }) {
+  return [
+    '이전에 실행한 PowerShell 명령이 목표를 달성하지 못했습니다. 원인을 추정해 수정한 명령을 만드세요.',
+    `원래 사용자 요청: ${rawText || '(불명)'}`,
+    `실행했던 명령: ${command}`,
+    `표준오류(stderr): ${stderr ? stderr.slice(0, 500) : '(없음)'}`,
+    `검증 결과(기대와 다름): ${verifyOutput ? verifyOutput.slice(0, 300) : '(출력 없음)'}`,
+    '',
+    '규칙: 삭제/포맷/종료/외부전송 등 파괴적 명령은 만들지 않는다. 조회·생성·수정 위주로 고친다.',
+    'JSON 하나만 출력: {"command":"<수정된 powershell>","verify":"<읽기전용 검증 셸>"}',
+    '설명, 마크다운, 코드펜스 금지.'
+  ].join('\n');
+}
+
+function extractJsonLoose(text) {
+  const match = String(text ?? '').match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]);
+    // claude CLI가 {result:"..."} 래퍼로 줄 수 있어 한 겹 벗긴다.
+    if (parsed && typeof parsed.result === 'string') {
+      const inner = String(parsed.result).match(/\{[\s\S]*\}/);
+      if (inner) { try { return JSON.parse(inner[0]); } catch { /* fall through */ } }
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 function isInside(parent, child) {
   const rel = relative(resolve(parent), resolve(child));
@@ -3400,11 +3432,15 @@ export function classifyShellCommand(command) {
 // 자연어를 셸 명령으로 바꿔 실행한다. 실제 명령은 승인 카드에 노출되며,
 // 파괴적 명령은 아래 정적 차단으로 승인 여부와 무관하게 실행되지 않는다.
 export class ShellExecuteToolAdapter {
-  constructor({ shell = 'powershell', timeoutMs = 60000, workingDir = null, maxOutputChars = 6000 } = {}) {
+  constructor({ shell = 'powershell', timeoutMs = 60000, workingDir = null, maxOutputChars = 6000, correctionRunner = null, maxCorrections = 2 } = {}) {
     this.shell = shell;
     this.timeoutMs = timeoutMs;
     this.workingDir = resolve(workingDir ?? process.env.USERPROFILE ?? process.env.HOME ?? './workspace');
     this.maxOutputChars = maxOutputChars;
+    this.maxCorrections = maxCorrections;
+    // 자기교정 러너(claude CLI). 미인증/미설치면 호출이 실패해 교정 없이 감지만 한다(graceful).
+    this.correctionEnabled = process.env.JARVIS_SHELL_SELFCORRECT !== '0';
+    this.correctionRunner = correctionRunner ?? createClaudeCliRunner({ model: process.env.JARVIS_LLM_INTENT_MODEL ?? 'haiku', timeoutMs: 45000 });
     this.contract = createToolContract({
       toolName: 'shell.execute',
       mutatesSystem: true,
@@ -3417,6 +3453,44 @@ export class ShellExecuteToolAdapter {
 
   commandOf(args) {
     return String(args?.command ?? args?.shellCommand ?? '').trim();
+  }
+
+  // 셸을 한 번 실행한다(동기). UTF-8 출력을 강제한다.
+  runShellOnce(command) {
+    const psCommand = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${command}`;
+    const wrapped = this.shell === 'cmd'
+      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', command] }
+      : { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psCommand] };
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    let timedOut = false;
+    try {
+      stdout = execFileSync(wrapped.file, wrapped.args, { cwd: this.workingDir, timeout: this.timeoutMs, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+    } catch (error) {
+      exitCode = typeof error.status === 'number' ? error.status : 1;
+      stdout = error.stdout ? String(error.stdout) : '';
+      stderr = error.stderr ? String(error.stderr) : String(error.message ?? '');
+      timedOut = error.killed === true || String(error.code ?? '') === 'ETIMEDOUT';
+    }
+    return { exitCode, stdout, stderr, timedOut, executed: exitCode === 0 && !timedOut };
+  }
+
+  // 읽기 전용 verify 셸로 결과를 확인한다. 안전하지 않으면 실행하지 않는다.
+  verifyIfSafe(verifyCommand, executed) {
+    const vc = String(verifyCommand ?? '').trim();
+    if (!executed || !vc) return null;
+    if (classifyShellCommand(vc).risk !== 'safe') return { verified: null, output: '', verifyCommand: vc, error: 'verify-not-readonly' };
+    try {
+      const vout = execFileSync('powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${vc}`],
+        { cwd: this.workingDir, timeout: 15000, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true });
+      const out = String(vout ?? '').trim();
+      const negative = /^(false|0|없음|not found|아니오|no)$/i.test(out);
+      return { verified: out.length > 0 && !negative, output: out.slice(0, 600), verifyCommand: vc };
+    } catch {
+      return { verified: false, output: '', verifyCommand: vc, error: 'verify-failed' };
+    }
   }
 
   async shadow(args) {
@@ -3435,82 +3509,65 @@ export class ShellExecuteToolAdapter {
   }
 
   async execute(args) {
-    const command = this.commandOf(args);
+    let command = this.commandOf(args);
     const classified = classifyShellCommand(command);
     if (classified.risk === 'blocked') {
-      return {
-        status: 'blocked',
-        error: `destructive-command-blocked:${classified.reason}`,
-        command,
-        shell: this.shell,
-        outputPaths: [],
-        rollbackAvailable: false
-      };
+      return { status: 'blocked', error: `destructive-command-blocked:${classified.reason}`, command, shell: this.shell, outputPaths: [], rollbackAvailable: false };
     }
-    // PowerShell 출력을 UTF-8로 강제해 한글이 깨지지 않게 한다.
-    const psCommand = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${command}`;
-    const wrapped = this.shell === 'cmd'
-      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', command] }
-      : { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psCommand] };
-    let stdout = '';
-    let stderr = '';
-    let exitCode = 0;
-    let timedOut = false;
-    try {
-      stdout = execFileSync(wrapped.file, wrapped.args, {
-        cwd: this.workingDir,
-        timeout: this.timeoutMs,
-        encoding: 'utf8',
-        maxBuffer: 8 * 1024 * 1024,
-        windowsHide: true
-      });
-    } catch (error) {
-      exitCode = typeof error.status === 'number' ? error.status : 1;
-      stdout = error.stdout ? String(error.stdout) : '';
-      stderr = error.stderr ? String(error.stderr) : String(error.message ?? '');
-      timedOut = error.killed === true || String(error.code ?? '') === 'ETIMEDOUT';
-    }
-    const stdoutPreview = String(stdout ?? '').slice(0, this.maxOutputChars);
-    const executed = exitCode === 0 && !timedOut;
+    const rawText = String(args?.rawText ?? '');
+    let verifyCommand = String(args?.verifyCommand ?? '').trim();
 
-    // 자기검증: 작업이 실제로 성공했는지 읽기 전용 verify 셸로 확인한다(인간의 "눈으로 확인"을 형식 검증으로).
-    let verification = null;
-    const verifyCommand = String(args?.verifyCommand ?? '').trim();
-    if (executed && verifyCommand) {
-      // verify는 반드시 안전(읽기 전용)해야만 실행한다. 파괴적이면 검증하지 않는다.
-      if (classifyShellCommand(verifyCommand).risk === 'safe') {
-        try {
-          const vout = execFileSync('powershell.exe',
-            ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${verifyCommand}`],
-            { cwd: this.workingDir, timeout: 15000, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true });
-          const out = String(vout ?? '').trim();
-          // 검증 통과 판정: 출력이 있고 False/0/없음 같은 부정 신호가 아니면 확인된 것으로 본다.
-          const negative = /^(false|0|없음|not found|아니오|no)$/i.test(out);
-          verification = { verified: out.length > 0 && !negative, output: out.slice(0, 600), verifyCommand };
-        } catch {
-          verification = { verified: false, output: '', verifyCommand, error: 'verify-failed' };
-        }
-      } else {
-        verification = { verified: null, output: '', verifyCommand, error: 'verify-not-readonly' };
+    // 1) 실행 + 자기검증
+    let run = this.runShellOnce(command);
+    let verification = this.verifyIfSafe(verifyCommand, run.executed);
+    const attempts = [{ command, exitCode: run.exitCode, verified: verification?.verified ?? null, corrected: false }];
+
+    // 2) 자기교정: 실행 자체가 실패했거나(비정상 종료) 검증이 실패했으면, 원인을 분석해 명령을 고쳐 다시 시도한다.
+    let corrections = 0;
+    const needsCorrection = () => !run.executed || (verification && verification.verified === false);
+    while (needsCorrection() && this.correctionEnabled && corrections < this.maxCorrections) {
+      corrections += 1;
+      const failContext = run.executed ? (verification?.output ?? '') : run.stderr;
+      let fixOut;
+      try {
+        fixOut = this.correctionRunner(buildShellCorrectionPrompt({ rawText, command, stderr: run.stderr, verifyOutput: failContext }));
+      } catch {
+        break;
       }
+      const fix = extractJsonLoose(fixOut);
+      const fixCmd = typeof fix?.command === 'string' ? fix.command.trim() : '';
+      // 교정안이 없거나, 그대로거나, 파괴적이면 중단(자동 재시도로 위험을 만들지 않는다).
+      if (!fixCmd || fixCmd === command || classifyShellCommand(fixCmd).risk === 'blocked') break;
+      command = fixCmd;
+      verifyCommand = typeof fix?.verify === 'string' && fix.verify.trim() ? fix.verify.trim() : verifyCommand;
+      run = this.runShellOnce(command);
+      verification = this.verifyIfSafe(verifyCommand, run.executed);
+      attempts.push({ command, exitCode: run.exitCode, verified: verification?.verified ?? null, corrected: true });
     }
 
-    let summary = timedOut ? '명령이 시간 초과로 중단됐어요.' : (executed ? '명령을 실행했어요.' : '명령이 오류로 끝났어요.');
+    const executed = run.executed;
+    let summary = run.timedOut ? '명령이 시간 초과로 중단됐어요.' : (executed ? '명령을 실행했어요.' : '명령이 오류로 끝났어요.');
     if (executed && verification) {
-      summary += verification.verified === true ? ' 결과도 확인했어요. ✓'
-        : verification.verified === false ? ' 다만 결과 확인이 기대와 달라요 — 다시 살펴볼게요.'
-        : '';
+      if (verification.verified === true) {
+        summary += corrections > 0 ? ` 처음엔 어긋났지만 ${corrections}번 고쳐서 목표를 달성했어요. ✓` : ' 결과도 확인했어요. ✓';
+      } else if (verification.verified === false) {
+        summary += ` ${corrections > 0 ? `${corrections}번 고쳐봤지만 ` : ''}아직 목표에 못 미쳐요 — 확인이 필요해요.`;
+      }
+    } else if (!executed && corrections > 0) {
+      summary += ` ${corrections}번 고쳐봤지만 여전히 실패했어요 — 확인이 필요해요.`;
     }
 
     return {
       status: executed ? 'success' : 'failed',
       command,
       shell: this.shell,
-      exitCode,
-      timedOut,
-      stdoutPreview,
-      stderrPreview: String(stderr ?? '').slice(0, this.maxOutputChars),
+      exitCode: run.exitCode,
+      timedOut: run.timedOut,
+      stdoutPreview: String(run.stdout ?? '').slice(0, this.maxOutputChars),
+      stderrPreview: String(run.stderr ?? '').slice(0, this.maxOutputChars),
       verification,
+      corrections,
+      attempts,
       summary,
       outputPaths: [],
       rollbackAvailable: false
