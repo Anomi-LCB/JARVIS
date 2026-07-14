@@ -16,6 +16,7 @@ const forbiddenActions = new Set([
 
 const riskByAction = new Map([
   [ActionType.CREATE_FILE, 5],
+  [ActionType.MACRO_SAVE, 5],
   [ActionType.LIST_FILES, 5],
   [ActionType.COPY_FILE, 5],
   [ActionType.MOVE_FILE, 5],

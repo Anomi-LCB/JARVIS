@@ -70,6 +70,39 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'macro_save_skill',
+    version: '1.0.0',
+    label: '매크로 저장',
+    module: ModuleId.PC_AGENT,
+    category: 'system',
+    actionType: ActionType.MACRO_SAVE,
+    toolName: 'macro.save',
+    match: {
+      keywords: ['저장', '기억', '매크로']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: false,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['tool_metadata'],
+      blockedWhen: []
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['macroName']
+    }
+  },
+  {
     skillId: 'capability_query_skill',
     version: '1.0.0',
     label: '능력 조회',

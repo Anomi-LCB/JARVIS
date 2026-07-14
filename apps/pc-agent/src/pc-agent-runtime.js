@@ -9,6 +9,7 @@ import { appendJsonlSync } from '../../../packages/shared/src/jsonl.js';
 import { ExcelWorkbookWorker, runWorkbookProductFixturePack } from './adapters/excel/excel-worker.js';
 import { createClaudeCliRunner } from '../../../packages/core/src/intent/claude-cli-intent-adapter.js';
 import { defaultSkillManifest } from '../../../packages/core/src/routing/default-skill-manifest.js';
+import { MacroStore } from '../../../packages/core/src/macro-store.js';
 
 // 자비스가 자기 능력을 스스로 설명한다(skill 매니페스트 기반이라 도구가 늘면 자동 반영—유기적).
 export class CapabilityDescribeToolAdapter {
@@ -52,6 +53,47 @@ export class CapabilityDescribeToolAdapter {
   async execute() {
     const summary = this.buildCatalog();
     return { status: 'success', summary, capabilityCount: new Set(defaultSkillManifest.map((s) => s.label)).size, outputPaths: [], rollbackAvailable: false };
+  }
+}
+
+// 매크로 저장: "~를 XX로 저장" 문장에서 이름·명령을 뽑아 파일에 저장한다.
+// 실행("XX 해줘")은 Core가 저장된 명령으로 치환하므로 여기선 저장만 담당한다.
+export class MacroSaveToolAdapter {
+  constructor({ store = null } = {}) {
+    this.store = store ?? new MacroStore();
+    this.contract = createToolContract({ toolName: 'macro.save', readOnly: false, evidence: ['macroName'] });
+  }
+
+  parse(args) {
+    const rawText = String(args?.rawText ?? args?.text ?? '').trim();
+    return { rawText, parsed: this.store.parseSave(rawText) };
+  }
+
+  async shadow(args) {
+    const { parsed } = this.parse(args);
+    if (!parsed) return { mode: 'shadow', expectedChangesCount: 0, warnings: ['매크로 이름·명령을 알아듣지 못했어요. 예: "다운로드 정리를 주간청소로 저장"'] };
+    return { mode: 'shadow', expectedChangesCount: 1, warnings: [], preview: `"${parsed.name}" = ${parsed.command}` };
+  }
+
+  async execute(args) {
+    this.store.macros = this.store.load(); // 최신 파일 반영
+    const { rawText, parsed } = this.parse(args);
+    if (!parsed) {
+      return {
+        status: 'needs_choice',
+        summary: `매크로로 저장할 이름과 명령을 못 알아들었어요. 원문: "${rawText}"\n예: "다운로드 폴더 정리를 주간청소로 저장" 처럼 말해 주세요.`,
+        outputPaths: [], rollbackAvailable: false
+      };
+    }
+    const ok = this.store.save(parsed.name, parsed.command);
+    if (!ok) return { status: 'failed', summary: '매크로 저장에 실패했어요.', outputPaths: [], rollbackAvailable: false };
+    return {
+      status: 'success',
+      summary: `"${parsed.name}" 매크로로 저장했어요. 이제 "${parsed.name}" 또는 "${parsed.name} 해줘"라고 하면 실행해요.\n(등록된 명령: ${parsed.command})`,
+      macroName: parsed.name,
+      outputPaths: [this.store.path],
+      rollbackAvailable: false
+    };
   }
 }
 
@@ -5408,6 +5450,7 @@ export class PcAgentRuntime {
     this.registry.register('filesystem.searchFiles', new FileSearchToolAdapter({}));
     this.registry.register('hwp.create', new HwpCreateToolAdapter({}));
     this.registry.register('capability.describe', new CapabilityDescribeToolAdapter());
+    this.registry.register('macro.save', new MacroSaveToolAdapter({}));
     this.registry.register('document.edit', new DocumentEditToolAdapter({}));
     this.registry.register('email.send', new EmailSendToolAdapter({}));
     this.logs = [];

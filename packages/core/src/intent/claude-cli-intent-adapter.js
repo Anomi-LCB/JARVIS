@@ -17,6 +17,7 @@ export const actionProfiles = Object.freeze({
   [ActionType.SEND_EMAIL]: { label: '메일 전송', category: 'external', riskHint: 'external-transfer' },
   [ActionType.EDIT_DOCUMENT]: { label: '문서 내용 편집', category: 'document', riskHint: 'local-change' },
   [ActionType.CAPABILITY_QUERY]: { label: '능력 조회', category: 'system', riskHint: 'read-only-local' },
+  [ActionType.MACRO_SAVE]: { label: '작업을 이름 붙여 매크로로 저장', category: 'system', riskHint: 'read-only-local' },
   [ActionType.UPLOAD_FILE]: { label: '외부 전송 요청', category: 'external', riskHint: 'external-transfer' },
   [ActionType.DELETE_FILE]: { label: '삭제 요청', category: 'filesystem', riskHint: 'destructive' },
   [ActionType.MAKE_PAYMENT]: { label: '결제 요청', category: 'external', riskHint: 'forbidden' },

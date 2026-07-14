@@ -11,6 +11,7 @@ import { SkillRouter } from './routing/skill-router.js';
 import { AgentOrchestratorLite } from './orchestration/agent-orchestrator-lite.js';
 import { OrchestrationJournal } from './orchestration/orchestration-journal.js';
 import { createDefaultContractRegistry } from './contracts/default-contracts.js';
+import { MacroStore } from './macro-store.js';
 
 export class CoreFacade {
   constructor({
@@ -27,7 +28,8 @@ export class CoreFacade {
     desktopContextCollector = null,
     inputProviderRegistry = null,
     intentParser = null,
-    taskPlanner = null
+    taskPlanner = null,
+    macroStore = null
   } = {}) {
     this.policyEngine = policyEngine;
     this.memoryStore = memoryStore;
@@ -40,6 +42,7 @@ export class CoreFacade {
     this.ambiguityResolver = new AmbiguityResolver({ clock });
     this.contextBuilder = new ContextSnapshotBuilder({ cwd, clock, desktopContextProvider, desktopContextCollector });
     this.taskPlanner = taskPlanner ?? new TaskPlanner();
+    this.macroStore = macroStore ?? new MacroStore();
     this.skillRouter = new SkillRouter();
     this.orchestrator = new AgentOrchestratorLite({
       clock,
@@ -72,6 +75,7 @@ export class CoreFacade {
 
   createTaskFromRequest(taskRequest, options = {}) {
     taskRequest = this.ensureUniqueTaskRequest(taskRequest);
+    taskRequest = this.expandMacro(taskRequest);
     this.contractRegistry.assert('TaskRequest', taskRequest);
     const machine = new TaskStateMachine(TaskStatus.CREATED, { clock: this.clock });
     this.eventBus.publish('task.requested', { taskRequest });
@@ -215,6 +219,26 @@ export class CoreFacade {
         collisionSequence
       }
     };
+  }
+
+  // 저장된 매크로 이름으로 요청이 들어오면 원래 명령으로 바꿔 정상 파이프라인을 태운다.
+  // 저장 자체("~를 XX로 저장")는 여기서 건드리지 않고 MACRO_SAVE 스킬이 처리한다.
+  expandMacro(taskRequest) {
+    try {
+      const rawText = taskRequest?.command?.rawText;
+      if (!rawText) return taskRequest;
+      if (this.macroStore?.parseSave?.(rawText)) return taskRequest; // 저장 문장은 실행으로 오인하지 않는다.
+      this.macroStore.macros = this.macroStore.load(); // 다른 프로세스가 저장했을 수 있어 최신화.
+      const hit = this.macroStore?.resolveRun?.(rawText);
+      if (!hit) return taskRequest;
+      return {
+        ...taskRequest,
+        command: { ...taskRequest.command, rawText: hit.command },
+        metadata: { ...taskRequest.metadata, macroExpanded: hit.name, macroOriginalText: rawText }
+      };
+    } catch {
+      return taskRequest;
+    }
   }
 
   getTask(taskId) {

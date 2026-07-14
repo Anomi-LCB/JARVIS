@@ -427,6 +427,10 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
 
   argumentsFor(intent, taskRequest, contextSnapshot) {
     const base = super.argumentsFor(intent, taskRequest, contextSnapshot);
+    // 매크로 저장: 원문만 넘기면 어댑터가 규칙으로 이름·명령을 뽑는다(LLM 불필요).
+    if (intent.actionType === ActionType.MACRO_SAVE) {
+      return { ...base, rawText: taskRequest.command.rawText };
+    }
     // 셸 실행: 자연어를 안전한 PowerShell 한 줄 명령으로 LLM 변환한다. 실제 명령은 승인 카드에 노출된다.
     if (intent.actionType === ActionType.SHELL_EXECUTE) {
       const drafted = this.draftShellCommandFor({

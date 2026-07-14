@@ -1944,8 +1944,8 @@ function AppInner() {
         command: { rawText, locale: 'ko-KR' },
         context: { currentScreen: MobileRoutes.HomeScreen, userTimezone: 'Asia/Seoul' }
       };
-      // LLM 계획/초안 생성이 수십 초 걸릴 수 있어 홈 제출은 타임아웃을 길게 잡는다.
-      const created = await homeClient(120000).createTask(request);
+      // 복합 명령(여러 단계 + 문서 내용 생성)은 계획에 시간이 더 걸릴 수 있어 타임아웃을 넉넉히 잡는다.
+      const created = await homeClient(240000).createTask(request);
       if (created?.success === false || !created?.taskId) {
         throw new Error(bridgeFailureMessage(created, 'task-create-failed'));
       }

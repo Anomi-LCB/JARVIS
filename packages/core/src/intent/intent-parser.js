@@ -9,6 +9,15 @@ const rules = [
     patterns: [/삭제|delete|remove|휴지통|포맷|format/i]
   },
   {
+    label: '매크로 저장',
+    actionType: ActionType.MACRO_SAVE,
+    category: 'system',
+    riskHint: 'read-only-local',
+    patterns: [/(으로|로)\s*(저장|기억)(해|하기|할래|해\s*줘)?|(저장|기억)\s*[:：]/i],
+    // 위치(드라이브/폴더/경로)로의 저장은 매크로가 아니다.
+    antiPatterns: [/(드라이브|폴더|디렉[터토]리|경로|바탕화면|다운로드|문서함|desktop|downloads|documents)\s*(으로|로)\s*(저장|기억)/i]
+  },
+  {
     label: '능력 조회',
     actionType: ActionType.CAPABILITY_QUERY,
     category: 'system',
@@ -127,6 +136,8 @@ export class IntentParser {
       .map((rule) => {
         const matches = rule.patterns.filter((pattern) => pattern.test(text));
         if (!matches.length) return null;
+        // 제외 패턴(예: "D드라이브로 저장"은 매크로 저장이 아니라 위치 저장)이 걸리면 이 규칙은 후보에서 뺀다.
+        if (Array.isArray(rule.antiPatterns) && rule.antiPatterns.some((pattern) => pattern.test(text))) return null;
         const confidence = Math.min(0.95, 0.55 + matches.length * 0.25 + Math.min(text.length, 40) / 400);
         return createIntentCandidate({
           intentId: stableId('intent', `${requestId}:${rule.actionType}`, createdAt),
