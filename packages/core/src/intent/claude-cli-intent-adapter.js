@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { ActionType, createIntentCandidate, stableId } from '../../../shared/src/types.js';
 import { IntentParser } from './intent-parser.js';
@@ -46,12 +46,45 @@ export function buildIntentPrompt(commandText) {
   ].join('\n');
 }
 
+// Anthropic API 직접 호출 러너(동기, curl 경유). CLI와 달리 프로세스 시작 오버헤드가 없어 훨씬 빠르다.
+// JARVIS_ANTHROPIC_API_KEY가 설정돼 있을 때만 쓰이며, 없으면 기존 claude CLI로 폴백한다.
+const apiModelMap = { haiku: 'claude-haiku-4-5', sonnet: 'claude-sonnet-4-6', opus: 'claude-opus-4-8' };
+
+export function createApiRunner({ apiKey, model = null, timeoutMs = 60000, maxTokens = 8000 }) {
+  const apiModel = apiModelMap[model] ?? model ?? 'claude-haiku-4-5';
+  return (prompt) => {
+    const body = JSON.stringify({ model: apiModel, max_tokens: maxTokens, messages: [{ role: 'user', content: String(prompt ?? '') }] });
+    let out;
+    try {
+      out = execFileSync('curl', [
+        '-s', '--max-time', String(Math.max(5, Math.floor(timeoutMs / 1000))),
+        'https://api.anthropic.com/v1/messages',
+        '-H', `x-api-key: ${apiKey}`, '-H', 'anthropic-version: 2023-06-01', '-H', 'content-type: application/json',
+        '-d', '@-'
+      ], { input: body, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+    } catch (error) {
+      throw new Error(`api-runner-error: ${String(error?.message ?? error).slice(0, 200)}`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(out);
+    } catch {
+      throw new Error('api-runner: invalid JSON response');
+    }
+    if (parsed.error) throw new Error(`api: ${parsed.error.message ?? 'unknown'}`);
+    // 모델 응답 텍스트만 돌려준다(CLI 러너와 동일하게 이후 extractJsonObject가 파싱).
+    return Array.isArray(parsed.content) ? parsed.content.map((b) => b.text ?? '').join('') : '';
+  };
+}
+
 export function createClaudeCliRunner({
   command = 'claude',
   model = null,
   timeoutMs = 45000,
-  shell = process.platform === 'win32'
+  shell = process.platform === 'win32',
+  apiKey = process.env.JARVIS_ANTHROPIC_API_KEY
 } = {}) {
+  if (apiKey) return createApiRunner({ apiKey, model, timeoutMs });
   return defaultRunner({ command, model, timeoutMs, shell });
 }
 
