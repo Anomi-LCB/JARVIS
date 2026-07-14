@@ -137,17 +137,19 @@ export class IntentParser {
       })
       .filter(Boolean)
       .sort((a, b) => b.confidence - a.confidence);
+    // 자기확장 폴백: 전용 도구로 분류되지 않는 요청은 셸(만능)로 즉석 처리한다.
+    // planner가 안전한 셸 명령을 생성하고, 승인 카드에 실제 명령이 노출되므로 위험은 통제된다.
     const selected = candidates[0] ?? createIntentCandidate({
-      intentId: stableId('intent', `${requestId}:unknown`, createdAt),
-      label: '알 수 없는 요청',
-      actionType: ActionType.CREATE_FILE,
-      category: 'unknown',
-      confidence: 0.35,
-      reasons: ['unknown_intent_fallback'],
-      riskHint: 'needs-clarification',
-      slots: this.extractSlots(text, ActionType.CREATE_FILE),
+      intentId: stableId('intent', `${requestId}:shellfallback`, createdAt),
+      label: '자동 처리(셸)',
+      actionType: ActionType.SHELL_EXECUTE,
+      category: 'system',
+      confidence: 0.4,
+      reasons: ['unclassified_shell_fallback'],
+      riskHint: 'system-command',
+      slots: this.extractSlots(text, ActionType.SHELL_EXECUTE),
       entities: this.extractEntities(text),
-      missingSlots: ['intent'],
+      missingSlots: [],
       complexity: this.complexity(text)
     });
     return {
