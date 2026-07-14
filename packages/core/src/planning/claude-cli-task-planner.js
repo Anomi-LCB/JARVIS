@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { ActionType } from '../../../shared/src/types.js';
 import { IntentParser } from '../intent/intent-parser.js';
 import { SkillRouter } from '../routing/skill-router.js';
@@ -6,6 +7,7 @@ import {
   createClaudeCliRunner,
   extractJsonObject
 } from '../intent/claude-cli-intent-adapter.js';
+import { appendJsonlSync } from '../../../shared/src/jsonl.js';
 import { TaskPlanner } from './task-planner.js';
 
 // E RiskClassifier의 기본 riskByAction과 같은 등급표(낮을수록 위험).
@@ -236,6 +238,24 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     // 콘텐츠 작성은 프로 품질을 위해 더 강한 모델(기본 sonnet)과 긴 타임아웃을 쓴다.
     this.contentRunner = contentRunner ?? runner ?? createClaudeCliRunner({ command, model: contentModel, timeoutMs: contentTimeoutMs });
     this.contentDraftCache = new Map();
+    // 작업 결정화: 한 번 성공적으로 만든 (자연어→셸명령) 매핑을 파일에 남겨,
+    // 같은 요청이 오면 LLM 호출 없이 즉시 재현한다(반복 업무의 속도·일관성).
+    this.shellCommandCache = new Map();
+    this.shellCachePath = process.env.JARVIS_SHELL_CACHE_PATH
+      ?? (process.env.JARVIS_BRIDGE_STATE_DIR ? `${process.env.JARVIS_BRIDGE_STATE_DIR}/shell-command-cache.jsonl` : 'logs/shell-command-cache.jsonl');
+    this.loadShellCache();
+  }
+
+  loadShellCache() {
+    try {
+      if (!existsSync(this.shellCachePath)) return;
+      for (const line of readFileSync(this.shellCachePath, 'utf8').split(/\r?\n/).filter(Boolean)) {
+        try {
+          const rec = JSON.parse(line);
+          if (rec?.key && rec?.command) this.shellCommandCache.set(rec.key, { command: rec.command, verify: rec.verify ?? '' });
+        } catch { /* skip bad line */ }
+      }
+    } catch { /* cache is optional */ }
   }
 
   createPlan(taskRequest, intent, options = {}) {
@@ -254,9 +274,10 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const planExplanation = plan.llmPlanning?.summary
       ? `명령을 "${plan.llmPlanning.summary}"(으)로 이해하고 ${partCount}단계로 계획했습니다.`
       : `명령을 "${intent.title ?? intent.label}" 작업으로 이해하고 ${partCount}단계로 계획했습니다.`;
-    // 복합 명령은 분해 단계에서 이미 의도가 파악됐으므로 별도의 확인 질문(느린 LLM 호출)을 만들지 않는다.
+    // 복합 명령은 분해 단계에서, 셸 명령은 실제 명령이 승인 카드에 노출되므로 확인 질문(느린 LLM)을 만들지 않는다.
     const isCompound = Number(plan.llmPlanning?.partCount ?? 1) > 1;
-    const ambiguous = !isCompound && (
+    const isShell = plan.action?.actionType === ActionType.SHELL_EXECUTE;
+    const ambiguous = !isCompound && !isShell && (
       intent.unknown === true
       || Number(intent.confidence ?? 1) < this.clarifyConfidenceThreshold
       || (Array.isArray(intent.missingSlots) && intent.missingSlots.includes('intent'))
@@ -495,6 +516,11 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
   draftShellCommandFor({ text, locale }) {
     const trimmed = String(text ?? '').trim().slice(0, this.maxCommandLength);
     if (!trimmed) return null;
+    // 결정화 캐시: 같은 요청이면 LLM을 부르지 않고 이전에 만든 명령을 즉시 재현한다.
+    const key = trimmed.toLowerCase().replace(/\s+/g, ' ');
+    if (this.shellCommandCache.has(key)) {
+      return { ...this.shellCommandCache.get(key), fromCache: true };
+    }
     let stdout;
     try {
       stdout = this.runner(buildShellCommandPrompt({ text: trimmed, locale }));
@@ -509,7 +535,11 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     if (!command || command.length > 8000) return null;
     // 자기검증: LLM이 "성공을 확인하는 읽기 전용 셸"도 함께 낸다. 실행 후 이걸로 결과를 형식 검증한다.
     const verify = typeof payload?.verify === 'string' ? payload.verify.trim().slice(0, 1000) : '';
-    return { command, verify };
+    const result = { command, verify };
+    // 결정화 저장: 다음 같은 요청부터 LLM 없이 즉시 재현.
+    this.shellCommandCache.set(key, result);
+    try { appendJsonlSync(this.shellCachePath, { key, command, verify, at: this.clock().toISOString() }); } catch { /* optional */ }
+    return result;
   }
 
   draftContentFor({ text, outputFormat, fileName, locale }) {

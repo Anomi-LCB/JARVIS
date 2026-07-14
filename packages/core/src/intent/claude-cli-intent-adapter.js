@@ -124,23 +124,34 @@ export class ClaudeCliSemanticIntentAdapter {
       timeoutMs,
       shell: process.platform === 'win32'
     });
+    // 결정화: (자연어→의도) 판정을 캐시해 같은 요청이면 claude 호출을 건너뛴다.
+    this.payloadCache = new Map();
   }
 
   parse(rawText, { requestId = 'request', createdAt = this.clock().toISOString() } = {}) {
     const text = String(rawText ?? '').trim().slice(0, this.maxCommandLength);
     if (!text) return this.failure('empty-command', { requestId });
+    const cacheKey = text.toLowerCase().replace(/\s+/g, ' ');
     const prompt = buildIntentPrompt(text);
     const startedAt = Date.now();
-    let stdout;
-    try {
-      stdout = this.runner(prompt);
-    } catch (error) {
-      return this.failure(`cli-error:${error.message ?? error}`, { requestId });
+    let payload;
+    let latencyMs;
+    if (this.payloadCache.has(cacheKey)) {
+      payload = this.payloadCache.get(cacheKey);
+      latencyMs = 0;
+    } else {
+      let stdout;
+      try {
+        stdout = this.runner(prompt);
+      } catch (error) {
+        return this.failure(`cli-error:${error.message ?? error}`, { requestId });
+      }
+      latencyMs = Date.now() - startedAt;
+      // --output-format json 래퍼({"result": "..."})와 모델이 직접 낸 JSON 둘 다 허용한다.
+      const wrapper = extractJsonObject(stdout);
+      payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
+      if (actionProfiles[payload?.actionType]) this.payloadCache.set(cacheKey, payload);
     }
-    const latencyMs = Date.now() - startedAt;
-    // --output-format json 래퍼({"result": "..."})와 모델이 직접 낸 JSON 둘 다 허용한다.
-    const wrapper = extractJsonObject(stdout);
-    const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
     const profile = actionProfiles[payload?.actionType];
     if (!profile) return this.failure('unrecognized-action-type', { requestId, latencyMs });
 
