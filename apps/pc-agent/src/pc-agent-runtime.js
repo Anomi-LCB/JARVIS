@@ -1,6 +1,6 @@
 import { access, copyFile, mkdir, readFile, readdir, stat, writeFile, rm, rename, realpath } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { basename, dirname, extname, resolve, relative } from 'node:path';
 import { ActionType, maskSensitive, ModuleId, stableId, TaskStatus } from '../../../packages/shared/src/types.js';
@@ -3700,15 +3700,9 @@ export class HwpCreateToolAdapter {
         '}'
       ].join('\r\n');
       writeFileSync(tmpPs1, '﻿' + script, 'utf8');
-      // HWP는 GUI COM이라 node가 직접 부른 powershell 안에서 멈춘다. 독립 프로세스로 띄우고 결과 파일을 폴링한다.
-      const child = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1], { detached: true, stdio: 'ignore' });
-      child.unref();
-      const deadline = Date.now() + this.timeoutMs;
-      while (Date.now() < deadline) {
-        if (existsSync(outPath)) { await new Promise((r) => setTimeout(r, 400)); break; }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      try { process.kill(-child.pid); } catch { /* already exited */ }
+      // HWP는 GUI COM이라 창 숨김(windowsHide)이나 파이프 환경에서 멈춘다.
+      // STA 스레드 + windowsHide:false로 실행하면 정상 동작한다(진단으로 확인).
+      execFileSync('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1], { timeout: this.timeoutMs, windowsHide: false, stdio: 'ignore' });
     } catch (error) {
       try { rmSync(tmpTxt, { force: true }); rmSync(tmpPs1, { force: true }); } catch { /* ignore */ }
       return { status: 'failed', error: `hwp-create-failed: ${String(error?.message ?? error).slice(0, 200)}`, targetPath: outPath, outputPaths: [], rollbackAvailable: false };
