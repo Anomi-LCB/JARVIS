@@ -9,6 +9,13 @@ const rules = [
     patterns: [/삭제|delete|remove|휴지통|포맷|format/i]
   },
   {
+    label: '능력 조회',
+    actionType: ActionType.CAPABILITY_QUERY,
+    category: 'system',
+    riskHint: 'read-only-local',
+    patterns: [/(뭘|무엇을|뭐를?|어떤 것을?|어떤 걸).*(할 수|해줄 수|가능)|기능.*(뭐|알려|목록)|능력.*(뭐|알려)|할 수 있는 (게|것)|무슨 일을/i]
+  },
+  {
     label: '메일 전송',
     actionType: ActionType.SEND_EMAIL,
     category: 'external',

@@ -70,6 +70,39 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'capability_query_skill',
+    version: '1.0.0',
+    label: '능력 조회',
+    module: ModuleId.PC_AGENT,
+    category: 'system',
+    actionType: ActionType.CAPABILITY_QUERY,
+    toolName: 'capability.describe',
+    match: {
+      keywords: ['능력', '기능', '할 수 있는', '뭘 할', '무엇을']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: false,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: false,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['tool_metadata'],
+      blockedWhen: []
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['capabilityCount']
+    }
+  },
+  {
     skillId: 'hwp_create_skill',
     version: '1.0.0',
     label: 'Hangul (HWP) File Create',

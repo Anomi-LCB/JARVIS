@@ -8,6 +8,52 @@ import { JsonlAuditLog } from '../../../packages/shared/src/audit-log.js';
 import { appendJsonlSync } from '../../../packages/shared/src/jsonl.js';
 import { ExcelWorkbookWorker, runWorkbookProductFixturePack } from './adapters/excel/excel-worker.js';
 import { createClaudeCliRunner } from '../../../packages/core/src/intent/claude-cli-intent-adapter.js';
+import { defaultSkillManifest } from '../../../packages/core/src/routing/default-skill-manifest.js';
+
+// 자비스가 자기 능력을 스스로 설명한다(skill 매니페스트 기반이라 도구가 늘면 자동 반영—유기적).
+export class CapabilityDescribeToolAdapter {
+  constructor() {
+    this.contract = createToolContract({ toolName: 'capability.describe', readOnly: true, evidence: ['capabilityCount'] });
+  }
+
+  buildCatalog() {
+    const labelKo = {
+      'Excel Workbook Create': '엑셀 파일 만들기', 'Text File Create': '텍스트·문서 파일 만들기',
+      'Hangul (HWP) File Create': '한글(HWP) 파일 만들기', 'File List': '폴더 목록 보기',
+      'File Move': '파일 옮기기', 'Read-only Browser Search': '웹 검색', 'Shell Command Execute': '시스템 명령 실행',
+      'File Search': '파일 찾기', 'Email Send': '메일 보내기', 'Document Edit': '문서(엑셀) 내용 수정',
+      'External Transfer Review': '외부 전송(검토)'
+    };
+    const labels = [...new Set(defaultSkillManifest.map((s) => s.label))].filter((l) => l !== '능력 조회');
+    const skillLines = labels.map((l) => `• ${labelKo[l] ?? l}`);
+    const extraLines = [
+      '• 시스템 명령·프로그램 실행/조작 (승인 후)',
+      '• 모르는 요청도 셸로 즉석 처리 시도',
+      '• 자주 하는 요청은 즉시 재현(결정화)'
+    ];
+    return [
+      '제가 지금 할 수 있는 일이에요:',
+      ...skillLines,
+      ...extraLines,
+      '',
+      '🔧 아직 다듬고 있는 것:',
+      '• 한글 파일 생성 (한컴 자동화 환경에 따라 불안정할 수 있어요)',
+      '• 복합 명령 속도 (여러 단계를 한 번에 시키면 시간이 좀 걸려요)',
+      '',
+      '⚠️ 안전을 위해 "파일 삭제"와 "저(자비스) 자신 종료"는 막아 두었어요.',
+      '   그 밖의 위험한 작업(시스템 설정·설치 등)은 승인을 받고 진행해요.'
+    ].join('\n');
+  }
+
+  async shadow() {
+    return { mode: 'shadow', expectedChangesCount: 0, warnings: [] };
+  }
+
+  async execute() {
+    const summary = this.buildCatalog();
+    return { status: 'success', summary, capabilityCount: new Set(defaultSkillManifest.map((s) => s.label)).size, outputPaths: [], rollbackAvailable: false };
+  }
+}
 
 // 자기교정용 프롬프트: 실패한 셸 명령의 원인을 주고 수정 명령을 받는다.
 function buildShellCorrectionPrompt({ rawText, command, stderr, verifyOutput }) {
@@ -5367,6 +5413,7 @@ export class PcAgentRuntime {
     this.registry.register('shell.execute', new ShellExecuteToolAdapter({}));
     this.registry.register('filesystem.searchFiles', new FileSearchToolAdapter({}));
     this.registry.register('hwp.create', new HwpCreateToolAdapter({}));
+    this.registry.register('capability.describe', new CapabilityDescribeToolAdapter());
     this.registry.register('document.edit', new DocumentEditToolAdapter({}));
     this.registry.register('email.send', new EmailSendToolAdapter({}));
     this.logs = [];

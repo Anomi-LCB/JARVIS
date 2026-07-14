@@ -16,6 +16,7 @@ export const actionProfiles = Object.freeze({
   [ActionType.SEARCH_FILES]: { label: '파일 검색', category: 'filesystem', riskHint: 'read-only-local' },
   [ActionType.SEND_EMAIL]: { label: '메일 전송', category: 'external', riskHint: 'external-transfer' },
   [ActionType.EDIT_DOCUMENT]: { label: '문서 내용 편집', category: 'document', riskHint: 'local-change' },
+  [ActionType.CAPABILITY_QUERY]: { label: '능력 조회', category: 'system', riskHint: 'read-only-local' },
   [ActionType.UPLOAD_FILE]: { label: '외부 전송 요청', category: 'external', riskHint: 'external-transfer' },
   [ActionType.DELETE_FILE]: { label: '삭제 요청', category: 'filesystem', riskHint: 'destructive' },
   [ActionType.MAKE_PAYMENT]: { label: '결제 요청', category: 'external', riskHint: 'forbidden' },

@@ -34,6 +34,10 @@ export const defaultSemanticIntentProfiles = Object.freeze([
     '엑셀 수정해', '표 내용 바꿔', '이 파일 고쳐', '셀 값 수정', '문서 내용 편집',
     '기존 파일에 채워', '엑셀 값 변경'
   ]),
+  profile('semantic.capability.query', ActionType.CAPABILITY_QUERY, '능력 조회', 'system', 'read-only-local', [
+    '뭘 할 수 있어', '무슨 기능 있어', '어떤 걸 해줄 수 있어', '기능 목록 알려줘',
+    '네 능력 알려줘', '할 수 있는 게 뭐야'
+  ]),
   profile('semantic.upload.file', ActionType.UPLOAD_FILE, '외부 전송 요청', 'external', 'external-transfer', [
     '메일로 보내', '이메일 전송', '카카오톡 공유', '밴드에 공유', '업로드해', '외부로 전송',
     '파일 전달', '보고서 공유'
