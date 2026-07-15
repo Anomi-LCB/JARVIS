@@ -1350,6 +1350,16 @@ export class CoreOrchestrationWorker {
     this.coreFacade.eventBus.publish('task.completed', { taskId: task.taskId, executionResult: task.executionResult });
     this.coreFacade.eventBus.publish('worker.learning.ingested', { taskId: task.taskId, learning });
     this.coreFacade.eventBus.publish('orchestration.trace.updated', { taskId: task.taskId, trace: task.orchestrationTrace });
+    // 대화기억: 완료 작업을 작업 일지에 남겨 다음 명령의 "그거/방금 만든 파일" 참조를 가능하게 한다.
+    const finalResult = execution?.executionResult ?? execution ?? {};
+    this.coreFacade.workMemory?.record?.({
+      taskId: task.taskId,
+      rawText: task.request?.metadata?.workReferenceOriginalText ?? task.request?.command?.rawText ?? '',
+      actionType: task.plan?.action?.actionType ?? null,
+      outputPaths: finalResult.outputPaths ?? [],
+      summary: finalResult.summary ?? null,
+      status: finalResult.status === 'success' ? 'success' : 'failed'
+    });
   }
 
   failBeforeExecution(task, payload) {

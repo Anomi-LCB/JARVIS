@@ -12,6 +12,7 @@ import { AgentOrchestratorLite } from './orchestration/agent-orchestrator-lite.j
 import { OrchestrationJournal } from './orchestration/orchestration-journal.js';
 import { createDefaultContractRegistry } from './contracts/default-contracts.js';
 import { MacroStore } from './macro-store.js';
+import { WorkMemory } from './conversation-memory.js';
 
 export class CoreFacade {
   constructor({
@@ -29,7 +30,8 @@ export class CoreFacade {
     inputProviderRegistry = null,
     intentParser = null,
     taskPlanner = null,
-    macroStore = null
+    macroStore = null,
+    workMemory = null
   } = {}) {
     this.policyEngine = policyEngine;
     this.memoryStore = memoryStore;
@@ -43,6 +45,7 @@ export class CoreFacade {
     this.contextBuilder = new ContextSnapshotBuilder({ cwd, clock, desktopContextProvider, desktopContextCollector });
     this.taskPlanner = taskPlanner ?? new TaskPlanner();
     this.macroStore = macroStore ?? new MacroStore();
+    this.workMemory = workMemory ?? new WorkMemory({ clock });
     this.skillRouter = new SkillRouter();
     this.orchestrator = new AgentOrchestratorLite({
       clock,
@@ -76,6 +79,7 @@ export class CoreFacade {
   createTaskFromRequest(taskRequest, options = {}) {
     taskRequest = this.ensureUniqueTaskRequest(taskRequest);
     taskRequest = this.expandMacro(taskRequest);
+    taskRequest = this.resolveWorkReference(taskRequest);
     this.contractRegistry.assert('TaskRequest', taskRequest);
     const machine = new TaskStateMachine(TaskStatus.CREATED, { clock: this.clock });
     this.eventBus.publish('task.requested', { taskRequest });
@@ -235,6 +239,29 @@ export class CoreFacade {
         ...taskRequest,
         command: { ...taskRequest.command, rawText: hit.command },
         metadata: { ...taskRequest.metadata, macroExpanded: hit.name, macroOriginalText: rawText }
+      };
+    } catch {
+      return taskRequest;
+    }
+  }
+
+  // 대화기억: "그거 메일로 보내줘"/"방금 만든 보고서 열어줘"의 지시어를
+  // 작업 일지의 최근 산출물 파일명으로 바꿔 정상 파이프라인을 태운다.
+  resolveWorkReference(taskRequest) {
+    try {
+      const rawText = taskRequest?.command?.rawText;
+      if (!rawText) return taskRequest;
+      const hit = this.workMemory?.rewriteWithReference?.(rawText);
+      if (!hit) return taskRequest;
+      return {
+        ...taskRequest,
+        command: { ...taskRequest.command, rawText: hit.rewritten },
+        metadata: {
+          ...taskRequest.metadata,
+          workReferenceResolved: true,
+          workReferencePath: hit.path,
+          workReferenceOriginalText: rawText
+        }
       };
     } catch {
       return taskRequest;
