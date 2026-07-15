@@ -67,7 +67,9 @@ const contentStopWords = new Set([
   '메모', '문서', '파일', '엑셀', '시트', '표', '보고서', '회의록', '노트', '텍스트',
   '만들어', '만들어줘', '만들기', '생성', '생성해', '생성해줘', '작성', '작성해', '작성해줘',
   '해줘', '해', '줘', '좀', '하나', '새', '새로', '새로운', 'please', '만들', '적어', '적어줘',
-  '기록', '기록해', '남겨', '남겨줘', 'txt', 'xlsx', 'csv'
+  '기록', '기록해', '남겨', '남겨줘', 'txt', 'xlsx', 'csv',
+  '워드', '파워포인트', '프레젠테이션', '피피티', 'ppt', 'pptx', 'docx', 'pdf', '한글', 'hwp',
+  '슬라이드', '발표', '발표자료', '자료', 'ppt로', '워드로'
 ]);
 
 export function commandHasDraftableContent(text) {
@@ -175,28 +177,53 @@ export function buildShellCommandPrompt({ text, locale = 'ko-KR' }) {
   ].join('\n');
 }
 
+// 포맷군을 정한다: 스프레드시트(xlsx) / 리치문서(docx·pdf·hwp) / 슬라이드(pptx) / 평문(txt)
+export function contentFamilyOf(outputFormat) {
+  const f = String(outputFormat ?? '').toLowerCase();
+  if (f === 'xlsx') return 'xlsx';
+  if (['docx', 'pdf', 'hwp', 'hwpx'].includes(f)) return 'doc';
+  if (['pptx', 'ppt'].includes(f)) return 'slides';
+  return 'txt';
+}
+
+const contentSchemaByFamily = {
+  xlsx: '- xlsx 형식: {"kind":"xlsx","sheetName":"시트명","columns":["열1","열2"],"rows":[["값","값"]]} — 열 최대 20개, 행은 보통 8~20개(최대 60). 합계/소계 행이 자연스러우면 포함한다.',
+  doc: [
+    '- 문서 형식: {"kind":"doc","title":"문서 제목","blocks":[ ... ]} — blocks는 순서대로 렌더된다. 블록 종류:',
+    '    {"type":"heading","level":1,"text":"대제목"}  (level 1~3)',
+    '    {"type":"paragraph","text":"문단 본문"}',
+    '    {"type":"bullets","items":["항목1","항목2"]}',
+    '    {"type":"table","columns":["열1","열2"],"rows":[["값","값"]]}',
+    '  섹션 제목(heading)과 본문(paragraph)을 적절히 섞고, 비교·목록성 정보는 표/불릿으로 구조화한다. 블록 8~25개면 충분. 표는 8~20행.',
+  ].join('\n'),
+  slides: [
+    '- 슬라이드 형식: {"kind":"slides","title":"발표 제목","slides":[{"title":"슬라이드 제목","bullets":["요점1","요점2"],"notes":"발표자 노트(선택)"}]} —',
+    '  첫 슬라이드는 표지 성격, 이후 슬라이드는 제목+핵심 불릿 3~6개. 슬라이드 5~12장. 불릿은 완결된 짧은 문장. notes에 부연 설명을 담아도 좋다.',
+  ].join('\n'),
+  txt: '- txt 형식: {"kind":"txt","content":"문서 본문"} — 제목·섹션 구분·항목을 갖춘 완성된 본문. 간결하게, 보통 1500자 이내(최대 8000자).'
+};
+
 export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [] }) {
-  const format = outputFormat === 'xlsx' ? 'xlsx' : 'txt';
+  const family = contentFamilyOf(outputFormat);
+  const formatLabel = { xlsx: 'xlsx(엑셀)', doc: `${outputFormat}(워드/문서)`, slides: `${outputFormat}(프레젠테이션)`, txt: 'txt' }[family];
   return [
     '당신은 실무 문서를 작성하는 전문 어시스턴트입니다. 사용자 명령이 요구하는 문서를 실제 업무에 바로 쓸 수 있는 프로 수준으로 완성하세요.',
     '초안이 아니라 완성본을 목표로 합니다. 형식적이거나 뼈대만 있는 결과는 금지합니다.',
     ...preferenceSection(preferenceHints),
     '',
     '품질 기준:',
-    '- 실무에서 통용되는 구조와 항목을 갖춘다(적절한 섹션, 표 머리글, 요약/합계, 단위 표기 등).',
+    '- 실무에서 통용되는 구조와 항목을 갖춘다(적절한 섹션/슬라이드, 표 머리글, 요약/합계, 단위 표기 등).',
     '- 사용자가 명시하지 않았어도 그 문서 유형에서 일반적으로 포함되는 표준 항목·행/열을 충실히 채운다.',
     '- 다만 사용자만 아는 사실(고유명사, 실제 수치, 개인정보)은 지어내지 않고 채울 자리(빈 값 또는 "(입력)" 같은 안내)로 남긴다.',
     '- 날짜가 필요하면 오늘 기준으로 계산해 실제 날짜를 넣는다.',
-    '- 분량은 간결하고 충실하게. 형식만 보여주는 1~2줄은 금지하되, 핵심만 담아 빠르게 완성한다. 불필요하게 늘리지 않는다(본문 보통 300~1200자, 표는 8~20행이면 충분).',
+    '- 분량은 간결하고 충실하게. 형식만 보여주는 1~2줄은 금지하되, 핵심만 담아 빠르게 완성한다. 불필요하게 늘리지 않는다.',
     '',
     '출력 규칙:',
     '- 반드시 JSON 객체 하나만 출력한다. 설명 문장, 마크다운 코드펜스를 붙이지 않는다.',
     `- 문서 언어는 ${locale.startsWith('ko') ? '한국어' : locale}를 기본으로 한다.`,
-    format === 'xlsx'
-      ? '- xlsx 형식: {"kind":"xlsx","sheetName":"시트명","columns":["열1","열2"],"rows":[["값","값"]]} — 열 최대 20개, 행은 보통 8~20개(최대 60). 합계/소계 행이 자연스러우면 포함한다.'
-      : '- txt 형식: {"kind":"txt","content":"문서 본문"} — 제목·섹션 구분·항목을 갖춘 완성된 본문. 간결하게, 보통 1500자 이내(최대 8000자).',
+    contentSchemaByFamily[family],
     '',
-    `요청 형식: ${format}`,
+    `요청 형식: ${formatLabel}`,
     `오늘 날짜: ${new Date().toISOString().slice(0, 10)}`,
     fileName ? `파일명 힌트: ${fileName}` : null,
     `사용자 명령: ${text}`
@@ -277,7 +304,11 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     // 복합 명령은 분해 단계에서, 셸 명령은 실제 명령이 승인 카드에 노출되므로 확인 질문(느린 LLM)을 만들지 않는다.
     const isCompound = Number(plan.llmPlanning?.partCount ?? 1) > 1;
     const isShell = plan.action?.actionType === ActionType.SHELL_EXECUTE;
-    const ambiguous = !isCompound && !isShell && (
+    // 단, 미분류 폴백(unknown)으로 셸에 온 모호한 명령은 첫 실행에 한해 확인 질문을 한다.
+    // 결정화 캐시에 있는 반복 요청은 즉시 실행 경로이므로 다시 묻지 않는다.
+    const shellCacheKey = String(taskRequest.command?.rawText ?? '').trim().slice(0, this.maxCommandLength).toLowerCase().replace(/\s+/g, ' ');
+    const shellSkipsClarify = isShell && (intent.unknown !== true || this.shellCommandCache.has(shellCacheKey));
+    const ambiguous = !isCompound && !shellSkipsClarify && (
       intent.unknown === true
       || Number(intent.confidence ?? 1) < this.clarifyConfidenceThreshold
       || (Array.isArray(intent.missingSlots) && intent.missingSlots.includes('intent'))
@@ -473,31 +504,23 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
       locale: taskRequest.command?.locale ?? 'ko-KR'
     });
     if (!draft) return base;
-    if (draft.kind === 'xlsx' && base.outputFormat === 'xlsx') {
-      return {
-        ...base,
-        sheetName: draft.sheetName ?? base.sheetName,
-        columns: draft.columns,
-        rows: draft.rows,
-        contentDraft: {
-          adapterId: this.adapterId,
-          kind: 'xlsx',
-          draftedByLlm: true,
-          appliedPreferences: (this.pendingPreferenceHints ?? []).map((hint) => hint.preferenceId).filter(Boolean)
-        }
-      };
+    const family = contentFamilyOf(base.outputFormat ?? intent.slots?.outputFormat ?? 'txt');
+    const appliedPreferences = (this.pendingPreferenceHints ?? []).map((hint) => hint.preferenceId).filter(Boolean);
+    const stamp = (kind) => ({ contentDraft: { adapterId: this.adapterId, kind, draftedByLlm: true, appliedPreferences } });
+    if (draft.kind === 'xlsx' && family === 'xlsx') {
+      return { ...base, sheetName: draft.sheetName ?? base.sheetName, columns: draft.columns, rows: draft.rows, ...stamp('xlsx') };
     }
-    if (draft.kind === 'txt' && base.outputFormat !== 'xlsx') {
-      return {
-        ...base,
-        content: draft.content,
-        contentDraft: {
-          adapterId: this.adapterId,
-          kind: 'txt',
-          draftedByLlm: true,
-          appliedPreferences: (this.pendingPreferenceHints ?? []).map((hint) => hint.preferenceId).filter(Boolean)
-        }
-      };
+    // 워드/PDF/한글: 제목+블록(헤딩/문단/불릿/표) 구조를 그대로 넘긴다. 어댑터가 COM으로 렌더한다.
+    if (draft.kind === 'doc' && family === 'doc') {
+      return { ...base, docTitle: draft.title ?? null, blocks: Array.isArray(draft.blocks) ? draft.blocks : [], ...stamp('doc') };
+    }
+    // 프레젠테이션: 슬라이드 배열을 넘긴다.
+    if (draft.kind === 'slides' && family === 'slides') {
+      return { ...base, deckTitle: draft.title ?? null, slides: Array.isArray(draft.slides) ? draft.slides : [], ...stamp('slides') };
+    }
+    // 평문 폴백(포맷이 무엇이든 txt 초안이 왔으면 본문으로).
+    if (draft.kind === 'txt' && family !== 'xlsx') {
+      return { ...base, content: draft.content, ...stamp('txt') };
     }
     return base;
   }

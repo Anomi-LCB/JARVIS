@@ -85,6 +85,15 @@ const rules = [
     patterns: [/이동|옮겨|move/i]
   },
   {
+    label: '파일 열기',
+    actionType: ActionType.SHELL_EXECUTE,
+    category: 'system',
+    riskHint: 'system-command',
+    // 확장자가 명시된 파일을 열라는 요청은 셸(Start-Process)로 처리한다.
+    // 두 패턴이 함께 맞아야 신뢰도가 생성 규칙("보고서" 단어 매칭)을 이긴다.
+    patterns: [/\.(xlsx|docx|pptx|ppt|pdf|txt|hwpx?|csv|png|jpe?g|mp4|zip)\b/i, /열어|띄워|실행|재생/i]
+  },
+  {
     label: '로컬 산출물 생성',
     actionType: ActionType.CREATE_FILE,
     category: 'document',
@@ -96,7 +105,8 @@ const rules = [
 const outputFormatPatterns = [
   { format: 'xlsx', pattern: /엑셀|xlsx|스프레드시트/i },
   { format: 'hwp', pattern: /한글|hwp|hwpx|아래아/i },
-  { format: 'docx', pattern: /워드|docx/i },
+  { format: 'pptx', pattern: /파워포인트|프레젠테이션|피피티|슬라이드|발표\s*자료|pptx?|keynote/i },
+  { format: 'docx', pattern: /워드|docx|word\b/i },
   { format: 'pdf', pattern: /pdf/i },
   { format: 'txt', pattern: /메모|텍스트|txt/i }
 ];
@@ -282,7 +292,7 @@ export class IntentParser {
         .join('-');
       if (phrase) return this.normalizeFileName(phrase, outputFormat);
     }
-    const extension = text.match(/([가-힣\w-]+)\.(xlsx|docx|pdf|txt|hwp)\b/i);
+    const extension = text.match(/([가-힣\w-]+)\.(xlsx|docx|pptx|ppt|pdf|txt|hwp|hwpx)\b/i);
     if (extension) return extension[0];
     return null;
   }
@@ -294,7 +304,7 @@ export class IntentParser {
       .replace(/\s+/g, '-')
       .replace(/^-+|-+$/g, '');
     if (!cleaned) return null;
-    if (/\.(xlsx|docx|pdf|txt|hwp)$/i.test(cleaned)) return cleaned;
+    if (/\.(xlsx|docx|pptx|ppt|pdf|txt|hwp|hwpx)$/i.test(cleaned)) return cleaned;
     return `${cleaned}.${outputFormat ?? 'txt'}`;
   }
 
@@ -333,7 +343,7 @@ export class IntentParser {
   }
 
   extractTopic(text, fileName) {
-    if (fileName) return fileName.replace(/\.(xlsx|docx|pdf|txt|hwp)$/i, '');
+    if (fileName) return fileName.replace(/\.(xlsx|docx|pptx|ppt|pdf|txt|hwp|hwpx)$/i, '');
     const cleaned = this.cleanupCommandText(text.replace(/검색|조사|찾아|브라우저|목록|리스트|파일|폴더|보여|만들|작성|생성|전송|공유|업로드/gi, ''));
     return cleaned || null;
   }

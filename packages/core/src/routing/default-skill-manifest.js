@@ -36,6 +36,74 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'word_document_skill',
+    version: '1.0.0',
+    label: 'Word Document Create',
+    module: ModuleId.PC_AGENT,
+    category: 'document',
+    actionType: ActionType.CREATE_FILE,
+    toolName: 'word.create',
+    match: {
+      outputFormats: ['docx', 'pdf'],
+      keywords: ['워드', 'word', 'docx', '보고서', '문서', 'pdf']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['user_text'],
+      blockedWhen: ['externalTransfer=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['outputPath', 'sha256', 'blockCount']
+    }
+  },
+  {
+    skillId: 'powerpoint_deck_skill',
+    version: '1.0.0',
+    label: 'PowerPoint Deck Create',
+    module: ModuleId.PC_AGENT,
+    category: 'document',
+    actionType: ActionType.CREATE_FILE,
+    toolName: 'powerpoint.create',
+    match: {
+      outputFormats: ['pptx'],
+      keywords: ['파워포인트', 'powerpoint', 'pptx', 'ppt', '프레젠테이션', '슬라이드', '발표']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['user_text'],
+      blockedWhen: ['externalTransfer=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['outputPath', 'sha256', 'slideCount']
+    }
+  },
+  {
     skillId: 'text_file_create_skill',
     version: '1.0.0',
     label: 'Text File Create',
@@ -44,8 +112,8 @@ export const defaultSkillManifest = Object.freeze([
     actionType: ActionType.CREATE_FILE,
     toolName: 'filesystem.createTextFile',
     match: {
-      outputFormats: ['txt', 'docx', 'pdf'],
-      keywords: ['보고서', '안내문', '문서', '메모', '작성', '생성']
+      outputFormats: ['txt'],
+      keywords: ['메모', '텍스트', 'txt', '로그']
     },
     capability: {
       readsLocalFiles: false,

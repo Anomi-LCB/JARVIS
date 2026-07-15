@@ -1,5 +1,5 @@
 import { access, copyFile, mkdir, readFile, readdir, stat, writeFile, rm, rename, realpath } from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { basename, dirname, extname, resolve, relative } from 'node:path';
@@ -10,6 +10,7 @@ import { ExcelWorkbookWorker, runWorkbookProductFixturePack } from './adapters/e
 import { createClaudeCliRunner } from '../../../packages/core/src/intent/claude-cli-intent-adapter.js';
 import { defaultSkillManifest } from '../../../packages/core/src/routing/default-skill-manifest.js';
 import { MacroStore } from '../../../packages/core/src/macro-store.js';
+import { appCatalog } from '../../../packages/core/src/app-catalog.js';
 
 // 자비스가 자기 능력을 스스로 설명한다(skill 매니페스트 기반이라 도구가 늘면 자동 반영—유기적).
 export class CapabilityDescribeToolAdapter {
@@ -21,16 +22,20 @@ export class CapabilityDescribeToolAdapter {
     const labelKo = {
       'Excel Workbook Create': '엑셀 파일 만들기', 'Text File Create': '텍스트·문서 파일 만들기',
       'Hangul (HWP) File Create': '한글(HWP) 파일 만들기', 'File List': '폴더 목록 보기',
+      'Word Document Create': '워드(docx)·PDF 문서 만들기', 'PowerPoint Deck Create': '파워포인트(pptx) 발표자료 만들기',
       'File Move': '파일 옮기기', 'Read-only Browser Search': '웹 검색', 'Shell Command Execute': '시스템 명령 실행',
       'File Search': '파일 찾기', 'Email Send': '메일 보내기', 'Document Edit': '문서(엑셀) 내용 수정',
       'External Transfer Review': '외부 전송(검토)'
     };
     const labels = [...new Set(defaultSkillManifest.map((s) => s.label))].filter((l) => l !== '능력 조회');
     const skillLines = labels.map((l) => `• ${labelKo[l] ?? l}`);
+    const nativeApps = appCatalog.filter((app) => app.authoring && app.progId).map((app) => app.labelKo).join(', ');
     const extraLines = [
+      `• 프로그램 네이티브 저작(설치된 경우): ${nativeApps}`,
       '• 시스템 명령·프로그램 실행/조작 (승인 후)',
       '• 모르는 요청도 셸로 즉석 처리 시도',
-      '• 자주 하는 요청은 즉시 재현(결정화)'
+      '• 자주 하는 요청은 즉시 재현(결정화)',
+      '• 직전 작업 기억 — "그거 메일로 보내줘", "방금 만든 파일 열어줘"처럼 이어서 시키기'
     ];
     return [
       '제가 지금 할 수 있는 일이에요:',
@@ -3714,7 +3719,13 @@ export class HwpCreateToolAdapter {
   }
 
   async execute(args) {
-    const content = String(args?.content ?? args?.text ?? '').trim() || '(내용 없음)';
+    // planner가 구조화 blocks를 주면 평문으로 렌더하고, 아니면 content/text를 그대로 쓴다.
+    let content = String(args?.content ?? args?.text ?? '').trim();
+    if (!content) {
+      const doc = normalizeDocBlocks(args);
+      if (doc.title || doc.blocks.length) content = renderDocBlocksAsText(doc);
+    }
+    content = content || '(내용 없음)';
     const outPath = this.resolveOutPath(args);
     const stamp = Date.now();
     const tmpTxt = resolve(process.env.TEMP ?? '.', `jarvis-hwp-${stamp}.txt`);
@@ -3722,6 +3733,7 @@ export class HwpCreateToolAdapter {
     try {
       writeFileSync(tmpTxt, '﻿' + content, 'utf8');
       mkdirSync(dirname(outPath), { recursive: true });
+      backupExistingOutput(outPath, this.home);
       const esc = (s) => s.replace(/\\/g, '\\\\');
       const script = [
         '$ErrorActionPreference = "Stop"',
@@ -3759,6 +3771,282 @@ export class HwpCreateToolAdapter {
       targetPath: outPath,
       summary: '한글(HWP) 파일 생성이 이 환경에서 한컴 자동화 제약으로 실패했어요. 대신 텍스트(txt)나 워드(docx)로 만들어 드릴 수 있어요.',
       fallbackFormats: ['txt', 'docx'],
+      outputPaths: [],
+      rollbackAvailable: false
+    };
+  }
+}
+
+// 구조화 블록(제목/헤딩/문단/불릿/표) 또는 평문을 표준 블록 배열로 정규화한다.
+// planner가 blocks를 주면 그대로, content만 있으면 문단으로 변환한다.
+function normalizeDocBlocks({ blocks, content, title, docTitle } = {}) {
+  const resolvedTitle = title ?? docTitle;
+  const out = [];
+  if (Array.isArray(blocks) && blocks.length) {
+    for (const b of blocks) {
+      if (!b || typeof b !== 'object') continue;
+      const type = String(b.type ?? '').toLowerCase();
+      if (type === 'heading') out.push({ type: 'heading', level: Math.min(3, Math.max(1, Number(b.level) || 1)), text: String(b.text ?? '') });
+      else if (type === 'bullets' && Array.isArray(b.items)) out.push({ type: 'bullets', items: b.items.map((x) => String(x ?? '')) });
+      else if (type === 'table' && Array.isArray(b.columns)) out.push({ type: 'table', columns: b.columns.map((x) => String(x ?? '')), rows: (Array.isArray(b.rows) ? b.rows : []).map((r) => (Array.isArray(r) ? r.map((x) => String(x ?? '')) : [String(r ?? '')])) });
+      else if (b.text != null) out.push({ type: 'paragraph', text: String(b.text) });
+    }
+  }
+  if (!out.length && content) {
+    for (const line of String(content).split(/\r?\n/)) {
+      const t = line.trim();
+      if (t) out.push({ type: 'paragraph', text: t });
+    }
+  }
+  return { title: resolvedTitle ? String(resolvedTitle) : null, blocks: out };
+}
+
+// blocks 구조를 평문으로 렌더한다(HWP처럼 텍스트 삽입만 지원하는 어댑터용).
+function renderDocBlocksAsText(doc) {
+  const lines = [];
+  if (doc.title) lines.push(doc.title, '');
+  for (const b of doc.blocks) {
+    if (b.type === 'heading') lines.push('', b.level === 1 ? `■ ${b.text}` : `- ${b.text}`, '');
+    else if (b.type === 'paragraph') lines.push(b.text);
+    else if (b.type === 'bullets') for (const it of b.items) lines.push(`  • ${it}`);
+    else if (b.type === 'table') {
+      lines.push(b.columns.join(' | '));
+      for (const r of b.rows) lines.push(r.join(' | '));
+    }
+  }
+  return lines.join('\r\n').replace(/(\r\n){3,}/g, '\r\n\r\n').trim();
+}
+
+// Office/한컴 COM 스크립트를 STA 파워셸로 실행하는 공통 러너.
+// GUI COM은 windowsHide:true나 파이프 환경에서 멈추므로 -STA + windowsHide:false로 실행한다(HWP에서 검증된 방식).
+function runComScript({ scriptLines, timeoutMs }) {
+  const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const tmpPs1 = resolve(process.env.TEMP ?? '.', `jarvis-com-${stamp}.ps1`);
+  writeFileSync(tmpPs1, '﻿' + scriptLines.join('\r\n'), 'utf8');
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1], { timeout: timeoutMs, windowsHide: false, stdio: 'ignore' });
+  } finally {
+    try { rmSync(tmpPs1, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+// 같은 이름의 파일이 이미 있으면 삭제하지 않고 ~/.jarvis-backups로 이동한다(데이터 정책: 삭제 대신 보관).
+// HWP/Office SaveAs가 기존 파일 앞에서 덮어쓰기 확인 모달을 띄워 무인 실행이 멈추는 것도 이걸로 막는다.
+function backupExistingOutput(outPath, home) {
+  if (!existsSync(outPath)) return null;
+  const dir = process.env.JARVIS_BACKUP_DIR ?? resolve(home, '.jarvis-backups');
+  mkdirSync(dir, { recursive: true });
+  const backupPath = resolve(dir, `${basename(outPath)}.${Date.now()}.bak`);
+  renameSync(outPath, backupPath);
+  return backupPath;
+}
+
+function resolveAuthoringOutPath({ args, home, defaultExt }) {
+  let p = args?.path ? String(args.path) : '';
+  const ext = /pdf/i.test(String(args?.outputFormat ?? '')) ? 'pdf' : defaultExt;
+  if (p) {
+    if (!new RegExp(`\\.${ext}$`, 'i').test(p)) p = p.replace(/\.[^.\\/]+$/, '') + '.' + ext;
+    return resolve(p);
+  }
+  const name = String(args?.fileName ?? '문서').replace(/\.[^.\\/]+$/, '') + '.' + ext;
+  const hint = args?.targetDirectoryHint;
+  const dir = hint === 'desktop' ? resolve(home, 'Desktop')
+    : hint === 'documents' ? resolve(home, 'Documents')
+    : hint === 'downloads' ? resolve(home, 'Downloads')
+    : resolve('./workspace');
+  return resolve(dir, name);
+}
+
+// 워드(.docx)·PDF를 Word COM으로 네이티브 저작한다. 내장 스타일 ID(음수)를 써서 한글판 Word에서도 동작한다.
+export class WordCreateToolAdapter {
+  // PDF 내보내기는 첫 실행(폰트 캐시)에 60초를 넘길 수 있어 여유 있게 잡는다.
+  constructor({ timeoutMs = 120000 } = {}) {
+    this.home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
+    this.timeoutMs = timeoutMs;
+    this.contract = createToolContract({ toolName: 'word.create', mutatesSystem: true, rollback: true, evidence: ['outputPath', 'sha256', 'blockCount'], blockedOperations: ['outsideAllowedRoots'] });
+  }
+
+  resolveOutPath(args) { return resolveAuthoringOutPath({ args, home: this.home, defaultExt: 'docx' }); }
+
+  async shadow(args) {
+    const doc = normalizeDocBlocks(args);
+    return { mode: 'shadow', expectedChangesCount: 1, outputPath: this.resolveOutPath(args), blockCount: doc.blocks.length, warnings: [] };
+  }
+
+  async execute(args) {
+    const outPath = this.resolveOutPath(args);
+    const isPdf = /\.pdf$/i.test(outPath);
+    const doc = normalizeDocBlocks(args);
+    if (!doc.title && !doc.blocks.length) doc.blocks.push({ type: 'paragraph', text: '(내용 없음)' });
+    const stamp = Date.now();
+    const tmpJson = resolve(process.env.TEMP ?? '.', `jarvis-word-${stamp}.json`);
+    try {
+      mkdirSync(dirname(outPath), { recursive: true });
+      backupExistingOutput(outPath, this.home);
+      writeFileSync(tmpJson, '﻿' + JSON.stringify(doc), 'utf8');
+      const esc = (s) => String(s).replace(/\\/g, '\\\\');
+      const saveFmt = isPdf ? 17 : 16; // wdFormatPDF / wdFormatXMLDocument
+      const script = [
+        '$ErrorActionPreference = "Stop"',
+        `$data = Get-Content -Raw -Encoding UTF8 "${esc(tmpJson)}" | ConvertFrom-Json`,
+        '$word = New-Object -ComObject Word.Application',
+        '$word.Visible = $false',
+        '$word.DisplayAlerts = 0',  // 모달 대화상자가 뜨면 무인 실행이 영원히 멈춘다
+
+        'try {',
+        '  $doc = $word.Documents.Add()',
+        '  $sel = $word.Selection',
+        '  function Set-Style([int]$id){ try { $sel.Style = $doc.Styles.Item($id) } catch {} }',
+        '  if ($data.title) { Set-Style(-63); $sel.TypeText([string]$data.title); $sel.TypeParagraph() }', // wdStyleTitle
+        '  foreach ($b in $data.blocks) {',
+        '    $sel.EndKey(6) | Out-Null',  // wdStory: 항상 문서 끝으로
+        '    switch ([string]$b.type) {',
+        '      "heading" { $lvl = [int]$b.level; if ($lvl -lt 1) { $lvl = 1 }; if ($lvl -gt 3) { $lvl = 3 }; Set-Style(-1 - $lvl); $sel.TypeText([string]$b.text); $sel.TypeParagraph() }', // Heading1=-2..Heading3=-4
+        '      "paragraph" { Set-Style(-1); $sel.TypeText([string]$b.text); $sel.TypeParagraph() }', // wdStyleNormal
+        '      "bullets" { foreach ($it in $b.items) { Set-Style(-49); $sel.TypeText([string]$it); $sel.TypeParagraph() }; Set-Style(-1) }', // wdStyleListBullet
+        '      "table" {',
+        '        $cols = @($b.columns).Count; $rowsData = @($b.rows); $rows = $rowsData.Count + 1',
+        '        if ($cols -gt 0) {',
+        '          $tbl = $doc.Tables.Add($sel.Range, $rows, $cols)',
+        '          $tbl.Borders.Enable = $true; try { $tbl.Style = "Table Grid" } catch {}',
+        '          for ($c = 0; $c -lt $cols; $c++) { $tbl.Cell(1, $c + 1).Range.Text = [string]$b.columns[$c] }',
+        '          for ($r = 0; $r -lt $rowsData.Count; $r++) { $rowArr = @($rowsData[$r]); for ($c = 0; $c -lt $cols; $c++) { if ($c -lt $rowArr.Count) { $tbl.Cell($r + 2, $c + 1).Range.Text = [string]$rowArr[$c] } } }',
+        '          $sel.EndKey(6) | Out-Null; $sel.TypeParagraph()',
+        '        }',
+        '      }',
+        '    }',
+        '  }',
+        `  $doc.SaveAs2([ref]"${esc(outPath)}", [ref]${saveFmt})`,
+        '  $doc.Saved = $true',  // PDF 내보내기 후에도 dirty로 남아 Close가 저장 여부를 묻는다
+        '  $doc.Close(0)',       // 0 = wdDoNotSaveChanges
+        '} catch {',
+        `  $_.Exception.Message | Out-File -FilePath "${esc(outPath)}.err" -Encoding utf8`,
+        '} finally {',
+        '  try { $word.Quit() } catch {}',
+        '}'
+      ];
+      runComScript({ scriptLines: script, timeoutMs: this.timeoutMs });
+    } catch (error) {
+      try { rmSync(tmpJson, { force: true }); } catch { /* ignore */ }
+      return this.failResult(outPath, error);
+    }
+    try { rmSync(tmpJson, { force: true }); } catch { /* ignore */ }
+    const errPath = outPath + '.err';
+    if (existsSync(outPath)) {
+      // rmSync(force)는 이 Node 버전에서 한글 경로일 때 프로세스를 통째로 죽인다(네이티브 크래시).
+      // unlinkSync는 같은 상황에서 정상적으로 ENOENT를 던지므로 이쪽을 쓴다.
+      try { unlinkSync(errPath); } catch { /* ignore */ }
+      const kind = isPdf ? 'PDF' : '워드';
+      return { status: 'success', outputPaths: [outPath], targetPath: outPath, blockCount: doc.blocks.length, summary: `${kind} 문서 "${basename(outPath)}"을(를) 만들었어요.`, rollbackAvailable: true };
+    }
+    return this.failResult(outPath, existsSync(errPath) ? readFileSync(errPath, 'utf8').slice(0, 200) : 'word-unavailable');
+  }
+
+  failResult(outPath, detail) {
+    return {
+      status: 'failed',
+      error: `word-create-failed: ${String(detail ?? '').slice(0, 200)}`,
+      targetPath: outPath,
+      summary: 'Word 문서 생성에 실패했어요. MS Word가 설치되어 있지 않다면 텍스트(txt)나 한글(hwp)로 만들어 드릴 수 있어요.',
+      fallbackFormats: ['txt', 'hwp'],
+      outputPaths: [],
+      rollbackAvailable: false
+    };
+  }
+}
+
+// 파워포인트(.pptx)·PDF를 PowerPoint COM으로 네이티브 저작한다.
+export class PowerPointCreateToolAdapter {
+  constructor({ timeoutMs = 120000 } = {}) {
+    this.home = process.env.USERPROFILE ?? process.env.HOME ?? resolve('./');
+    this.timeoutMs = timeoutMs;
+    this.contract = createToolContract({ toolName: 'powerpoint.create', mutatesSystem: true, rollback: true, evidence: ['outputPath', 'sha256', 'slideCount'], blockedOperations: ['outsideAllowedRoots'] });
+  }
+
+  resolveOutPath(args) { return resolveAuthoringOutPath({ args, home: this.home, defaultExt: 'pptx' }); }
+
+  normalizeSlides(args) {
+    let slides = Array.isArray(args?.slides) ? args.slides : [];
+    slides = slides.map((s) => ({
+      title: String(s?.title ?? ''),
+      bullets: Array.isArray(s?.bullets) ? s.bullets.map((x) => String(x ?? '')) : [],
+      notes: s?.notes ? String(s.notes) : ''
+    })).filter((s) => s.title || s.bullets.length);
+    if (!slides.length && args?.deckTitle) slides = [{ title: String(args.deckTitle), bullets: [], notes: '' }];
+    return { title: args?.deckTitle ? String(args.deckTitle) : null, slides };
+  }
+
+  async shadow(args) {
+    const deck = this.normalizeSlides(args);
+    return { mode: 'shadow', expectedChangesCount: 1, outputPath: this.resolveOutPath(args), slideCount: deck.slides.length, warnings: [] };
+  }
+
+  async execute(args) {
+    const outPath = this.resolveOutPath(args);
+    const isPdf = /\.pdf$/i.test(outPath);
+    const deck = this.normalizeSlides(args);
+    if (!deck.slides.length) deck.slides.push({ title: deck.title ?? '제목', bullets: [], notes: '' });
+    const stamp = Date.now();
+    const tmpJson = resolve(process.env.TEMP ?? '.', `jarvis-ppt-${stamp}.json`);
+    try {
+      mkdirSync(dirname(outPath), { recursive: true });
+      backupExistingOutput(outPath, this.home);
+      writeFileSync(tmpJson, '﻿' + JSON.stringify(deck), 'utf8');
+      const esc = (s) => String(s).replace(/\\/g, '\\\\');
+      const saveFmt = isPdf ? 32 : 24; // ppSaveAsPDF / ppSaveAsOpenXMLPresentation
+      const script = [
+        '$ErrorActionPreference = "Stop"',
+        `$data = Get-Content -Raw -Encoding UTF8 "${esc(tmpJson)}" | ConvertFrom-Json`,
+        '$ppt = New-Object -ComObject PowerPoint.Application',
+        'try { $ppt.DisplayAlerts = 1 } catch {}',  // 1 = ppAlertsNone
+        'try {',
+        '  $pres = $ppt.Presentations.Add()',
+        '  $idx = 0',
+        '  foreach ($s in $data.slides) {',
+        '    $idx++',
+        '    $layout = if (@($s.bullets).Count -gt 0) { 2 } else { 1 }', // ppLayoutText / ppLayoutTitle
+        '    $slide = $pres.Slides.Add($idx, $layout)',
+        '    try { $slide.Shapes.Title.TextFrame.TextRange.Text = [string]$s.title } catch {}',
+        '    if (@($s.bullets).Count -gt 0) {',
+        '      $body = $null',
+        '      for ($i = 1; $i -le $slide.Shapes.Count; $i++) { $shp = $slide.Shapes.Item($i); if ($shp.HasTextFrame -and $shp.Name -ne $slide.Shapes.Title.Name) { $body = $shp; break } }',
+        '      if ($body -eq $null) { try { $body = $slide.Shapes.Placeholders.Item(2) } catch {} }',
+        '      if ($body -ne $null) { $body.TextFrame.TextRange.Text = (@($s.bullets) -join "`r`n") }',
+        '    }',
+        '    if ($s.notes) { try { $slide.NotesPage.Shapes.Placeholders.Item(2).TextFrame.TextRange.Text = [string]$s.notes } catch {} }',
+        '  }',
+        `  $pres.SaveAs("${esc(outPath)}", ${saveFmt})`,
+        '  $pres.Saved = -1',  // PDF 내보내기 후 Close가 저장 여부를 묻지 않게
+        '  $pres.Close()',
+        '} catch {',
+        `  $_.Exception.Message | Out-File -FilePath "${esc(outPath)}.err" -Encoding utf8`,
+        '} finally {',
+        '  try { $ppt.Quit() } catch {}',
+        '}'
+      ];
+      runComScript({ scriptLines: script, timeoutMs: this.timeoutMs });
+    } catch (error) {
+      try { rmSync(tmpJson, { force: true }); } catch { /* ignore */ }
+      return this.failResult(outPath, error);
+    }
+    try { rmSync(tmpJson, { force: true }); } catch { /* ignore */ }
+    const errPath = outPath + '.err';
+    if (existsSync(outPath)) {
+      // 한글 경로 rmSync 크래시 회피 — Word 어댑터의 주석 참고.
+      try { unlinkSync(errPath); } catch { /* ignore */ }
+      const kind = isPdf ? 'PDF' : '프레젠테이션';
+      return { status: 'success', outputPaths: [outPath], targetPath: outPath, slideCount: deck.slides.length, summary: `${kind} "${basename(outPath)}"을(를) 만들었어요. (슬라이드 ${deck.slides.length}장)`, rollbackAvailable: true };
+    }
+    return this.failResult(outPath, existsSync(errPath) ? readFileSync(errPath, 'utf8').slice(0, 200) : 'powerpoint-unavailable');
+  }
+
+  failResult(outPath, detail) {
+    return {
+      status: 'failed',
+      error: `powerpoint-create-failed: ${String(detail ?? '').slice(0, 200)}`,
+      targetPath: outPath,
+      summary: 'PowerPoint 프레젠테이션 생성에 실패했어요. MS PowerPoint가 설치되어 있지 않다면 워드(docx)나 텍스트로 대신 만들어 드릴 수 있어요.',
+      fallbackFormats: ['docx', 'txt'],
       outputPaths: [],
       rollbackAvailable: false
     };
@@ -5449,6 +5737,8 @@ export class PcAgentRuntime {
     this.registry.register('shell.execute', new ShellExecuteToolAdapter({}));
     this.registry.register('filesystem.searchFiles', new FileSearchToolAdapter({}));
     this.registry.register('hwp.create', new HwpCreateToolAdapter({}));
+    this.registry.register('word.create', new WordCreateToolAdapter({}));
+    this.registry.register('powerpoint.create', new PowerPointCreateToolAdapter({}));
     this.registry.register('capability.describe', new CapabilityDescribeToolAdapter());
     this.registry.register('macro.save', new MacroSaveToolAdapter({}));
     this.registry.register('document.edit', new DocumentEditToolAdapter({}));
