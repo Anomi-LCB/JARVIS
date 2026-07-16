@@ -80,14 +80,64 @@ export function createApiRunner({ apiKey, model = null, timeoutMs = 60000, maxTo
   };
 }
 
+// OpenAI API 직접 호출 러너. Anthropic 키가 없고 OpenAI 키가 있으면 이걸 쓴다.
+// 별칭(haiku/sonnet/opus)은 속도·품질이 비슷한 OpenAI 모델로 매핑한다.
+const openAiModelMap = { haiku: 'gpt-5.4-mini', sonnet: 'gpt-5.6-luna', opus: 'gpt-5.6-sol' };
+
+export function createOpenAiApiRunner({ apiKey, model = null, timeoutMs = 60000, maxTokens = 8000 }) {
+  const apiModel = process.env.JARVIS_OPENAI_MODEL ?? openAiModelMap[model] ?? model ?? 'gpt-5.4-mini';
+  const callOnce = (prompt, { strict }) => {
+    const payload = { model: apiModel, messages: [{ role: 'user', content: String(prompt ?? '') }], max_completion_tokens: maxTokens };
+    if (strict) {
+      // 자비스의 모든 러너 호출은 JSON 객체 응답을 기대한다 → json 모드로 안정화.
+      payload.response_format = { type: 'json_object' };
+      // 추론형 모델의 기본 추론이 지연을 키우므로 최소로. (미지원 모델이면 재시도에서 뺀다)
+      payload.reasoning_effort = 'minimal';
+    }
+    let out;
+    try {
+      out = execFileSync('curl', [
+        '-s', '--max-time', String(Math.max(5, Math.floor(timeoutMs / 1000))),
+        'https://api.openai.com/v1/chat/completions',
+        '-H', `Authorization: Bearer ${apiKey}`, '-H', 'content-type: application/json',
+        '-d', '@-'
+      ], { input: JSON.stringify(payload), encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+    } catch (error) {
+      throw new Error(`openai-runner-error: ${String(error?.message ?? error).slice(0, 200)}`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(out);
+    } catch {
+      throw new Error('openai-runner: invalid JSON response');
+    }
+    if (parsed.error) {
+      const err = new Error(`openai: ${parsed.error.message ?? 'unknown'}`);
+      err.unsupportedParam = /unsupported|unknown paramet|response_format|reasoning_effort/i.test(String(parsed.error.message ?? ''));
+      throw err;
+    }
+    return String(parsed.choices?.[0]?.message?.content ?? '');
+  };
+  return (prompt) => {
+    try {
+      return callOnce(prompt, { strict: true });
+    } catch (error) {
+      if (!error?.unsupportedParam) throw error;
+      return callOnce(prompt, { strict: false });
+    }
+  };
+}
+
 export function createClaudeCliRunner({
   command = 'claude',
   model = null,
   timeoutMs = 45000,
   shell = process.platform === 'win32',
-  apiKey = process.env.JARVIS_ANTHROPIC_API_KEY
+  apiKey = process.env.JARVIS_ANTHROPIC_API_KEY,
+  openAiApiKey = process.env.JARVIS_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY
 } = {}) {
   if (apiKey) return createApiRunner({ apiKey, model, timeoutMs });
+  if (openAiApiKey) return createOpenAiApiRunner({ apiKey: openAiApiKey, model, timeoutMs });
   return defaultRunner({ command, model, timeoutMs, shell });
 }
 
