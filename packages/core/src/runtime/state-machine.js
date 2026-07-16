@@ -7,8 +7,10 @@ const allowedTransitions = new Map([
   [TaskStatus.APPROVED, [TaskStatus.EXECUTING, TaskStatus.BLOCKED, TaskStatus.CANCELLED, TaskStatus.EXPIRED]],
   [TaskStatus.EXECUTING, [TaskStatus.VERIFYING, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.RETRYING, TaskStatus.COMPENSATING]],
   [TaskStatus.VERIFYING, [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.RETRYING, TaskStatus.COMPENSATING]],
-  [TaskStatus.RETRYING, [TaskStatus.EXECUTING, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.COMPENSATING, TaskStatus.EXPIRED]],
-  [TaskStatus.FAILED, [TaskStatus.RETRYING, TaskStatus.COMPENSATING, TaskStatus.BLOCKED]],
+  // RETRYING→APPROVED: 실패 후 사용자가 같은 승인 카드로 재시도하면 재승인을 거쳐 재실행한다.
+  [TaskStatus.RETRYING, [TaskStatus.APPROVED, TaskStatus.EXECUTING, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.COMPENSATING, TaskStatus.EXPIRED]],
+  // FAILED→PLANNING(수정 재계획)·CANCELLED(실패 카드 닫기)도 사용자 행동으로 허용한다.
+  [TaskStatus.FAILED, [TaskStatus.RETRYING, TaskStatus.PLANNING, TaskStatus.CANCELLED, TaskStatus.COMPENSATING, TaskStatus.BLOCKED]],
   [TaskStatus.COMPENSATING, [TaskStatus.COMPENSATED, TaskStatus.FAILED, TaskStatus.BLOCKED]],
   [TaskStatus.COMPENSATED, []],
   [TaskStatus.COMPLETED, []],

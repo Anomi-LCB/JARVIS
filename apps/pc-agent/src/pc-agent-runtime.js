@@ -6451,7 +6451,12 @@ export class PcAgentRuntime {
       return this.block(packet, error.message ?? 'B_TOOL_EXECUTION_EXCEPTION', { dryRun });
     }
     if (executionResult.status === 'blocked') {
-      return this.block(packet, executionResult.warnings?.[0] ?? 'B_TOOL_PREFLIGHT_FAILED', { dryRun });
+      // 어댑터가 준 구체 사유(error)와 한국어 안내(summary)를 그대로 올려보낸다.
+      // generic 코드로 뭉개면 폰에서 "왜 안 됐는지"를 알 수 없다.
+      return this.block(packet, executionResult.warnings?.[0] ?? executionResult.error ?? 'B_TOOL_PREFLIGHT_FAILED', {
+        dryRun,
+        summary: executionResult.summary ?? null
+      });
     }
     this.policyRuntime?.capabilities?.consume({ tokenId: packet.capabilityToken.tokenId, executionResult: executionResult.status });
     const finishedAt = this.clock().toISOString();
@@ -6517,8 +6522,8 @@ export class PcAgentRuntime {
     return result;
   }
 
-  block(packet, reason, { dryRun = false } = {}) {
-    const executionResult = { status: 'blocked', summary: reason, outputPaths: [], changedItems: [], rollbackAvailable: false };
+  block(packet, reason, { dryRun = false, summary = null } = {}) {
+    const executionResult = { status: 'blocked', summary: summary ?? reason, outputPaths: [], changedItems: [], rollbackAvailable: false };
     const memoryEvent = this.memoryEmitter.emit({
       packet,
       executionResult,

@@ -280,6 +280,10 @@ export class CoreFacade {
     }
     this.eventBus.publish(`approval.${decision.decision}`, { decision });
     if (decision.decision === 'reject') {
+      // 이미 종결된 작업(완료/차단/만료 등)의 카드에 온 거부는 조용히 현재 상태를 알려준다.
+      if (!task.stateMachine.canTransition(TaskStatus.CANCELLED)) {
+        return { success: false, status: task.status, reason: 'cancel-not-applicable' };
+      }
       task.status = TaskStatus.CANCELLED;
       task.lifecycle.mark(task.status, '승인 거부', `ApprovalDecision:${decision.decision}`);
       task.stateMachine.transition(task.status, 'approval-decision');
@@ -293,7 +297,36 @@ export class CoreFacade {
       return { success: true, status: task.status };
     }
     if (decision.decision === 'edit' || decision.decision === 'respond') {
+      // 재계획은 승인 대기 중이거나 실패한 작업에서만 의미가 있다.
+      if (task.status !== TaskStatus.WAITING_APPROVAL && task.status !== TaskStatus.FAILED) {
+        return { success: false, status: task.status, reason: 'replan-not-applicable' };
+      }
       return this.replanTaskFromApprovalDecision(task, decision);
+    }
+    // 폰이 같은 카드로 승인 요청을 반복해도(중복 탭·실패 후 재시도) 던지지 않고 상태에 맞게 처리한다.
+    if (task.status === TaskStatus.APPROVED || task.status === TaskStatus.EXECUTING) {
+      return { success: true, status: task.status, reason: 'already-approved' };
+    }
+    if (task.status === TaskStatus.COMPLETED) {
+      return { success: true, status: task.status, reason: 'already-completed' };
+    }
+    if (task.status === TaskStatus.FAILED) {
+      // 실패한 작업의 재승인 = 재시도. 예산(maxRetries)을 소진하면 차단으로 안내한다.
+      const retry = task.stateMachine.retry({ reason: 'approval-after-failure', evidence: { approvalId: decision.approvalId } });
+      task.status = task.stateMachine.status;
+      if (!retry.retried) {
+        task.lifecycle.mark(task.status, '재시도 한도 초과', 'approval-after-failure');
+        return { success: false, status: task.status, reason: 'retry-budget-exhausted' };
+      }
+      task.lifecycle.mark(task.status, '실패 후 재승인', `ApprovalDecision:${decision.approvalId}`);
+      this.orchestrator.appendTrace(task.orchestrationTrace, {
+        phase: 'approval.retry.after_failure',
+        message: 'User re-approved a failed task; retry budget consumed.',
+        evidence: { approvalId: decision.approvalId, retryCount: retry.retryCount, maxRetries: retry.maxRetries }
+      });
+    }
+    if (!task.stateMachine.canTransition(TaskStatus.APPROVED)) {
+      return { success: false, status: task.status, reason: 'approval-not-applicable' };
     }
     task.stateMachine.transition(TaskStatus.APPROVED, 'approval-decision');
     task.lifecycle.mark(TaskStatus.APPROVED, '승인 완료', `ApprovalDecision:${decision.approvalId}`);
