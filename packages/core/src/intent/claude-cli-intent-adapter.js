@@ -1,6 +1,8 @@
 import { spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { ActionType, createIntentCandidate, stableId } from '../../../shared/src/types.js';
+import { appendJsonlSync } from '../../../shared/src/jsonl.js';
 import { IntentParser } from './intent-parser.js';
 import { LocalSemanticIntentAdapter, PolicyGatedSemanticIntentAdapter } from './semantic-intent-adapter.js';
 
@@ -160,7 +162,23 @@ export class ClaudeCliSemanticIntentAdapter {
       shell: process.platform === 'win32'
     });
     // 결정화: (자연어→의도) 판정을 캐시해 같은 요청이면 claude 호출을 건너뛴다.
+    // 파일에도 남겨 프로세스 재시작·다른 런타임(코어/브릿지/에이전트)에서도 즉시 재현한다.
     this.payloadCache = new Map();
+    this.cachePath = process.env.JARVIS_INTENT_CACHE_PATH
+      ?? (process.env.JARVIS_BRIDGE_STATE_DIR ? `${process.env.JARVIS_BRIDGE_STATE_DIR}/intent-cache.jsonl` : 'logs/intent-cache.jsonl');
+    this.loadPayloadCache();
+  }
+
+  loadPayloadCache() {
+    try {
+      if (!existsSync(this.cachePath)) return;
+      for (const line of readFileSync(this.cachePath, 'utf8').split(/\r?\n/).filter(Boolean)) {
+        try {
+          const rec = JSON.parse(line);
+          if (rec?.key && actionProfiles[rec.payload?.actionType]) this.payloadCache.set(rec.key, rec.payload);
+        } catch { /* skip bad line */ }
+      }
+    } catch { /* cache is optional */ }
   }
 
   parse(rawText, { requestId = 'request', createdAt = this.clock().toISOString() } = {}) {
@@ -185,7 +203,10 @@ export class ClaudeCliSemanticIntentAdapter {
       // --output-format json 래퍼({"result": "..."})와 모델이 직접 낸 JSON 둘 다 허용한다.
       const wrapper = extractJsonObject(stdout);
       payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
-      if (actionProfiles[payload?.actionType]) this.payloadCache.set(cacheKey, payload);
+      if (actionProfiles[payload?.actionType]) {
+        this.payloadCache.set(cacheKey, payload);
+        try { appendJsonlSync(this.cachePath, { key: cacheKey, payload, at: this.clock().toISOString() }); } catch { /* optional */ }
+      }
     }
     const profile = actionProfiles[payload?.actionType];
     if (!profile) return this.failure('unrecognized-action-type', { requestId, latencyMs });

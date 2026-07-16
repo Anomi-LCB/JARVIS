@@ -265,12 +265,29 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     // 콘텐츠 작성은 프로 품질을 위해 더 강한 모델(기본 sonnet)과 긴 타임아웃을 쓴다.
     this.contentRunner = contentRunner ?? runner ?? createClaudeCliRunner({ command, model: contentModel, timeoutMs: contentTimeoutMs });
     this.contentDraftCache = new Map();
+    // 콘텐츠 초안도 파일에 남겨 재시작 후에도 같은 요청이면 즉시 재현한다.
+    // 키에 날짜가 들어가므로(초안 본문에 오늘 날짜가 박힘) 하루 단위로만 재사용된다.
+    this.contentCachePath = process.env.JARVIS_CONTENT_CACHE_PATH
+      ?? (process.env.JARVIS_BRIDGE_STATE_DIR ? `${process.env.JARVIS_BRIDGE_STATE_DIR}/content-draft-cache.jsonl` : 'logs/content-draft-cache.jsonl');
     // 작업 결정화: 한 번 성공적으로 만든 (자연어→셸명령) 매핑을 파일에 남겨,
     // 같은 요청이 오면 LLM 호출 없이 즉시 재현한다(반복 업무의 속도·일관성).
     this.shellCommandCache = new Map();
     this.shellCachePath = process.env.JARVIS_SHELL_CACHE_PATH
       ?? (process.env.JARVIS_BRIDGE_STATE_DIR ? `${process.env.JARVIS_BRIDGE_STATE_DIR}/shell-command-cache.jsonl` : 'logs/shell-command-cache.jsonl');
     this.loadShellCache();
+    this.loadContentCache();
+  }
+
+  loadContentCache() {
+    try {
+      if (!existsSync(this.contentCachePath)) return;
+      for (const line of readFileSync(this.contentCachePath, 'utf8').split(/\r?\n/).filter(Boolean)) {
+        try {
+          const rec = JSON.parse(line);
+          if (rec?.key && rec?.draft) this.contentDraftCache.set(rec.key, rec.draft);
+        } catch { /* skip bad line */ }
+      }
+    } catch { /* cache is optional */ }
   }
 
   loadShellCache() {
@@ -573,7 +590,8 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const trimmed = String(text ?? '').trim().slice(0, this.maxCommandLength);
     if (!trimmed) return null;
     const preferenceHints = this.pendingPreferenceHints ?? [];
-    const cacheKey = `${outputFormat}:${trimmed}:${preferenceHints.map((hint) => hint.statement).join('|')}`;
+    const today = this.clock().toISOString().slice(0, 10);
+    const cacheKey = `${today}:${outputFormat}:${trimmed}:${preferenceHints.map((hint) => hint.statement).join('|')}`;
     if (this.contentDraftCache.has(cacheKey)) return this.contentDraftCache.get(cacheKey);
     let stdout;
     try {
@@ -586,6 +604,10 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const payload = wrapper && typeof wrapper.result === 'string' ? extractJsonObject(wrapper.result) : wrapper;
     const draft = this.sanitizeContentDraft(payload);
     this.contentDraftCache.set(cacheKey, draft);
+    // 실패(null)는 영속하지 않는다 — 다음 기회에 다시 시도해야 하므로.
+    if (draft) {
+      try { appendJsonlSync(this.contentCachePath, { key: cacheKey, draft, at: this.clock().toISOString() }); } catch { /* optional */ }
+    }
     return draft;
   }
 

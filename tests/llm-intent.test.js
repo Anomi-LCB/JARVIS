@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ActionType } from '../packages/shared/src/types.js';
+
+// 결정화 캐시가 repo logs/를 오염시키거나 이전 실행의 캐시가 호출 횟수 단언을 깨지 않도록 격리한다.
+process.env.JARVIS_INTENT_CACHE_PATH = join(tmpdir(), `jarvis-test-intent-cache-${process.pid}.jsonl`);
 import {
   buildIntentPrompt,
   ClaudeCliSemanticIntentAdapter,

@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { ActionType, createTaskRequest, InputSource, ModuleId } from '../packages/shared/src/types.js';
+
+// 결정화 캐시가 repo logs/를 오염시키거나 이전 실행의 캐시가 호출 횟수 단언을 깨지 않도록 격리한다.
+process.env.JARVIS_SHELL_CACHE_PATH = joinPath(tmpdir(), `jarvis-test-shell-cache-${process.pid}.jsonl`);
+process.env.JARVIS_CONTENT_CACHE_PATH = joinPath(tmpdir(), `jarvis-test-content-cache-${process.pid}.jsonl`);
+process.env.JARVIS_INTENT_CACHE_PATH = joinPath(tmpdir(), `jarvis-test-intent-cache-${process.pid}.jsonl`);
 import { IntentParser } from '../packages/core/src/intent/intent-parser.js';
 import { ClaudeCliTaskPlanner, createTaskPlannerFromEnv } from '../packages/core/src/planning/claude-cli-task-planner.js';
 import { TaskPlanner } from '../packages/core/src/planning/task-planner.js';
