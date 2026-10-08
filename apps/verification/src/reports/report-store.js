@@ -1,6 +1,24 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import {
+  constants as fsConstants,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+const reportIndexBatchStorage = new AsyncLocalStorage();
+const reservedReportIds = new Set(['report-index', 'report-worm-manifest']);
+const reportStorageKeyVersion = 'g-report-storage-key-v1';
+const mappedReportStorageKeyPrefix = 'report-id-v1-';
+const cleanupApprovalScopeVersion = 'g-report-cleanup-approval-scope-v1';
 
 function escapeHtml(value) {
   return String(value)
@@ -11,18 +29,65 @@ function escapeHtml(value) {
 }
 
 export class VerificationReportStore {
-  constructor({ reportDir = 'apps/verification/reports' } = {}) {
+  constructor({
+    reportDir = 'apps/verification/reports',
+    immutableArtifactRoot = null,
+    cleanupApproverValidator = defaultCleanupApproverValidator
+  } = {}) {
     this.reportDir = reportDir;
     this.indexPath = join(this.reportDir, 'report-index.json');
     this.cleanupApprovals = new Map();
+    this.cleanupApproverValidator = cleanupApproverValidator;
+    this.immutableArtifactRoot = immutableArtifactRoot ?? join(this.reportDir, 'report-worm-artifact-store');
+    this.immutableArtifactRoots = immutableArtifactRoot
+      ? [resolve(immutableArtifactRoot)]
+      : [...new Set([
+          resolve(this.immutableArtifactRoot),
+          resolve(dirname(this.reportDir), 'report-worm-artifact-store')
+        ])];
     mkdirSync(this.reportDir, { recursive: true });
+    this.indexMtimeMs = null;
+    this.indexItems = this.loadIndexFromDisk();
+  }
+
+  async runIndexBatch(callback, { operation = 'verification-index-batch' } = {}) {
+    const parent = reportIndexBatchStorage.getStore();
+    if (parent?.store === this) return await callback();
+    const context = {
+      batchVersion: 'g-report-index-operation-batch-v1',
+      operation,
+      store: this,
+      entries: new Map(),
+      startedAt: new Date().toISOString()
+    };
+    return await reportIndexBatchStorage.run(context, async () => {
+      let result;
+      let operationError = null;
+      try {
+        result = await callback();
+      } catch (error) {
+        operationError = error;
+      }
+      try {
+        this.flushIndexEntries([...context.entries.values()]);
+      } catch (flushError) {
+        if (operationError && typeof operationError === 'object') {
+          operationError.reportIndexFlushError = flushError?.message ?? String(flushError);
+        } else {
+          operationError = flushError;
+        }
+      }
+      if (operationError) throw operationError;
+      return result;
+    });
   }
 
   save(report) {
-    const jsonPath = join(this.reportDir, `${report.verificationId}.json`);
-    const htmlPath = join(this.reportDir, `${report.verificationId}.html`);
+    const reportId = requireValidLogicalReportId(report?.verificationId);
+    const { storageKey, jsonPath, htmlPath } = this.currentReportPaths(reportId);
     const storedReport = this.sanitize({
       ...report,
+      verificationId: reportId,
       evidence: {
         ...report.evidence,
         reportJsonPath: jsonPath,
@@ -31,13 +96,14 @@ export class VerificationReportStore {
     });
     writeFileSync(jsonPath, JSON.stringify(storedReport, null, 2), 'utf8');
     writeFileSync(htmlPath, this.renderHtml(storedReport), 'utf8');
-    this.upsertIndex(storedReport, { jsonPath, htmlPath });
+    this.upsertIndex(storedReport, { storageKey, jsonPath, htmlPath });
     return { jsonPath, htmlPath };
   }
 
   sanitize(value) {
     if (typeof value === 'string') {
       return value
+        .replace(/\b(?:authorization\s*[:=]\s*)?bearer\s+[a-z0-9._~+\/-]+=*/gi, 'authorization=[masked]')
         .replace(/api[_-]?key\s*[:=]\s*[\w.-]+/gi, 'api_key=[masked]')
         .replace(/token\s*[:=]\s*[\w.-]+/gi, 'token=[masked]')
         .replace(/password\s*[:=]\s*\S+/gi, 'password=[masked]')
@@ -45,18 +111,32 @@ export class VerificationReportStore {
     }
     if (Array.isArray(value)) return value.map((item) => this.sanitize(item));
     if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, this.sanitize(entry)]));
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+        key,
+        isSensitiveReportKey(key) ? '[masked]' : this.sanitize(entry)
+      ]));
     }
     return value;
   }
 
   read(reportId) {
-    const jsonPath = join(this.reportDir, `${reportId}.json`);
-    try {
-      return JSON.parse(readFileSync(jsonPath, 'utf8'));
-    } catch {
-      return null;
+    if (!isValidLogicalReportId(reportId)) return null;
+    const logicalReportId = String(reportId);
+    const candidates = [this.currentReportPaths(logicalReportId).jsonPath];
+    const indexed = this.readIndex().find((item) => item.reportId === logicalReportId);
+    if (indexed?.jsonPath) candidates.push(indexed.jsonPath);
+    const legacy = this.legacyReportPaths(logicalReportId);
+    if (legacy?.jsonPath) candidates.push(legacy.jsonPath);
+    for (const jsonPath of new Set(candidates)) {
+      if (!exactFileExists(jsonPath)) continue;
+      try {
+        const report = JSON.parse(readFileSync(jsonPath, 'utf8'));
+        if (String(report?.verificationId ?? '') === logicalReportId) return report;
+      } catch {
+        // Try the next deterministic, confined compatibility path.
+      }
     }
+    return null;
   }
 
   index() {
@@ -128,12 +208,33 @@ export class VerificationReportStore {
   cleanup({ keepLast = 100, maxAgeMs = null, dryRun = true } = {}) {
     const plan = this.retentionPlan({ keepLast, maxAgeMs });
     const removed = [];
+    const incompleteReportIds = plan.removable
+      .filter((item) => this.reportArtifactState(item.reportId).presentCount === 1)
+      .map((item) => item.reportId);
+    if (!dryRun && incompleteReportIds.length > 0) {
+      return {
+        cleanupVersion: 'g-report-cleanup-v1',
+        status: 'blocked_incomplete_artifacts',
+        dryRun,
+        keepLast,
+        maxAgeMs,
+        removableCount: plan.removable.length,
+        retainedCount: plan.retained.length,
+        removable: plan.removable,
+        removed,
+        incompleteReportIds
+      };
+    }
     if (!dryRun) {
       for (const item of plan.removable) {
-        for (const path of [item.jsonPath, item.htmlPath]) {
-          if (path && existsSync(path)) {
-            rmSync(path, { force: true });
-            removed.push(path);
+        for (const path of this.reportArtifactPaths(item, { includeLegacy: true })) {
+          if (path && exactFileExists(path)) {
+            try {
+              unlinkSync(path);
+              removed.push(path);
+            } catch (error) {
+              if (error?.code !== 'ENOENT') throw error;
+            }
           }
         }
       }
@@ -141,72 +242,116 @@ export class VerificationReportStore {
     }
     return {
       cleanupVersion: 'g-report-cleanup-v1',
+      status: dryRun ? 'dry_run' : 'executed',
       dryRun,
       keepLast,
       maxAgeMs,
       removableCount: plan.removable.length,
       retainedCount: plan.retained.length,
       removable: plan.removable,
-      removed
+      removed,
+      incompleteReportIds
     };
   }
 
   syncImmutableArtifacts({
-    targetDir = join(this.reportDir, 'report-worm-artifact-store'),
+    targetDir = this.immutableArtifactRoot,
     dryRun = true,
     keepLast = 100
   } = {}) {
+    const confinedTargetDir = this.requireImmutableTargetDir(targetDir, { create: !dryRun });
     const items = this.readIndex()
       .sort((left, right) => Date.parse(right.createdAt ?? '') - Date.parse(left.createdAt ?? ''))
       .slice(0, Math.max(1, Number(keepLast) || 100));
-    const manifestPath = join(targetDir, 'report-worm-manifest.json');
     const artifacts = [];
-    if (!dryRun) mkdirSync(targetDir, { recursive: true });
     for (const item of items) {
-      for (const [artifactType, sourcePath] of [['json', item.jsonPath], ['html', item.htmlPath]]) {
-        if (!sourcePath || !existsSync(sourcePath)) continue;
+      const storageKey = reportStorageKey(item.reportId);
+      const artifactState = this.reportArtifactState(item.reportId);
+      if (artifactState.presentCount === 0) continue;
+      for (const artifact of [artifactState.json, artifactState.html]) {
+        const { artifactType, path: sourcePath, present } = artifact;
+        if (!present) {
+          artifacts.push({
+            artifactId: `${item.reportId}:${artifactType}`,
+            reportId: item.reportId,
+            artifactType,
+            sourcePath,
+            sourceVariant: artifact.variant,
+            destinationPath: null,
+            sourceSha256: null,
+            destinationSha256: null,
+            sizeBytes: 0,
+            status: 'missing',
+            immutable: false
+          });
+          continue;
+        }
         const sourceSha256 = this.fileSha256(sourcePath);
-        const destinationPath = join(targetDir, `${item.reportId}-${sourceSha256.slice(0, 12)}.${artifactType}`);
-        const destinationExists = existsSync(destinationPath);
-        const destinationSha256 = destinationExists ? this.fileSha256(destinationPath) : null;
-        const conflict = destinationExists && destinationSha256 !== sourceSha256;
-        if (!dryRun && !destinationExists) copyFileSync(sourcePath, destinationPath);
-        const copied = !dryRun && existsSync(destinationPath) && this.fileSha256(destinationPath) === sourceSha256;
+        const destinationPath = join(confinedTargetDir, `${storageKey}-${sourceSha256}.${artifactType}`);
+        let destinationExists = exactFileExists(destinationPath);
+        let copiedThisRun = false;
+        if (!dryRun && !destinationExists) {
+          try {
+            copyFileSync(sourcePath, destinationPath, fsConstants.COPYFILE_EXCL);
+            copiedThisRun = true;
+          } catch (error) {
+            if (error?.code !== 'EEXIST') throw error;
+          }
+          destinationExists = exactFileExists(destinationPath);
+        }
+        const finalDestinationSha256 = destinationExists ? this.fileSha256(destinationPath) : null;
+        const conflict = destinationExists && finalDestinationSha256 !== sourceSha256;
+        const copied = copiedThisRun && destinationExists && finalDestinationSha256 === sourceSha256;
+        const artifactStatus = conflict ? 'conflict' : (copied ? 'copied' : (destinationExists ? 'already_present' : 'pending'));
         artifacts.push({
           artifactId: `${item.reportId}:${artifactType}`,
           reportId: item.reportId,
           artifactType,
           sourcePath,
+          sourceVariant: artifact.variant,
           destinationPath,
           sourceSha256,
-          destinationSha256: existsSync(destinationPath) ? this.fileSha256(destinationPath) : null,
+          destinationSha256: finalDestinationSha256,
           sizeBytes: statSync(sourcePath).size,
-          status: conflict ? 'conflict' : (copied ? 'copied' : (destinationExists ? 'already_present' : 'pending')),
-          immutable: !conflict
+          status: artifactStatus,
+          immutable: ['copied', 'already_present'].includes(artifactStatus)
         });
       }
     }
     const conflictCount = artifacts.filter((item) => item.status === 'conflict').length;
+    const missingArtifactCount = artifacts.filter((item) => item.status === 'missing').length;
+    const pendingArtifactCount = artifacts.filter((item) => item.status === 'pending').length;
     const copiedCount = artifacts.filter((item) => item.status === 'copied').length;
     const verifiedCount = artifacts.filter((item) => ['copied', 'already_present'].includes(item.status)).length;
     const status = conflictCount
       ? 'conflict'
-      : (artifacts.length ? (dryRun ? 'dry_run' : 'synced') : 'empty');
-    const manifest = {
+      : (missingArtifactCount || (!dryRun && pendingArtifactCount)
+          ? 'incomplete'
+          : (artifacts.length ? (dryRun ? 'dry_run' : 'synced') : 'empty'));
+    const manifestCore = {
       manifestVersion: 'g-report-worm-manifest-v1',
       generatedAt: new Date().toISOString(),
       reportDir: this.reportDir,
-      targetDir,
+      targetDir: confinedTargetDir,
+      status,
+      missingArtifactCount,
+      pendingArtifactCount,
       artifacts
     };
-    if (!dryRun) writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+    const manifestScopeSha256 = createHash('sha256').update(JSON.stringify(manifestCore)).digest('hex');
+    const manifest = { ...manifestCore, manifestScopeSha256 };
+    const serializedManifest = `${JSON.stringify(manifest, null, 2)}\n`;
+    const manifestSha256 = createHash('sha256').update(serializedManifest).digest('hex');
+    const manifestPath = join(confinedTargetDir, `report-worm-manifest-${manifestSha256}.json`);
+    if (!dryRun) writeImmutableText(manifestPath, serializedManifest);
     return {
       syncVersion: 'g-report-immutable-artifact-sync-v1',
       generatedAt: manifest.generatedAt,
       status,
       dryRun,
-      targetDir,
+      targetDir: confinedTargetDir,
       manifestPath,
+      manifestSha256,
       artifactStore: {
         storeVersion: 'g-report-worm-artifact-store-v1',
         adapter: 'local-worm-mirror',
@@ -222,6 +367,8 @@ export class VerificationReportStore {
       copiedCount,
       verifiedCount,
       conflictCount,
+      missingArtifactCount,
+      pendingArtifactCount,
       artifacts
     };
   }
@@ -249,8 +396,13 @@ export class VerificationReportStore {
       },
       approvalWorkflow: {
         workflowVersion: 'g-report-cleanup-approval-workflow-v1',
+        approvalScopeVersion: cleanupApprovalScopeVersion,
         requiredForExecute: true,
-        requiredFields: ['requestedBy', 'reason', 'approvedBy', 'approvalId']
+        oneTimeApproval: true,
+        approverValidationContract: 'g-report-cleanup-approver-validation-v1',
+        requiredFields: ['requestedBy', 'reason', 'approvedBy', 'approvalId'],
+        requestFields: ['requestedBy', 'reason', 'keepLast', 'maxAgeMs'],
+        executeFields: ['approvedBy', 'approvalId']
       },
       retention,
       immutableSyncPreview: {
@@ -263,73 +415,153 @@ export class VerificationReportStore {
     };
   }
 
-  cleanupApprovalWorkflow({
-    keepLast = 100,
-    maxAgeMs = null,
-    requestedBy = 'verification-admin',
-    reason = '',
-    approvedBy = null,
-    approvalId = null,
-    execute = false,
-    dryRun = true
-  } = {}) {
-    const cleanupPreview = this.cleanup({ keepLast, maxAgeMs, dryRun: true });
-    const normalizedReason = String(reason || '').trim();
-    const generatedApprovalId = approvalId ?? `g-report-cleanup-approval-${createHash('sha256')
-      .update(JSON.stringify({ keepLast, maxAgeMs, requestedBy, normalizedReason, removable: cleanupPreview.removable.map((item) => item.reportId) }))
-      .digest('hex')
-      .slice(0, 12)}`;
+  cleanupApprovalWorkflow(request = {}) {
+    const execute = request.execute === true;
+    const dryRun = request.dryRun !== false;
+    const requestedPolicy = normalizeCleanupPolicy({
+      keepLast: request.keepLast,
+      maxAgeMs: request.maxAgeMs
+    });
+
     if (!execute) {
+      const cleanupPreview = this.cleanup({ ...requestedPolicy, dryRun: true });
+      const requestedBy = String(request.requestedBy ?? 'verification-admin').trim();
+      const normalizedReason = String(request.reason ?? '').trim();
+      const suppliedApprovalId = String(request.approvalId ?? '').trim();
+      const generatedApprovalId = suppliedApprovalId || `g-report-cleanup-approval-${randomUUID()}`;
+      if (this.cleanupApprovals.has(generatedApprovalId)) {
+        return this.cleanupApprovalResponse({
+          status: 'blocked_duplicate_approval_id',
+          approval: this.cleanupApprovals.get(generatedApprovalId),
+          cleanupPreview
+        });
+      }
+      const approvalFingerprint = this.cleanupPlanFingerprint(requestedPolicy, cleanupPreview.removable);
       const approval = {
         approvalId: generatedApprovalId,
         approvalVersion: 'g-report-cleanup-approval-v1',
+        approvalScopeVersion: cleanupApprovalScopeVersion,
+        approvalFingerprint,
         status: 'pending_approval',
         requestedBy,
         reason: normalizedReason,
         requestedAt: new Date().toISOString(),
-        policy: { keepLast, maxAgeMs },
+        policy: requestedPolicy,
         removableCount: cleanupPreview.removableCount,
         removableBytes: cleanupPreview.removable.reduce((sum, item) => sum + this.reportBytes(item), 0),
         removableReportIds: cleanupPreview.removable.map((item) => item.reportId)
       };
       this.cleanupApprovals.set(generatedApprovalId, approval);
-      return {
-        workflowVersion: 'g-report-cleanup-approval-workflow-v1',
-        generatedAt: approval.requestedAt,
-        status: 'pending_approval',
-        approvalRequired: true,
-        approval,
-        cleanupPreview,
-        execution: null
-      };
+      return this.cleanupApprovalResponse({ status: approval.status, approval, cleanupPreview });
     }
-    const approval = this.cleanupApprovals.get(generatedApprovalId);
-    if (!approval || !approvedBy) {
-      return {
-        workflowVersion: 'g-report-cleanup-approval-workflow-v1',
-        generatedAt: new Date().toISOString(),
+
+    const approvalId = String(request.approvalId ?? '');
+    const approval = this.cleanupApprovals.get(approvalId);
+    if (!approval || !request.approvedBy) {
+      const cleanupPreview = this.cleanup({ ...requestedPolicy, dryRun: true });
+      return this.cleanupApprovalResponse({
         status: 'blocked_missing_approval',
-        approvalRequired: true,
-        approval: approval ?? { approvalId: generatedApprovalId, status: 'missing' },
-        cleanupPreview,
-        execution: null
-      };
+        approval: approval ?? { approvalId, status: 'missing' },
+        cleanupPreview
+      });
     }
-    const execution = this.cleanup({ keepLast, maxAgeMs, dryRun });
-    const completedApproval = {
+    const cleanupPreview = this.cleanup({ ...approval.policy, dryRun: true });
+    if (approval.status !== 'pending_approval') {
+      return this.cleanupApprovalResponse({
+        status: 'blocked_approval_not_pending',
+        approval,
+        cleanupPreview
+      });
+    }
+
+    const suppliedPolicyFields = ['keepLast', 'maxAgeMs'].filter((key) => Object.prototype.hasOwnProperty.call(request, key));
+    if (suppliedPolicyFields.some((key) => !Object.is(requestedPolicy[key], approval.policy[key]))) {
+      return this.cleanupApprovalResponse({
+        status: 'blocked_approval_scope_mismatch',
+        approval,
+        cleanupPreview
+      });
+    }
+
+    const currentFingerprint = this.cleanupPlanFingerprint(approval.policy, cleanupPreview.removable);
+    if (currentFingerprint !== approval.approvalFingerprint) {
+      const invalidatedApproval = {
+        ...approval,
+        status: 'invalidated_stale',
+        invalidatedAt: new Date().toISOString(),
+        currentFingerprint
+      };
+      this.cleanupApprovals.set(approvalId, invalidatedApproval);
+      return this.cleanupApprovalResponse({
+        status: 'blocked_stale_approval',
+        approval: invalidatedApproval,
+        cleanupPreview
+      });
+    }
+
+    const approverValidation = this.validateCleanupApprover({ approval, approvedBy: request.approvedBy });
+    if (!approverValidation.valid) {
+      return this.cleanupApprovalResponse({
+        status: 'blocked_invalid_approver',
+        approval: { ...approval, approverValidation },
+        cleanupPreview
+      });
+    }
+
+    const executingApproval = {
       ...approval,
-      status: dryRun ? 'approved_dry_run' : 'executed',
-      approvedBy,
+      status: 'executing',
+      approvedBy: approverValidation.approvedBy,
+      approverValidation,
       approvedAt: new Date().toISOString(),
       executionDryRun: dryRun
     };
-    this.cleanupApprovals.set(generatedApprovalId, completedApproval);
+    this.cleanupApprovals.set(approvalId, executingApproval);
+    let execution;
+    try {
+      execution = this.cleanup({ ...approval.policy, dryRun });
+    } catch (error) {
+      this.cleanupApprovals.set(approvalId, {
+        ...executingApproval,
+        status: 'execution_failed',
+        failedAt: new Date().toISOString()
+      });
+      throw error;
+    }
+    if (execution.status === 'blocked_incomplete_artifacts') {
+      const blockedApproval = {
+        ...executingApproval,
+        status: 'execution_blocked_incomplete_artifacts'
+      };
+      this.cleanupApprovals.set(approvalId, blockedApproval);
+      return this.cleanupApprovalResponse({
+        status: 'blocked_incomplete_artifacts',
+        approval: blockedApproval,
+        cleanupPreview,
+        execution
+      });
+    }
+    const completedApproval = {
+      ...executingApproval,
+      status: dryRun ? 'approved_dry_run' : 'executed',
+      completedAt: new Date().toISOString()
+    };
+    this.cleanupApprovals.set(approvalId, completedApproval);
+    return this.cleanupApprovalResponse({
+      status: completedApproval.status,
+      approval: completedApproval,
+      cleanupPreview,
+      execution
+    });
+  }
+
+  cleanupApprovalResponse({ status, approval, cleanupPreview, execution = null }) {
     return {
       workflowVersion: 'g-report-cleanup-approval-workflow-v1',
-      generatedAt: completedApproval.approvedAt,
-      status: completedApproval.status,
+      generatedAt: new Date().toISOString(),
+      status,
       approvalRequired: true,
-      approval: completedApproval,
+      approval,
       cleanupPreview,
       execution
     };
@@ -478,8 +710,8 @@ export class VerificationReportStore {
       policy: {
         keepLast,
         maxAgeMs,
-        cleanupEndpoint: '/reports/cleanup',
-        cleanupMode: 'explicit_dry_run_or_execute'
+        cleanupEndpoint: '/reports/cleanup/approval',
+        cleanupMode: 'approval_bound_execute'
       },
       status: plan.removable.length > 0 ? 'rotation_recommended' : 'ok',
       reportDir: this.reportDir,
@@ -517,7 +749,7 @@ export class VerificationReportStore {
   }
 
   reportBytes(item) {
-    return [item.jsonPath, item.htmlPath].reduce((sum, path) => {
+    return this.reportArtifactPaths(item, { includeLegacy: true }).reduce((sum, path) => {
       if (!path || !existsSync(path)) return sum;
       try {
         return sum + statSync(path).size;
@@ -563,28 +795,227 @@ export class VerificationReportStore {
     return createHash('sha256').update(readFileSync(path)).digest('hex');
   }
 
+  validateCleanupApprover({ approval, approvedBy }) {
+    try {
+      const result = this.cleanupApproverValidator({
+        approval: { ...approval },
+        approvedBy
+      });
+      if (result && typeof result === 'object') {
+        return {
+          contractVersion: 'g-report-cleanup-approver-validation-v1',
+          valid: result.valid === true,
+          approvedBy: String(result.approvedBy ?? approvedBy).trim(),
+          reason: result.reason ?? null
+        };
+      }
+      return {
+        contractVersion: 'g-report-cleanup-approver-validation-v1',
+        valid: result === true,
+        approvedBy: String(approvedBy ?? '').trim(),
+        reason: result === true ? null : 'approver_validator_rejected'
+      };
+    } catch {
+      return {
+        contractVersion: 'g-report-cleanup-approver-validation-v1',
+        valid: false,
+        approvedBy: String(approvedBy ?? '').trim(),
+        reason: 'approver_validator_error'
+      };
+    }
+  }
+
+  cleanupPlanFingerprint(policy, removable) {
+    const scope = {
+      approvalScopeVersion: cleanupApprovalScopeVersion,
+      policy: normalizeCleanupPolicy(policy),
+      removable: removable
+        .map((item) => {
+          const state = this.reportArtifactState(item.reportId);
+          return {
+            reportId: item.reportId,
+            createdAt: item.createdAt ?? null,
+            artifacts: [state.json, state.html].map((artifact) => ({
+              artifactType: artifact.artifactType,
+              variant: artifact.variant,
+              present: artifact.present,
+              sha256: artifact.present ? this.fileSha256(artifact.path) : null
+            }))
+          };
+        })
+        .sort((left, right) => left.reportId.localeCompare(right.reportId))
+    };
+    return createHash('sha256').update(JSON.stringify(scope)).digest('hex');
+  }
+
+  requireImmutableTargetDir(targetDir, { create = false } = {}) {
+    if (typeof targetDir !== 'string' || !targetDir.trim()) {
+      throw reportStoreError('G_REPORT_WORM_TARGET_INVALID', 'Immutable artifact target directory is invalid.');
+    }
+    const candidate = resolve(targetDir);
+    const allowedRoot = this.immutableArtifactRoots.find((root) => isPathInsideOrEqual(root, candidate));
+    if (!allowedRoot) {
+      throw reportStoreError('G_REPORT_WORM_TARGET_OUTSIDE_ROOT', 'Immutable artifact target is outside the configured root.');
+    }
+    if (existsSync(allowedRoot) && lstatSync(allowedRoot).isSymbolicLink()) {
+      throw reportStoreError('G_REPORT_WORM_TARGET_SYMLINK', 'Immutable artifact root cannot be a symbolic link.');
+    }
+    const nearestExisting = nearestExistingPath(candidate);
+    if (nearestExisting && existsSync(allowedRoot)) {
+      const realRoot = realpathSync(allowedRoot);
+      const realAncestor = realpathSync(nearestExisting);
+      if (!isPathInsideOrEqual(realRoot, realAncestor)) {
+        throw reportStoreError('G_REPORT_WORM_TARGET_OUTSIDE_ROOT', 'Immutable artifact target resolves outside the configured root.');
+      }
+    }
+    if (create) {
+      mkdirSync(allowedRoot, { recursive: true });
+      mkdirSync(candidate, { recursive: true });
+      const realRoot = realpathSync(allowedRoot);
+      const realCandidate = realpathSync(candidate);
+      if (!isPathInsideOrEqual(realRoot, realCandidate)) {
+        throw reportStoreError('G_REPORT_WORM_TARGET_OUTSIDE_ROOT', 'Immutable artifact target resolves outside the configured root.');
+      }
+    }
+    return candidate;
+  }
+
+  currentReportPaths(reportId) {
+    const storageKey = reportStorageKey(reportId);
+    return {
+      storageKey,
+      storageKeyVersion: reportStorageKeyVersion,
+      jsonPath: join(this.reportDir, `${storageKey}.json`),
+      htmlPath: join(this.reportDir, `${storageKey}.html`)
+    };
+  }
+
+  legacyReportPaths(reportId) {
+    if (!isLegacyReportFileStem(reportId)) return null;
+    return {
+      storageKey: reportId,
+      storageKeyVersion: 'legacy-direct-v0',
+      jsonPath: join(this.reportDir, `${reportId}.json`),
+      htmlPath: join(this.reportDir, `${reportId}.html`)
+    };
+  }
+
+  reportArtifactState(reportId) {
+    const current = this.currentReportPaths(reportId);
+    const legacy = this.legacyReportPaths(reportId);
+    const select = (artifactType) => {
+      const key = `${artifactType}Path`;
+      if (exactFileExists(current[key])) {
+        return { artifactType, path: current[key], present: true, variant: 'current' };
+      }
+      if (legacy && exactFileExists(legacy[key])) {
+        return { artifactType, path: legacy[key], present: true, variant: 'legacy' };
+      }
+      return { artifactType, path: current[key], present: false, variant: 'missing' };
+    };
+    const json = select('json');
+    const html = select('html');
+    return {
+      current,
+      legacy,
+      json,
+      html,
+      presentCount: Number(json.present) + Number(html.present),
+      complete: json.present && html.present
+    };
+  }
+
+  normalizeIndexItem(item) {
+    if (!item || !isValidLogicalReportId(item.reportId)) return null;
+    const reportId = String(item.reportId);
+    const state = this.reportArtifactState(reportId);
+    const onlyLegacy = state.complete
+      && state.json.variant === 'legacy'
+      && state.html.variant === 'legacy';
+    const selected = onlyLegacy ? state.legacy : state.current;
+    return {
+      ...item,
+      reportId,
+      storageKey: selected.storageKey,
+      storageKeyVersion: selected.storageKeyVersion,
+      jsonPath: state.json.path,
+      htmlPath: state.html.path
+    };
+  }
+
+  reportArtifactPaths(item, { includeLegacy = false } = {}) {
+    if (!item || !isValidLogicalReportId(item.reportId)) return [];
+    const state = this.reportArtifactState(String(item.reportId));
+    const paths = [state.json, state.html]
+      .filter((artifact) => artifact.present)
+      .map((artifact) => artifact.path);
+    if (includeLegacy) {
+      for (const candidate of [
+        state.current.jsonPath,
+        state.current.htmlPath,
+        state.legacy?.jsonPath,
+        state.legacy?.htmlPath
+      ]) {
+        if (candidate && exactFileExists(candidate)) paths.push(candidate);
+      }
+    }
+    return [...new Set(paths)].filter((path) => isPathInside(this.reportDir, path));
+  }
+
   readIndex() {
+    this.refreshIndexCache();
+    const context = reportIndexBatchStorage.getStore();
+    if (context?.store === this && context.entries.size > 0) {
+      return this.mergeIndexEntries(this.indexItems, [...context.entries.values()]);
+    }
+    return this.indexItems.map((item) => ({ ...item }));
+  }
+
+  loadIndexFromDisk() {
     try {
       const parsed = JSON.parse(readFileSync(this.indexPath, 'utf8'));
-      return Array.isArray(parsed.items) ? parsed.items : [];
+      this.indexMtimeMs = statSync(this.indexPath).mtimeMs;
+      return Array.isArray(parsed.items)
+        ? this.mergeIndexEntries([], parsed.items.map((item) => this.normalizeIndexItem(item)).filter(Boolean))
+        : [];
     } catch {
+      this.indexMtimeMs = null;
       return [];
     }
   }
 
+  refreshIndexCache() {
+    try {
+      const mtimeMs = statSync(this.indexPath).mtimeMs;
+      if (this.indexMtimeMs !== mtimeMs) this.indexItems = this.loadIndexFromDisk();
+    } catch {
+      if (this.indexMtimeMs !== null) {
+        this.indexMtimeMs = null;
+        this.indexItems = [];
+      }
+    }
+  }
+
   writeIndex(items) {
+    const normalizedItems = this.mergeIndexEntries(
+      [],
+      items.map((item) => this.normalizeIndexItem(item)).filter(Boolean)
+    );
     mkdirSync(this.reportDir, { recursive: true });
     writeFileSync(this.indexPath, JSON.stringify({
       indexVersion: 'g-report-index-v1',
       updatedAt: new Date().toISOString(),
-      items
+      items: normalizedItems
     }, null, 2), 'utf8');
+    this.indexItems = normalizedItems.map((item) => ({ ...item }));
+    this.indexMtimeMs = statSync(this.indexPath).mtimeMs;
   }
 
-  upsertIndex(report, { jsonPath, htmlPath }) {
-    const items = this.readIndex().filter((item) => item.reportId !== report.verificationId);
-    items.push({
+  upsertIndex(report, { storageKey, jsonPath, htmlPath }) {
+    const entry = {
       reportId: report.verificationId,
+      storageKey,
+      storageKeyVersion: reportStorageKeyVersion,
       taskId: report.taskId ?? null,
       status: report.status,
       score: report.score,
@@ -593,8 +1024,28 @@ export class VerificationReportStore {
       failedCheckCount: (report.checks ?? []).filter((check) => check.status === 'failed').length,
       jsonPath,
       htmlPath
-    });
-    this.writeIndex(items.sort((left, right) => Date.parse(right.createdAt ?? '') - Date.parse(left.createdAt ?? '')));
+    };
+    const context = reportIndexBatchStorage.getStore();
+    if (context?.store === this) {
+      context.entries.set(entry.reportId, entry);
+      return entry;
+    }
+    this.flushIndexEntries([entry]);
+    return entry;
+  }
+
+  flushIndexEntries(entries) {
+    if (!entries.length) return { flushed: 0 };
+    this.refreshIndexCache();
+    const items = this.mergeIndexEntries(this.indexItems, entries);
+    this.writeIndex(items);
+    return { flushed: entries.length, total: items.length };
+  }
+
+  mergeIndexEntries(existing, entries) {
+    const byId = new Map(existing.map((item) => [item.reportId, { ...item }]));
+    for (const entry of entries) byId.set(entry.reportId, { ...entry });
+    return [...byId.values()].sort((left, right) => Date.parse(right.createdAt ?? '') - Date.parse(left.createdAt ?? ''));
   }
 
   renderHtml(report) {
@@ -632,4 +1083,134 @@ export class VerificationReportStore {
 </body>
 </html>`;
   }
+}
+
+function isValidLogicalReportId(value) {
+  const reportId = String(value ?? '');
+  return reportId.length > 0
+    && reportId.length <= 512
+    && Buffer.byteLength(reportId, 'utf8') <= 2_048
+    && reportId.trim() === reportId
+    && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(reportId)
+    && !/[\\/]/u.test(reportId)
+    && reportId !== '.'
+    && reportId !== '..'
+    && !reservedReportIds.has(reportId.toLowerCase());
+}
+
+function reportStorageKey(reportId) {
+  const logicalReportId = requireValidLogicalReportId(reportId);
+  return `${mappedReportStorageKeyPrefix}${createHash('sha256').update(logicalReportId, 'utf8').digest('hex')}`;
+}
+
+function isLegacyReportFileStem(reportId) {
+  return isValidLogicalReportId(reportId)
+    && reportId.length <= 250
+    && !/[<>:"|?*]/u.test(reportId)
+    && !/[. ]$/u.test(reportId)
+    && !reportId.toLowerCase().startsWith(mappedReportStorageKeyPrefix)
+    && !isWindowsReservedFileStem(reportId)
+    && !reservedReportIds.has(reportId.toLowerCase())
+    && reportId.toLowerCase() !== 'report-long-term-trend';
+}
+
+function isWindowsReservedFileStem(reportId) {
+  const firstSegment = reportId.split('.')[0];
+  return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(firstSegment);
+}
+
+function isPathInside(parentPath, candidatePath) {
+  const relativePath = relative(resolve(parentPath), resolve(candidatePath));
+  return relativePath !== ''
+    && relativePath !== '..'
+    && !relativePath.startsWith(`..${sep}`)
+    && !isAbsolute(relativePath);
+}
+
+function isPathInsideOrEqual(parentPath, candidatePath) {
+  return resolve(parentPath) === resolve(candidatePath) || isPathInside(parentPath, candidatePath);
+}
+
+function nearestExistingPath(candidatePath) {
+  let current = resolve(candidatePath);
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+  return current;
+}
+
+function exactFileExists(path) {
+  if (!path || !existsSync(path)) return false;
+  try {
+    return lstatSync(path).isFile()
+      && basename(realpathSync.native(path)) === basename(path);
+  } catch {
+    return false;
+  }
+}
+
+function writeImmutableText(path, serialized) {
+  try {
+    writeFileSync(path, serialized, { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    if (readFileSync(path, 'utf8') !== serialized) {
+      throw reportStoreError('G_REPORT_WORM_MANIFEST_CONFLICT', 'Immutable artifact manifest already exists with different content.');
+    }
+  }
+}
+
+function normalizeCleanupPolicy({ keepLast, maxAgeMs } = {}) {
+  const numericKeepLast = Number(keepLast);
+  const numericMaxAgeMs = maxAgeMs === null || maxAgeMs === undefined ? null : Number(maxAgeMs);
+  return {
+    keepLast: Number.isFinite(numericKeepLast) && numericKeepLast >= 0 ? Math.floor(numericKeepLast) : 100,
+    maxAgeMs: Number.isFinite(numericMaxAgeMs) && numericMaxAgeMs >= 0 ? numericMaxAgeMs : null
+  };
+}
+
+function defaultCleanupApproverValidator({ approval, approvedBy }) {
+  const normalizedApprover = String(approvedBy ?? '').trim();
+  const normalizedRequester = String(approval?.requestedBy ?? '').trim();
+  const structurallyValid = normalizedApprover.length > 0
+    && normalizedApprover.length <= 256
+    && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(normalizedApprover);
+  return {
+    valid: structurallyValid && normalizedApprover !== normalizedRequester,
+    approvedBy: normalizedApprover,
+    reason: structurallyValid
+      ? (normalizedApprover === normalizedRequester ? 'requester_cannot_self_approve' : null)
+      : 'approver_identity_invalid'
+  };
+}
+
+function reportStoreError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function requireValidLogicalReportId(value) {
+  if (isValidLogicalReportId(value)) return String(value);
+  const error = new TypeError('Verification report identifier is invalid.');
+  error.code = 'G_REPORT_ID_INVALID';
+  throw error;
+}
+
+function isSensitiveReportKey(value) {
+  const key = String(value ?? '').replace(/[_-]/gu, '').toLowerCase();
+  return key === 'token'
+    || key.endsWith('accesstoken')
+    || key.endsWith('refreshtoken')
+    || key === 'authorization'
+    || key.endsWith('password')
+    || key.endsWith('secret')
+    || key.endsWith('credential')
+    || key === 'cookie'
+    || key.endsWith('apikey')
+    || key.endsWith('signingkey')
+    || key.endsWith('privatekey')
+    || key.endsWith('encryptionkey');
 }
