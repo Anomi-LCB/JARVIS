@@ -30,7 +30,7 @@ export const bridgeRouteContracts = Object.freeze({
     'approval.cancel': { method: 'POST', path: '/approvals/{approvalId}/cancel', params: ['approvalId'], optional: ['reason'] },
     'approval.re_request': { method: 'POST', path: '/approvals/{approvalId}/re-request', params: ['approvalId'], optional: ['reason'] },
     'task_approval_result.release_dossier': { method: 'POST', path: '/task-approval-result/release-dossier', optional: ['reason'], response: 'TaskApprovalResultReleaseDossierResponse' },
-    'pc_console.handoff.decision': { method: 'POST', path: '/pc-console/approval-handoffs/{handoffId}/decision', params: ['handoffId'], required: ['decision'], optional: ['operatorId', 'note'] },
+    'pc_console.handoff.decision': { method: 'POST', path: '/pc-console/approval-handoffs/{handoffId}/decision', params: ['handoffId'], required: ['decision'], optional: ['operatorId', 'note', 'voiceProof'] },
     'pc_agent.queue.drain': { method: 'POST', path: '/pc-agent/queue/drain', optional: ['limit'] },
     'pc_agent.queue_policy.update': { method: 'POST', path: '/pc-agent/queue-policy', optional: ['maxAttempts', 'baseBackoffMs', 'reason'] },
     'pc_agent.poison_packet.review': { method: 'POST', path: '/pc-agent/poison-packets/{queueId}/review', params: ['queueId'], optional: ['decision', 'note'] },
@@ -40,6 +40,11 @@ export const bridgeRouteContracts = Object.freeze({
     'growth.preference.decision': { method: 'POST', path: '/growth/preferences/{hypothesisId}/decision', params: ['hypothesisId'], required: ['decision'], optional: ['reason'] },
     'growth.hygiene.decision': { method: 'POST', path: '/growth/hygiene/decisions', required: ['targetType', 'targetId', 'action'], optional: ['reason'] },
     'growth.hygiene.batch_decision': { method: 'POST', path: '/growth/hygiene/decisions/batch', required: ['decisions'], optional: ['reason'] },
+    'growth.skill_revision.create': { method: 'POST', path: '/growth/skills/{skillId}/revisions', params: ['skillId'], required: ['expectedActiveRevisionId', 'suggestedSteps'], optional: ['reason', 'procedureDefinition'] },
+    'growth.skill_revision.evaluate': { method: 'POST', path: '/growth/skills/{skillId}/revisions/{revisionId}/evaluate', params: ['skillId', 'revisionId'], optional: ['trialCases'] },
+    'growth.skill_revision.review': { method: 'POST', path: '/growth/skills/{skillId}/revisions/{revisionId}/review', params: ['skillId', 'revisionId'], required: ['decision'], optional: ['reason'] },
+    'growth.skill_revision.promote': { method: 'POST', path: '/growth/skills/{skillId}/revisions/{revisionId}/promote', params: ['skillId', 'revisionId'], required: ['expectedActiveRevisionId'], optional: ['reason'] },
+    'growth.skill_revision.rollback': { method: 'POST', path: '/growth/skills/{skillId}/revisions/{revisionId}/rollback', params: ['skillId', 'revisionId'], required: ['expectedActiveRevisionId', 'targetRevisionId'], optional: ['reason'] },
     'growth.routing.release_dossier': { method: 'POST', path: '/growth/routing/release-dossier', optional: ['windowMinutes', 'reason'], response: 'GrowthRoutingReleaseDossierResponse' },
     'cache.schema_diff': { method: 'POST', path: '/cache/schema-diff', required: ['baseline'], response: 'CacheSchemaDiffResponse' },
     'cache.compact': { method: 'POST', path: '/cache/compact', optional: ['reason'] },
@@ -87,7 +92,7 @@ export const bridgeRouteContracts = Object.freeze({
     'approval.renew': { method: 'POST', path: '/approvals/{approvalId}/renew', params: ['approvalId'] },
     'execution.confirm': { method: 'POST', path: '/execution-handoffs/{handoffId}/confirm', params: ['handoffId'] },
     'result.read': { method: 'GET', path: '/results/{taskId}', params: ['taskId'], response: 'ResultResponse' },
-    'result.rollback': { method: 'POST', path: '/results/{taskId}/rollback', params: ['taskId'], optional: ['reason'], response: 'ResultRollbackResponse' },
+    'result.rollback': { method: 'POST', path: '/results/{taskId}/rollback', params: ['taskId'], optional: ['reason', 'confirmed'], response: 'ResultRollbackResponse' },
     'events.stream.status': { method: 'GET', path: '/events/stream/status' },
     'events.fallback_ux': { method: 'GET', path: '/events/fallback-ux', response: 'EventFallbackUxResponse' },
     'rate_limit.status': { method: 'GET', path: '/rate-limit/status', response: 'RateLimitStatusResponse' },
@@ -1313,6 +1318,26 @@ export class BridgeRequestValidator {
       enumValue('decision', ['approve', 'reject'], { required: true });
       optionalString('operatorId', { max: 120 });
       optionalString('note', { max: 1000 });
+      const voiceProof = optionalObject('voiceProof');
+      if (voiceProof) {
+        enumValue('voiceProof.mode', ['pc-voice-challenge'], { required: true });
+        requireString('voiceProof.challengeId', { max: 180 });
+        requireString('voiceProof.challengeResponse', { max: 80 });
+        enumValue('voiceProof.spokenDecision', ['approve', 'reject'], { required: true });
+        optionalString('voiceProof.engine', { max: 120 });
+        optionalInteger('voiceProof.confirmationCount', { min: 1, max: 3 });
+        const confidence = getPath(sanitized, 'voiceProof.confidence');
+        if (confidence !== null && confidence !== undefined) {
+          if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+            issues.push({ path: 'voiceProof.confidence', code: 'confidence_out_of_range', min: 0, max: 1 });
+          }
+        }
+        for (const privacyField of ['transcriptStored', 'rawAudioStored']) {
+          if (getPath(sanitized, `voiceProof.${privacyField}`) !== false) {
+            issues.push({ path: `voiceProof.${privacyField}`, code: 'must_be_false' });
+          }
+        }
+      }
     } else if (routeName === 'pc_agent.queue.drain') {
       optionalInteger('limit', { min: 1, max: 50 });
     } else if (routeName === 'pc_agent.queue_policy.update') {
@@ -1369,6 +1394,33 @@ export class BridgeRequestValidator {
           }
         });
       }
+      optionalString('reason', { max: 500 });
+    } else if (routeName === 'growth.skill_revision.create') {
+      requireString('expectedActiveRevisionId', { max: 180 });
+      optionalString('reason', { max: 500 });
+      if (!Array.isArray(sanitized.suggestedSteps) || sanitized.suggestedSteps.length < 1 || sanitized.suggestedSteps.length > 24) {
+        issues.push({ path: 'suggestedSteps', code: 'required_bounded_array', min: 1, max: 24 });
+      } else {
+        const exact = new Set();
+        sanitized.suggestedSteps.forEach((step, index) => {
+          if (typeof step !== 'string' || !step.trim() || step.length > 320) {
+            issues.push({ path: `suggestedSteps.${index}`, code: 'must_be_nonempty_string_max_320' });
+          } else if (exact.has(step)) {
+            issues.push({ path: `suggestedSteps.${index}`, code: 'duplicate_step' });
+          } else exact.add(step);
+        });
+      }
+    } else if (routeName === 'growth.skill_revision.evaluate') {
+      // The evaluation is deterministic and uses only persisted revision data.
+    } else if (routeName === 'growth.skill_revision.review') {
+      enumValue('decision', ['approve', 'reject'], { required: true });
+      optionalString('reason', { max: 500 });
+    } else if (routeName === 'growth.skill_revision.promote') {
+      requireString('expectedActiveRevisionId', { max: 180 });
+      optionalString('reason', { max: 500 });
+    } else if (routeName === 'growth.skill_revision.rollback') {
+      requireString('expectedActiveRevisionId', { max: 180 });
+      requireString('targetRevisionId', { max: 180 });
       optionalString('reason', { max: 500 });
     } else if (routeName === 'growth.routing.release_dossier') {
       optionalInteger('windowMinutes', { min: 1, max: 10_080 });
@@ -1675,6 +1727,7 @@ function requestBodySchema(contract) {
 
 function bodyPropertySchema(field) {
   if (/maxAttempts|baseBackoffMs/.test(field)) return { type: 'integer' };
+  if (field === 'suggestedSteps') return { type: 'array', minItems: 1, maxItems: 24, items: { type: 'string', maxLength: 320 } };
   if (/patch|soakReport|mobileLiveBridgeReport/.test(field)) return { type: 'object', additionalProperties: true };
   if (/decision|action|targetType|feedbackType/.test(field)) return { type: 'string' };
   return { type: 'string' };

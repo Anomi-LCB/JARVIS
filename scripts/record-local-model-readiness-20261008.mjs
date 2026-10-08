@@ -1,0 +1,22 @@
+import {readFile,writeFile,appendFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {runResearchLedger} from './research-ledger.mjs';
+const prefix='artifacts/local-model-readiness-20261008',candidateId='local-ollama-mission-provider',observedAt=new Date().toISOString();
+if(!runResearchLedger(['status']).candidates.some(c=>c.id===candidateId))throw Error('KNOWN_CANDIDATE_REQUIRED');
+const write=(path,value)=>writeFile(path,typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',{flag:'wx'});
+const final=await readFile(prefix+'-final.txt','utf8'),before=await readFile(prefix+'-before.txt','utf8'),probe=JSON.parse(await readFile(prefix+'-probe.json','utf8'));
+for(const marker of ['ℹ pass 116','ℹ fail 0','ℹ skipped 0','ℹ cancelled 0'])if(!final.includes(marker))throw Error('FINAL_TEST_REQUIRED');
+if(!before.includes('ℹ fail 4')||probe.status!=='BLOCKED'||probe.metrics.plannerCalls!==1||probe.tools.length!==0)throw Error('BASELINE_AND_REAL_PROBE_REQUIRED');
+if(!(await readFile(prefix+'-build.txt','utf8')).includes('Built static JARVIS executive console')||!(await readFile(prefix+'-contract.txt','utf8')).includes('gatePassed: true'))throw Error('BUILD_CONTRACT_REQUIRED');
+await write(prefix+'-sources.json',await Promise.all(['packages/core/src/mission/mission-planner.js','tests/local-model-readiness-plan.test.js','scripts/local-model-readiness-probe-20261008.mjs'].map(async path=>({path,sha256:createHash('sha256').update(await readFile(path)).digest('hex')}))));
+await write(prefix+'-report.md',`# 로컬 모델 준비 조건 실패의 추측 실행 방지\n\n관측 ${observedAt}. 직전 실제 모델 실험은 생성 연결ECONNRESET→목록ECONNREFUSED로 종료했고 모델 서비스가 현재 응답하지 않는다. 이 실패를 성공으로 바꾸지 않는다.\n\n준비되지 않은 로컬 모델(목록 연결 거부·생성 연결 중단·모델 미설치·cloud 모델 거부)에서도 계획기가 일반 작업으로 우회하는4반례를 재현했다. 수정 전5검사 중4실패, 양성대조1통과. 실제 이전실험에서도 우회 후정책 차단과 추가계획 호출이 발생했다. 이제 해당 로컬 실패에서는 **mission-local-model-unavailable**로 바로 보류하고 복구할 준비조건을 명시한다. 원문·금지·완료기준·계정권한은 변경하지 않으며 정상 로컬 응답은 기존 도구 검증 경로를 유지한다. 이미 앞단에서 성립한 결정형 로컬 경로와 다른 제공자의 기존 대체 경로는 바꾸지 않는다. 비용·토큰·허위 완료·임의 오류본문을 만들지 않는다.\n\n최종 **116개 고유 회귀 통과**, 실패/건너뜀/취소0, build/API계약 통과. 기존 실제 Mission/E/PC/G 합성 제공자 회귀도 포함한다. 이것은 실모델의 자연어 의미 성공률이 아니다.\n\n실제 native HTTP와 격리 Core로 현재 미응답127.0.0.1:11434에 요청했다. 계획1회/목록HTTP1회/ECONNREFUSED, 약${Math.round(probe.elapsedMs)}ms 뒤BLOCKED, 생성0/도구0/추측 작업0, 원본과 보호파일 실제 재조회 보존이다. G완료는 수행하지 않았다. 이전187초 실패와 이 빠른 준비도 차단을 성공 처리속도 개선으로 비교하지 않는다. 일반 제품의 결정형 우회를 제외한 격리 관측 구성이다.\n\n첫 프로브는 활성예산10000ms가 계획기 최소예산보다 작아PAUSED였고 주장과 달라 assertion실패했다. 실패로그를 보존한 뒤 예산60000ms로 명시하고 최종프로브를 별도로그로 실행했다. 이 시험 준비오류를 제품 결함이나실모델연결 성공으로 세지 않는다. 운영 모델 서비스 재시작·언로드·설정변경, 실계정·개인정보·유료 호출 없음.\n\n공식 **60/100 유지**. V3-020/022의 부분증거이며 질문필요성/독립의미/실모델계획완료/실서비스복구는 미완료다. 다음은 로컬 서비스 종료의 근본원인 확인과 준비된 런타임에서 동일 요구·오라클로 계획 문맥/모델 비교다. 모델을 사용할 수 없으면 작업을 조용히 축소해 실행하지 않는다.\n`);
+const evidencePaths=[prefix+'-report.md',prefix+'-sources.json',prefix+'-before.txt',prefix+'-final.txt',prefix+'-probe.txt',prefix+'-probe-final.txt',prefix+'-probe.json',prefix+'-build.txt',prefix+'-contract.txt'];
+await write(prefix+'-attempt.json',{id:'local-model-readiness-20261008',candidateId,kind:'workflow-test',reportedOutcome:'passed',observedAt,
+ hypothesis:'Definite local model prerequisite failure should stop speculative fallback and repeated planning without blocking valid local plans.',
+ lesson:'Four reproduced fallback errors fixed; real unavailable loopback/Core stops after one catalog request with no tools. Positive structured-plan control and 116 regressions pass.',
+ limitations:'Readiness failure handling only. Actual runtime remains unavailable; no real model plan, semantic accuracy, G completion, account/device or service recovery acceptance.',evidencePaths});
+console.log(JSON.stringify(runResearchLedger(['record',prefix+'-attempt.json'])));
+const path='docs/universal-control-v3-acceptance.json',a=JSON.parse((await readFile(path,'utf8')).replace(/^\uFEFF/,''));
+for(const id of ['V3-020','V3-022']){const gate=a.stages.flatMap(s=>s.gates).find(g=>g.id===id);gate.evidence=[...new Set([...(gate.evidence??[]),...evidencePaths])];gate.limitations=[...(gate.limitations??[]),'2026-10-08 모델 준비실패 추측우회4반례 수정/116회귀/실제미응답HTTP-Core1계획 차단·도구0. 실제모델계획/의미·복구 미완료.'];}
+a.updatedAt=observedAt;await writeFile(path,JSON.stringify(a,null,2)+'\n');
+await appendFile('docs/execution-to-100.md',`\n최신 ${prefix}-report.md: 모델준비실패 추측우회4반례 수정/116회귀/build/contract,실제미응답Core1계획 차단·도구0. 공식60/100. handle34713/1055 exit0종료; 다음 런타임 종료원인과 준비도/동일요구 비교.\n`);

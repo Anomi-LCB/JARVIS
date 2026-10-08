@@ -1,8 +1,9 @@
 import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
+import {fileURLToPath} from 'node:url';
 
-export const defaultPolicyPath = 'apps/policy-security/policies/e/default-policy.json';
+export const defaultPolicyPath = fileURLToPath(new URL('../policies/e/default-policy.json',import.meta.url));
 
 export class PolicyAsCodeCompiler {
   constructor({
@@ -374,6 +375,9 @@ export class PolicyAsCodeCompiler {
       if (!rule?.pattern) issues.push({ path: `promptInjection.blockedPatterns.${index}.pattern`, code: 'required' });
       if (!['high', 'medium', 'low'].includes(rule?.severity)) {
         issues.push({ path: `promptInjection.blockedPatterns.${index}.severity`, code: 'invalid_severity' });
+      }
+      if (rule?.scope != null && !['all', 'untrusted_only'].includes(rule.scope)) {
+        issues.push({ path: `promptInjection.blockedPatterns.${index}.scope`, code: 'invalid_scope' });
       }
       try {
         new RegExp(rule.pattern, 'i');

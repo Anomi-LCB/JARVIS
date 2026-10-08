@@ -1,10 +1,24 @@
+import { createConfiguredPcOutboundNode } from '../../../scripts/pc-outbound-channel.mjs';
+import { PcLocalTaskScope } from './pc-local-task-scope.js';
+import {observePcDevice} from './device-observation.js';
+import { createPcLocalScopeSettings } from './pc-local-scope-api.js';
 import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createAgRuntime } from '../../runtime-compose/src/create-runtime.js';
-import { bearerToken, readJsonBody, routeParams, routePath, safeHandle, sendJson } from '../../../packages/shared/src/http.js';
+import { createPcExecutionRuntime } from '../../runtime-compose/src/create-pc-runtime.js';
+import {
+  bearerToken,
+  checkLoopbackHttpBoundary,
+  listenOnFetchSafePort,
+  readJsonBody,
+  routeParams,
+  routePath,
+  safeHandle,
+  sendJson
+} from '../../../packages/shared/src/http.js';
 import { ModuleId } from '../../../packages/shared/src/types.js';
 import { createServicePlan, loadPcAgentInstallConfig } from './install/service-planner.js';
 import { verifyPcAgentServiceReadiness } from './install/service-verifier.js';
@@ -34,10 +48,14 @@ function containsPcAgentLocalApiReleaseRawLeak(value) {
 
 export class PcAgentApiGuard {
   constructor({
-    apiToken = process.env.JARVIS_PC_AGENT_API_TOKEN ?? 'local-pc-agent-api',
+    apiToken = process.env.JARVIS_PC_AGENT_API_TOKEN
+      ?? (process.env.JARVIS_TEST_MODE === '1' ? 'local-pc-agent-api' : null),
     apiTokenHash = process.env.JARVIS_PC_AGENT_API_TOKEN_SHA256,
     tokenStore = null,
     tokenStorePath = process.env.JARVIS_PC_AGENT_API_TOKEN_STORE,
+    executionToken = process.env.JARVIS_PC_AGENT_EXECUTION_TOKEN,
+    executionTokenHash = process.env.JARVIS_PC_AGENT_EXECUTION_TOKEN_SHA256,
+    executionTokenStore = null,
     clock = () => new Date(),
     rateLimit = { windowMs: 60_000, maxRequests: 120 }
   } = {}) {
@@ -49,18 +67,28 @@ export class PcAgentApiGuard {
       storePath: tokenStorePath,
       clock
     });
+    this.executionTokenStore = executionTokenStore ?? new PcAgentSecretTokenStore({
+      token: executionToken,
+      tokenHash: executionTokenHash,
+      clock
+    });
     this.buckets = new Map();
   }
 
-  check(request, { authRequired = true, action = 'read' } = {}) {
+  check(request, { authRequired = true, action = 'read', executionDelegationAllowed = false } = {}) {
     const rate = this.checkRate(request, action);
     if (!rate.allowed) return rate;
     if (!authRequired) return { allowed: true, rateLimit: rate.rateLimit };
     const token = bearerToken(request);
-    if (!this.tokenStore.verify(token)) {
+    if (this.tokenStore.verify(token)) {
+      return { allowed: true, authRole: 'administrator', rateLimit: rate.rateLimit };
+    }
+    if (executionDelegationAllowed && this.executionTokenStore.verify(token)) {
+      return { allowed: true, authRole: 'core-executor', rateLimit: rate.rateLimit };
+    }
+    {
       return { allowed: false, statusCode: 401, rateLimit: rate.rateLimit, error: { code: 'B_API_TOKEN_REQUIRED', message: 'PC Agent API bearer token is required.' } };
     }
-    return { allowed: true, rateLimit: rate.rateLimit };
   }
 
   checkRate(request, action) {
@@ -107,6 +135,7 @@ export class PcAgentApiGuard {
     return {
       guardVersion: 'b-pc-agent-api-guard-status-v1',
       tokenStore: this.tokenStore.status(),
+      executionTokenStore: this.executionTokenStore.status(),
       rateLimit: this.rateLimit,
       bucketCount: this.buckets.size
     };
@@ -114,6 +143,7 @@ export class PcAgentApiGuard {
 
   middlewareHardeningReport() {
     const tokenStatus = this.tokenStore.status();
+    const executionTokenStatus = this.executionTokenStore.status();
     const checks = [
       {
         checkId: 'api_token_hash_backed',
@@ -134,13 +164,36 @@ export class PcAgentApiGuard {
         status: ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'x-ratelimit-action'].every(Boolean) ? 'passed' : 'blocked'
       }
     ];
+    if (executionTokenStatus.hashConfigured) {
+      checks.push({
+        checkId: 'execution_delegation_token_hash_backed',
+        status: executionTokenStatus.plaintextTokenStored === false ? 'passed' : 'blocked',
+        source: executionTokenStatus.source
+      });
+    }
     return {
       reportVersion: 'b-pc-agent-api-middleware-hardening-v1',
       status: checks.every((check) => check.status === 'passed') ? 'passed' : 'blocked',
       checks,
-      tokenStore: tokenStatus
+      tokenStore: tokenStatus,
+      executionTokenStore: executionTokenStatus
     };
   }
+}
+
+export function createPcAgentApiGuardFromEnv(env = process.env) {
+  const configuredToken = String(env.JARVIS_PC_AGENT_API_TOKEN ?? '').trim();
+  const configuredTokenHash = String(env.JARVIS_PC_AGENT_API_TOKEN_SHA256 ?? '').trim();
+  const configuredStorePath = String(env.JARVIS_PC_AGENT_API_TOKEN_STORE ?? '').trim();
+  const configuredExecutionToken = String(env.JARVIS_PC_AGENT_EXECUTION_TOKEN ?? '').trim();
+  const configuredExecutionTokenHash = String(env.JARVIS_PC_AGENT_EXECUTION_TOKEN_SHA256 ?? '').trim();
+  return new PcAgentApiGuard({
+    apiToken: configuredToken || (env.JARVIS_TEST_MODE === '1' ? 'local-pc-agent-api' : null),
+    apiTokenHash: configuredTokenHash || null,
+    tokenStorePath: configuredStorePath || null,
+    executionToken: configuredExecutionToken || null,
+    executionTokenHash: configuredExecutionTokenHash || null
+  });
 }
 
 export class PcAgentSecretTokenStore {
@@ -252,7 +305,7 @@ export function createPcAgentOpenApiSpec() {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'JARVIS PC Agent Local API',
+      title: 'JARVIS PC 에이전트 로컬 API',
       version: '1.0.0',
       description: 'Localhost-only API for execution packets, queue drain, evidence, rollback, tray state, and service readiness.'
     },
@@ -266,11 +319,33 @@ export function createPcAgentOpenApiSpec() {
       }
     },
     paths: {
+      '/diagnostics/device':{get:{summary:'Observe current local PC model, OS and token elevation without personal identifiers',security:auth,responses:{200:jsonResponse('Current observation; execution readiness is not inferred'),400:jsonResponse('Query not accepted'),401:jsonResponse('Current local administrator token required'),405:jsonResponse('Read-only endpoint')}}},
+      '/email/readiness':{get:{description:'Authenticated administrator or Core executor may read credential-free current readiness only. No verification, credential changes or execution authority.',security:auth,responses:{200:jsonResponse('Bound readiness observation or unavailable state'),400:jsonResponse('Queries not accepted'),401:jsonResponse('Administrator or execution delegation token required'),503:jsonResponse('Local controller unavailable')}}},
+      '/email/connection':{get:{description:'Local administrator only; executor delegation cannot manage email credentials or readiness.',security:auth,responses:{200:jsonResponse('Credential-free local configuration and readiness'),401:jsonResponse('Administrator token required'),503:jsonResponse('Email controller unavailable')}}},
+      '/email/probe':{post:{description:'Local administrator only. Checks SMTP TLS/authentication without sending mail; does not authorize execution.',security:auth,requestBody:{required:true,content:{'application/json':{schema:{type:'object',additionalProperties:false}}}},responses:{200:jsonResponse('No-send verification observation'),400:jsonResponse('Only an empty object without query is accepted'),401:jsonResponse('Administrator token required'),409:jsonResponse('Sanitized verification error'),503:jsonResponse('Email controller unavailable')}}},
+      '/email/pause':{post:{description:'Local administrator only. Pause local email use; no credential deletion or provider revocation.',security:auth,requestBody:{required:true,content:{'application/json':{schema:{type:'object',additionalProperties:false}}}},responses:{200:jsonResponse('Local pause'),400:jsonResponse('Only an empty object without query is accepted'),401:jsonResponse('Administrator token required'),503:jsonResponse('Email controller unavailable')}}},
       '/health': {
         get: { summary: 'PC Agent health', responses: { 200: jsonResponse('Health status') } }
       },
       '/api/security/status': {
         get: { summary: 'Read PC Agent API guard, secret token store, and middleware hardening status', security: auth, responses: { 200: jsonResponse('API guard security status') } }
+      },
+      '/outbound/local-task-scope': {
+        get:{summary:'Read PC-owned task scope and configured task ceiling',security:auth,responses:{200:jsonResponse('Revision, expiry and selected tasks; no execution authority'),401:jsonResponse('Administrator token required'),503:jsonResponse('Local scope not configured')}},
+        put:{summary:'Replace PC-owned task scope with revision compare-and-swap',security:auth,
+          requestBody:{required:true,content:{'application/json':{schema:{type:'object',additionalProperties:false,required:['expectedRevision','allowedTaskIds','expiresAt'],properties:{expectedRevision:{type:'integer',minimum:0},allowedTaskIds:{type:'array',maxItems:1000,uniqueItems:true,items:{type:'string',maxLength:128}},expiresAt:{type:'integer',minimum:0}}}}}},
+          responses:{200:jsonResponse('Saved local scope'),400:jsonResponse('Invalid scope'),401:jsonResponse('Administrator token required'),409:jsonResponse('Revision conflict'),503:jsonResponse('Local scope not configured')}}
+      },
+      '/outbound/local-task-catalog': {
+        get:{summary:'Read explicitly enabled PC-owned registration catalog; does not grant execution',security:auth,responses:{200:jsonResponse('Catalog revision and read/artifact/command candidates'),401:jsonResponse('Administrator token required'),503:jsonResponse('Managed catalog not configured')}},
+        put:{summary:'Replace PC-owned registration catalog; atomically revoke removed grants and fence older work',security:auth,
+          requestBody:{required:true,content:{'application/json':{schema:{type:'object',additionalProperties:false,required:['expectedRevision','allowedTaskIds','allowedArtifactTaskIds','allowedCommandTaskIds'],properties:{expectedRevision:{type:'integer',minimum:0},...Object.fromEntries(['allowedTaskIds','allowedArtifactTaskIds','allowedCommandTaskIds'].map(key=>[key,{type:'array',maxItems:1000,uniqueItems:true,items:{type:'string',maxLength:128}}]))}}}}},responses:{200:jsonResponse('Saved registration; execution requires a separate grant'),400:jsonResponse('Invalid registration scopes'),401:jsonResponse('Administrator token required'),409:jsonResponse('Revision conflict'),503:jsonResponse('Managed catalog not configured')}}
+      },
+      '/api/trust/status': {
+        get: { summary: 'Read signed runtime trust state and integrity diagnostics', security: auth, responses: { 200: jsonResponse('Runtime trust status'), 401: jsonResponse('Missing bearer token') } }
+      },
+      '/api/trust/audit/quarantine': {
+        post: { summary: 'Preserve an invalid trust audit journal in signed forensic quarantine and start a fresh chain', security: auth, responses: { 200: jsonResponse('Audit journal quarantine result'), 401: jsonResponse('Missing bearer token'), 409: jsonResponse('Quarantine precondition failed') } }
       },
       '/api/contract-snapshot': {
         get: { summary: 'Read PC Agent API contract snapshot and route hash', security: auth, responses: { 200: jsonResponse('API contract snapshot') } }
@@ -301,6 +376,13 @@ export function createPcAgentOpenApiSpec() {
           responses: { 200: jsonResponse('Execution result'), 400: jsonResponse('Schema validation error'), 401: jsonResponse('Missing bearer token'), 429: jsonResponse('Rate limited') }
         }
       },
+      '/execution-packets/resume-workflow': { post: { summary: 'Resume a bound interrupted workflow publication under a current E capability',
+        security: auth, requestBody: { required: true, content: { 'application/json': { schema: packetSchema } } },
+        responses: { 200: jsonResponse('Resumed or blocked execution result'), 400: jsonResponse('Invalid packet'), 401: jsonResponse('Unauthorized') } } },
+      '/operations/prepare': { post: { summary: 'Prepare a durable PC operation with a short-lived dispatch ticket; E authorization is still required', security: auth, responses: { 200: jsonResponse('Prepared operation'), 401: jsonResponse('Unauthorized') } } },
+      '/operations/execute': { post: { summary: 'Execute one prepared operation after E validation and B fencing', security: auth, responses: { 200: jsonResponse('Execution result'), 401: jsonResponse('Unauthorized') } } },
+      '/operations/read': { post: { summary: 'Reconcile an exact operation identity without executing it', security: auth, responses: { 200: jsonResponse('Operation and receipt'), 401: jsonResponse('Unauthorized') } } },
+      '/operations/cancel': { post: { summary: 'Cancel a prepared operation; in-flight operations remain uncertain', security: auth, responses: { 200: jsonResponse('Cancellation status'), 401: jsonResponse('Unauthorized') } } },
       '/execution-packets/queue': {
         get: { summary: 'Read durable execution queue status', security: auth, responses: { 200: jsonResponse('Queue status') } },
         post: { summary: 'Queue an ExecutionPacket', security: auth, requestBody: { required: true, content: { 'application/json': { schema: packetSchema } } }, responses: { 202: jsonResponse('Queued packet') } }
@@ -330,11 +412,16 @@ export function createPcAgentOpenApiSpec() {
       '/tasks/{taskId}': {
         get: { summary: 'Read task status', security: auth, parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: jsonResponse('Task result') } }
       },
+      '/tasks/summaries': { post: { operationId:'getPcTaskSummaries',description:'Authenticated bounded metadata read; request order retained, no execution permission or completion proof.',requestBody:{required:true,content:{'application/json':{schema:{type:'object',additionalProperties:false,required:['taskIds'],properties:{taskIds:{type:'array',minItems:1,maxItems:100,uniqueItems:true,items:{type:'string',maxLength:128}}}}}}},responses:{200:{description:'Metadata only.'},400:{description:'Invalid bounded selection.'}} } },
+      '/tasks/{taskId}/summary': { get: { operationId:'getPcTaskSummary',description:'Authenticated minimal task metadata; excludes original input, paths, receipts and result text.',parameters:[{name:'taskId',in:'path',required:true,schema:{type:'string'}}],responses:{200:{description:'Metadata observation; not completion evidence.'}} } },
       '/tasks/{taskId}/result': {
         get: { summary: 'Read execution result', security: auth, parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: jsonResponse('Execution result') } }
       },
       '/tasks/{taskId}/evidence': {
         get: { summary: 'Read execution evidence', security: auth, parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: jsonResponse('Execution evidence') } }
+      },
+      '/tasks/{taskId}/publication': {
+        get: { summary: 'Observe interrupted workflow publication without executing or completing it', security: auth, parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: jsonResponse('Publication observation') } }
       },
       '/evidence/query': { get: { summary: 'Query execution evidence with pagination and filters', security: auth, responses: { 200: jsonResponse('Evidence query') } } },
       '/evidence/retention': { get: { summary: 'Preview execution evidence retention and rotation', security: auth, responses: { 200: jsonResponse('Evidence retention') } } },
@@ -745,19 +832,101 @@ export function runPcAgentLocalApiProductGate({ apiGuard = new PcAgentApiGuard()
   };
 }
 
-export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(), serviceSupervisor = null } = {}) {
-  return http.createServer((request, response) => {
+export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(), serviceSupervisor = null, localTaskScope = null, localTaskIds = [], emailConnection=null, deviceObserver=observePcDevice } = {}) {
+  const localScopeSettings=createPcLocalScopeSettings({scope:localTaskScope,allowedTaskIds:localTaskIds});
+  // Share only an active OS query. Every reader retains its own authorization check;
+  // once settled, the next request observes the OS again rather than using a cache.
+  let deviceObservationFlight=null;
+  const currentDeviceObservation=()=>{
+    if(!deviceObservationFlight)deviceObservationFlight=Promise.resolve().then(()=>deviceObserver()).finally(()=>{deviceObservationFlight=null;});
+    return deviceObservationFlight;
+  };
+  const server = http.createServer((request, response) => {
     safeHandle(response, async () => {
+      const localBoundary = checkLoopbackHttpBoundary(request);
+      if (!localBoundary.allowed) return sendJson(response, localBoundary.statusCode, localBoundary);
       const path = routePath(request);
+      if(path==='/email/readiness'){
+        const guard=apiGuard.check(request,{action:'email-readiness-read',executionDelegationAllowed:true});
+        if(!guard.allowed)return guardedJson(response,guard.statusCode,{error:{code:'B_API_TOKEN_REQUIRED'}},guard);
+        if(request.method!=='GET')return guardedJson(response,405,{error:{code:'A_EMAIL_METHOD_INVALID'}},guard);
+        if(new URL(request.url,'http://127.0.0.1').search)return guardedJson(response,400,{error:{code:'A_EMAIL_REQUEST_INVALID'}},guard);
+        if(!emailConnection)return guardedJson(response,503,{error:{code:'A_EMAIL_CONNECTION_UNAVAILABLE'}},guard);
+        try{return guardedJson(response,200,emailConnection.readiness(),guard);}
+        catch{return guardedJson(response,503,{error:{code:'A_EMAIL_STATE_UNAVAILABLE'}},guard);}
+      }
+      if(['/email/connection','/email/probe','/email/pause'].includes(path)){
+        const guard=apiGuard.check(request,{action:'email-connection-management'});
+        if(!guard.allowed)return guardedJson(response,guard.statusCode,{error:{code:'B_API_TOKEN_REQUIRED'}},guard);
+        if(!emailConnection)return guardedJson(response,503,{error:{code:'A_EMAIL_CONNECTION_UNAVAILABLE'}},guard);
+        const expected=path==='/email/connection'?'GET':'POST';
+        if(request.method!==expected)return guardedJson(response,405,{error:{code:'A_EMAIL_METHOD_INVALID'}},guard);
+        try{
+          if(new URL(request.url,'http://127.0.0.1').search)throw Object.assign(new Error(),{code:'A_EMAIL_REQUEST_INVALID'});
+          if(expected==='POST'){
+            if(request.headers['content-type']?.split(';')[0]!=='application/json'||request.headers['content-encoding'])throw Object.assign(new Error(),{code:'A_EMAIL_REQUEST_INVALID'});
+            const body=await readJsonBody(request,{maximumBytes:1024});
+            if(!body||Array.isArray(body)||typeof body!=='object'||Object.keys(body).length)throw Object.assign(new Error(),{code:'A_EMAIL_REQUEST_INVALID'});
+            if(!apiGuard.tokenStore.verify(bearerToken(request)))return guardedJson(response,401,{error:{code:'B_API_TOKEN_REQUIRED'}},guard);
+          }
+          const value=path==='/email/probe'?await emailConnection.probe():path==='/email/pause'?emailConnection.disconnect():emailConnection.status();
+          if(!apiGuard.tokenStore.verify(bearerToken(request))){
+            if(path==='/email/probe')emailConnection.disconnect();
+            return guardedJson(response,401,{error:{code:'B_API_TOKEN_REQUIRED'}},guard);
+          }
+          return guardedJson(response,200,value,guard);
+        }catch(error){
+          const code=/^A_EMAIL_[A-Z0-9_]+$/u.test(error?.code??'')?error.code:'A_EMAIL_OPERATION_FAILED';
+          return guardedJson(response,code==='A_EMAIL_REQUEST_INVALID'?400:409,{error:{code}},guard);
+        }
+      }
+      if(['/outbound/local-task-scope','/outbound/local-task-catalog'].includes(path)){
+        const guard=apiGuard.check(request,{action:'outbound-local-scope-settings'});
+        if(!guard.allowed)return guardedJson(response,guard.statusCode,guard,guard);
+        if(!['GET','PUT'].includes(request.method))return guardedJson(response,405,{error:{code:'B_PC_LOCAL_SCOPE_METHOD_INVALID'}},guard);
+        if(new URL(request.url,'http://127.0.0.1').search)return guardedJson(response,400,{error:{code:'B_PC_LOCAL_SCOPE_INPUT_INVALID'}},guard);
+        if(request.method==='PUT'&&(request.headers['content-type']?.split(';')[0]!=='application/json'||request.headers['content-encoding']))return guardedJson(response,415,{error:{code:'B_PC_LOCAL_SCOPE_INPUT_INVALID'}},guard);
+        try{
+          let input;
+          if(request.method==='PUT'){
+            input=await readJsonBody(request,{maximumBytes:262144});
+            if(!apiGuard.tokenStore.verify(bearerToken(request)))return guardedJson(response,401,{error:{code:'B_API_TOKEN_REQUIRED'}},guard);
+          }
+          const catalog=path.endsWith('/local-task-catalog');
+          const value=request.method==='GET'?(catalog?localScopeSettings.readCatalog():localScopeSettings.read()):(catalog?localScopeSettings.replaceCatalog(input):localScopeSettings.replace(input));
+          return guardedJson(response,200,value,guard);
+        }catch(error){
+          const status=error?.code==='B_PC_LOCAL_SCOPE_NOT_CONFIGURED'?503:error?.code==='B_PC_LOCAL_SCOPE_REVISION_CONFLICT'?409:
+            ['B_PC_LOCAL_SCOPE_INPUT_INVALID','B_PC_LOCAL_SCOPE_EXPIRY_INVALID','B_PC_LOCAL_SCOPE_TARGET_NOT_CONFIGURED'].includes(error?.code)?400:null;
+          if(status)return guardedJson(response,status,{error:{code:error.code}},guard);throw error;
+        }
+      }
       if (request.method === 'GET' && path === '/openapi.json') {
         return sendJson(response, 200, createPcAgentOpenApiSpec());
       }
+      if(path==='/diagnostics/device'){
+        const guard=apiGuard.check(request,{action:'device-observation'});
+        if(!guard.allowed)return guardedJson(response,guard.statusCode,guard,guard);
+        response.setHeader('Cache-Control','no-store');
+        if(request.method!=='GET')return guardedJson(response,405,{error:{code:'B_DEVICE_METHOD_INVALID'}},guard);
+        if(new URL(request.url,'http://127.0.0.1').search)return guardedJson(response,400,{error:{code:'B_DEVICE_INPUT_INVALID'}},guard);
+        const observation=await currentDeviceObservation();
+        if(!apiGuard.tokenStore.verify(bearerToken(request)))return guardedJson(response,401,{error:{code:'B_API_TOKEN_REQUIRED'}},guard);
+        return guardedJson(response,200,{...observation,connection:{status:'authenticated-local-diagnostics',observedAt:new Date().toISOString(),executionReady:false}},guard);
+      }
       if (request.method === 'GET' && path === '/health') {
+        const apiAuthentication = apiGuard.status().tokenStore;
         return sendJson(response, 200, {
           status: 'ok',
           module: ModuleId.PC_AGENT,
           version: '1.0.0',
           localOnly: true,
+          apiAuthKeyId: apiAuthentication.tokenHashPrefix
+            ? `sha256:${apiAuthentication.tokenHashPrefix}`
+            : null,
+          apiAuthentication: {
+            configured: apiAuthentication.hashConfigured === true
+          },
           packetJournal: {
             records: pcAgent.packetJournal.records.length,
             completed: pcAgent.packetJournal.results.size,
@@ -773,8 +942,35 @@ export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(),
             chain: pcAgent.rollbackTransactionStatus().chain.status
           },
           serviceRuntime: serviceSupervisor?.status() ?? { enabled: false, status: 'not-attached' },
-          capabilityVault: pcAgent.capabilityVault.status()
+          capabilityVault: pcAgent.capabilityVault.status(),
+          trust: pcAgent.trustKernel?.publicStatus?.() ?? {
+            mode: 'unavailable',
+            operational: false,
+            mutatingExecutionAllowed: false
+          }
         });
+      }
+      if (request.method === 'GET' && path === '/api/trust/status') {
+        const guard = apiGuard.check(request, { action: 'runtime-trust-status' });
+        if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
+        return guardedJson(response, 200, pcAgent.trustKernel?.status?.({ includeSensitive: true }) ?? {
+          success: false,
+          error: { code: 'B_TRUST_KERNEL_UNAVAILABLE' }
+        }, guard);
+      }
+      if (request.method === 'POST' && path === '/api/trust/audit/quarantine') {
+        const guard = apiGuard.check(request, { action: 'runtime-trust-audit-quarantine' });
+        if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
+        const body = await readJsonBody(request);
+        const result = pcAgent.trustKernel?.quarantineInvalidAuditJournal?.({
+          challenge: body.challenge,
+          requestedBy: body.requestedBy ?? 'local-pc-agent-maintenance',
+          reason: body.reason ?? 'operator-confirmed-invalid-pc-audit-journal'
+        }) ?? {
+          success: false,
+          error: { code: 'B_TRUST_KERNEL_UNAVAILABLE' }
+        };
+        return guardedJson(response, result.success === false ? 409 : 200, result, guard);
       }
       if (request.method === 'GET' && path === '/api/security/status') {
         const guard = apiGuard.check(request, { action: 'api-security-status' });
@@ -891,19 +1087,60 @@ export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(),
         const body = await readJsonBody(request);
         return guardedJson(response, 200, pcAgent.ignorePoisonPacket(poisonIgnoreParams.queueId, body), guard);
       }
-      if (request.method === 'POST' && path === '/execution-packets') {
-        const guard = apiGuard.check(request, { action: 'execution-packet' });
+      if (request.method === 'POST' && ['/operations/prepare', '/operations/execute', '/operations/read', '/operations/cancel'].includes(path)) {
+        const guard = apiGuard.check(request, { action: 'durable-operation', executionDelegationAllowed: true });
+        if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
+        try {
+        const body = await readJsonBody(request);
+        if (path === '/operations/read') return guardedJson(response, 200, pcAgent.readRemoteOperation(body), guard);
+        if (path === '/operations/cancel') return guardedJson(response, 200, pcAgent.cancelRemoteOperation(body), guard);
+        const validation = apiGuard.validateExecutionPacketBody(body);
+        if (!validation.valid || validation.dryRun || validation.packet.requestedMode !== 'execute') {
+          return guardedJson(response, 400, { success: false, error: { code: 'B_OPERATION_PACKET_INVALID' } }, guard);
+        }
+        // HTTP JSON cannot install the trusted in-process mutation checker.
+        if(path==='/operations/execute'&&Object.hasOwn(body,'mutationFenceRequired'))throw Object.assign(new Error('B_OPERATION_MUTATION_FENCE_UNSUPPORTED'),{code:'B_OPERATION_MUTATION_FENCE_UNSUPPORTED'});
+        if (path === '/operations/prepare') return guardedJson(response, 200, await pcAgent.prepareRemoteOperation(validation.packet), guard);
+        return guardedJson(response, 200, await pcAgent.executeRemoteOperation(validation.packet, { ticket: body.ticket, generation: body.generation }), guard);
+        } catch (error) {
+          if (/^(?:B_OPERATION_[A-Z_]+|E_CAPABILITY_[A-Z_]+|E_POLICY_INVALID_TTL)$/u.test(error?.code ?? '')) {
+            return guardedJson(response, 409, { success: false, error: { code: error.code,
+              message: 'Durable operation rejected. Check its original authorization and operation status.' } }, guard);
+          }
+          throw error;
+        }
+      }
+      if (request.method === 'POST' && ['/execution-packets', '/execution-packets/resume-workflow'].includes(path)) {
+        const guard = apiGuard.check(request, { action: 'execution-packet', executionDelegationAllowed: true });
         if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
         const body = await readJsonBody(request);
         const validation = apiGuard.validateExecutionPacketBody(body);
         if (!validation.valid) {
           return guardedJson(response, 400, { success: false, error: { code: 'B_EXECUTION_PACKET_SCHEMA_INVALID', errors: validation.errors } }, guard);
         }
-        return guardedJson(response, 200, await pcAgent.receiveExecutionPacket(validation.packet, { dryRun: validation.dryRun }), guard);
+        const execute = pcAgent.receiveDelegatedExecutionPacket?.bind(pcAgent)
+          ?? pcAgent.receiveExecutionPacket.bind(pcAgent);
+        return guardedJson(response, 200, await execute(validation.packet, { dryRun: validation.dryRun,
+          resumePublication: path === '/execution-packets/resume-workflow' }), guard);
+      }
+      if(request.method==='POST'&&path==='/tasks/summaries'){
+        const guard=apiGuard.check(request,{action:'task-read',executionDelegationAllowed:true});
+        if(!guard.allowed)return guardedJson(response,guard.statusCode,guard,guard);
+        if(request.headers['content-type']?.split(';')[0]!=='application/json'||request.headers['content-encoding'])return guardedJson(response,415,{error:{code:'B_TASK_SUMMARY_INPUT_INVALID'}},guard);
+        const input=await readJsonBody(request,{maximumBytes:16384});
+        if(!input||Array.isArray(input)||Object.keys(input).length!==1||!Object.hasOwn(input,'taskIds'))return guardedJson(response,400,{error:{code:'B_TASK_SUMMARY_INPUT_INVALID'}},guard);
+        try{return guardedJson(response,200,pcAgent.taskSummaries(input.taskIds),guard);}
+        catch(error){if(error.message==='B_TASK_SUMMARY_INPUT_INVALID')return guardedJson(response,400,{error:{code:'B_TASK_SUMMARY_INPUT_INVALID'}},guard);throw error;}
+      }
+      const taskSummaryParams=routeParams('/tasks/:taskId/summary',path);
+      if(request.method==='GET'&&taskSummaryParams){
+        const guard=apiGuard.check(request,{action:'task-read',executionDelegationAllowed:true});
+        if(!guard.allowed)return guardedJson(response,guard.statusCode,guard,guard);
+        return guardedJson(response,200,pcAgent.taskSummary(taskSummaryParams.taskId),guard);
       }
       const taskParams = routeParams('/tasks/:taskId', path);
       if (request.method === 'GET' && taskParams) {
-        const guard = apiGuard.check(request, { action: 'task-read' });
+        const guard = apiGuard.check(request, { action: 'task-read', executionDelegationAllowed: true });
         if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
         return guardedJson(response, 200, pcAgent.taskResult(taskParams.taskId), guard);
       }
@@ -914,6 +1151,12 @@ export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(),
         return guardedJson(response, 200, pcAgent.taskResult(resultParams.taskId).executionResult ?? pcAgent.taskResult(resultParams.taskId), guard);
       }
       const evidenceParams = routeParams('/tasks/:taskId/evidence', path);
+      const publicationParams = routeParams('/tasks/:taskId/publication', path);
+      if (request.method === 'GET' && publicationParams) {
+        const guard = apiGuard.check(request, { action: 'task-read', executionDelegationAllowed: true });
+        if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
+        return guardedJson(response, 200, await pcAgent.taskPublication(publicationParams.taskId), guard);
+      }
       if (request.method === 'GET' && evidenceParams) {
         const guard = apiGuard.check(request, { action: 'task-evidence' });
         if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
@@ -1030,7 +1273,7 @@ export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(),
       }
       const rollbackPlanParams = routeParams('/rollback/:taskId/plan', path);
       if (request.method === 'GET' && rollbackPlanParams) {
-        const guard = apiGuard.check(request, { action: 'rollback-plan' });
+        const guard = apiGuard.check(request, { action: 'rollback-plan', executionDelegationAllowed: true });
         if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
         return guardedJson(response, 200, await pcAgent.rollbackPlan(rollbackPlanParams.taskId), guard);
       }
@@ -1051,7 +1294,7 @@ export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(),
       }
       const rollbackParams = routeParams('/rollback/:taskId', path);
       if (request.method === 'POST' && rollbackParams) {
-        const guard = apiGuard.check(request, { action: 'rollback' });
+        const guard = apiGuard.check(request, { action: 'rollback', executionDelegationAllowed: true });
         if (!guard.allowed) return guardedJson(response, guard.statusCode, guard, guard);
         return guardedJson(response, 200, await pcAgent.rollbackTask(rollbackParams.taskId), guard);
       }
@@ -1067,6 +1310,8 @@ export function createPcAgentServer(pcAgent, { apiGuard = new PcAgentApiGuard(),
       sendJson(response, 404, { success: false, error: { code: 'B_ROUTE_NOT_FOUND' } });
     });
   });
+  server.once('close', () => pcAgent.remoteOperationStore?.close());
+  return server;
 }
 
 function envBoolean(value, fallback) {
@@ -1082,14 +1327,30 @@ function envList(value, fallback = []) {
 export function pcAgentRuntimeOptionsFromConfig({ daemonConfig, env = process.env } = {}) {
   const logs = daemonConfig.logs ?? {};
   const allowedRoots = envList(env.JARVIS_ALLOWED_ROOTS, daemonConfig.allowedRoots ?? ['./workspace']).map((root) => resolve(root));
+  const auditRoot = env.JARVIS_AUDIT_ROOT ?? logs.auditRoot;
+  const testMode = env.JARVIS_TEST_MODE === '1';
+  const isolatedTestRoot = resolve(
+    env.JARVIS_TEST_AUDIT_ROOT ?? join(tmpdir(), 'jarvis-test-runtime'),
+    `pc-agent-${env.PORT ?? process.pid}`
+  );
+  const trustRoot = resolve(env.JARVIS_TRUST_ROOT ?? (testMode ? join(isolatedTestRoot, 'trust') : 'logs/trust'));
   return {
     allowedRoots,
-    auditRoot: env.JARVIS_AUDIT_ROOT ?? logs.auditRoot,
+    auditRoot,
     undoJournalPath: env.JARVIS_UNDO_JOURNAL ?? logs.undoJournalPath,
     rollbackTransactionPath: env.JARVIS_ROLLBACK_TRANSACTIONS ?? logs.rollbackTransactionPath,
     packetJournalPath: env.JARVIS_PACKET_JOURNAL ?? logs.packetJournalPath,
     packetQueuePath: env.JARVIS_PACKET_QUEUE ?? logs.packetQueuePath,
-    tokenVaultPath: env.JARVIS_TOKEN_VAULT ?? logs.tokenVaultPath
+    tokenVaultPath: env.JARVIS_TOKEN_VAULT ?? logs.tokenVaultPath,
+    trustRoot,
+    trustStatePath: resolve(trustRoot, 'runtime-trust-state.json'),
+    trustAuditPath: resolve(trustRoot, 'runtime-trust-audit-pc-agent-runtime.jsonl'),
+    trustPeerAuditPaths: [{
+      actorId: 'core-runtime',
+      auditPath: resolve(trustRoot, 'runtime-trust-audit-core-runtime.jsonl')
+    }],
+    trustKeyPath: resolve(trustRoot, 'runtime-trust-key.json'),
+    trustActorId: 'pc-agent-runtime'
   };
 }
 
@@ -1106,35 +1367,66 @@ export function serviceSupervisorOptionsFromConfig({ daemonConfig, env = process
 export async function createConfiguredPcAgentRuntime({ env = process.env, clock } = {}) {
   const { daemonConfig, serviceManifest } = await loadPcAgentInstallConfig();
   const runtimeOptions = pcAgentRuntimeOptionsFromConfig({ daemonConfig, env });
-  const { pcAgent, policyRuntime } = createAgRuntime({ ...runtimeOptions, clock });
+  const { pcAgent, policyRuntime, emailConnection } = createPcExecutionRuntime({ ...runtimeOptions, clock, env, taskEnv: env });
+  const workflowCleanupRecovery = await pcAgent.recoverCompletedWorkflowCleanup();
   const serviceSupervisor = createPcAgentServiceSupervisor(pcAgent, daemonConfig, {
     ...serviceSupervisorOptionsFromConfig({ daemonConfig, env }),
     clock
   });
-  return { pcAgent, policyRuntime, daemonConfig, serviceManifest, serviceSupervisor, runtimeOptions };
+  return { pcAgent, policyRuntime, emailConnection, daemonConfig, serviceManifest, serviceSupervisor, runtimeOptions, workflowCleanupRecovery };
 }
 
-export async function startPcAgentServiceRuntime({ env = process.env, clock } = {}) {
-  const runtime = await createConfiguredPcAgentRuntime({ env, clock });
-  const port = Number(env.PORT ?? runtime.daemonConfig.port ?? 17776);
+export async function startPcAgentServiceRuntime({ env = process.env, clock, pcOutboundNodeFactory = createConfiguredPcOutboundNode } = {}) {
+  const scopePath=env.JARVIS_PC_OUTBOUND_LOCAL_SCOPE_DB??null;
+  const catalogFlag=env.JARVIS_PC_OUTBOUND_LOCAL_CATALOG_ENABLED??'0';
+  if(!['0','1'].includes(catalogFlag)||catalogFlag==='1'&&scopePath===null)throw new Error('B_PC_LOCAL_SCOPE_CONFIG_INVALID');
+  const managedCatalog=catalogFlag==='1';
+  let localTaskScope=null,localTaskIds=[];
+  if(scopePath!==null){
+    if(typeof scopePath!=='string'||!isAbsolute(scopePath)||env.JARVIS_PC_OUTBOUND_ENABLED!=='1'||env.JARVIS_PC_OUTBOUND_COMMAND_ENABLED!=='1')throw new Error('B_PC_LOCAL_SCOPE_CONFIG_INVALID');
+    try{localTaskIds=JSON.parse(env.JARVIS_PC_OUTBOUND_COMMAND_TASK_IDS??'[]');}catch{throw new Error('B_PC_LOCAL_SCOPE_CONFIG_INVALID');}
+    createPcLocalScopeSettings({allowedTaskIds:localTaskIds});
+    if(managedCatalog?localTaskIds.length:!localTaskIds.length)throw new Error('B_PC_LOCAL_SCOPE_CONFIG_INVALID');
+    localTaskScope=new PcLocalTaskScope({dbPath:scopePath,managedCatalog});
+    try{if(!managedCatalog&&localTaskScope.snapshot().allowedTaskIds.some(task=>!localTaskIds.includes(task)))throw new Error('B_PC_LOCAL_SCOPE_CONFIG_INVALID');}
+    catch(error){localTaskScope.close();throw error;}
+  }
+  let runtime;
+  try{runtime=await createConfiguredPcAgentRuntime({ env, clock });}catch(error){localTaskScope?.close();throw error;}
+  const requestedPort = Number(env.PORT ?? runtime.daemonConfig.port ?? 17776);
   const host = runtime.daemonConfig.host ?? '127.0.0.1';
-  const server = createPcAgentServer(runtime.pcAgent, { serviceSupervisor: runtime.serviceSupervisor });
-  return await new Promise((resolveStart) => {
-    server.listen(port, host, () => {
-      const supervisorStart = runtime.serviceSupervisor.start();
-      console.log(`JARVIS-B PC Agent listening at http://${host}:${port}`);
-      console.log(`JARVIS-B queue drain supervisor: ${supervisorStart.status}`);
-      resolveStart({ ...runtime, server, host, port, supervisorStart });
-    });
-  });
+  const apiGuard = createPcAgentApiGuardFromEnv(env);
+  let server,address;
+  try{
+    server=createPcAgentServer(runtime.pcAgent,{apiGuard,serviceSupervisor:runtime.serviceSupervisor,localTaskScope,localTaskIds,emailConnection:runtime.emailConnection});
+    address=await listenOnFetchSafePort(server,{host,port:requestedPort});
+  }catch(error){runtime.serviceSupervisor.stop();localTaskScope?.close();throw error;}
+  const port = address.port;
+  let outboundNode=null,closing=null;
+  const close=()=>closing??=(async()=>{
+    runtime.serviceSupervisor.stop();
+    try{await outboundNode?.stop();}finally{
+      try{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}finally{localTaskScope?.close();}
+    }
+  })();
+  try{
+    const enabled=env.JARVIS_PC_OUTBOUND_ENABLED??'0';
+    if(!['0','1'].includes(enabled)||typeof pcOutboundNodeFactory!=='function')throw new Error('B_PC_OUTBOUND_NODE_CONFIG_INVALID');
+    if(enabled==='1'){
+      outboundNode=pcOutboundNodeFactory({env:{...env,JARVIS_PC_OUTBOUND_LOCAL_URL:`http://${host}:${port}`},pcAgent:runtime.pcAgent,localTaskScope});
+      if(typeof outboundNode?.start!=='function'||typeof outboundNode?.stop!=='function'||typeof outboundNode?.status!=='function')throw new Error('B_PC_OUTBOUND_NODE_CONFIG_INVALID');
+      outboundNode.start();
+    }
+    const supervisorStart = runtime.serviceSupervisor.start();
+    console.log(`JARVIS-B PC Agent listening at http://${host}:${port}`);
+    console.log(`JARVIS-B queue drain supervisor: ${supervisorStart.status}`);
+    return { ...runtime, apiGuard, server, host, port, supervisorStart, outboundNode, localTaskScope, close };
+  }catch(error){await close();throw error;}
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  startPcAgentServiceRuntime().then(({ server, serviceSupervisor }) => {
-    const shutdown = () => {
-      serviceSupervisor.stop();
-      server.close(() => process.exit(0));
-    };
+  startPcAgentServiceRuntime().then(({ close }) => {
+    const shutdown = () => {void close().then(()=>process.exit(0),()=>process.exit(1));};
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
   }).catch((error) => {

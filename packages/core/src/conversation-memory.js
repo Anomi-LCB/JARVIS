@@ -1,146 +1,257 @@
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
-import { resolve, dirname, basename } from 'node:path';
+import { appendFileSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { resolve, dirname, basename, extname, win32 } from 'node:path';
 import { homedir } from 'node:os';
 
-// 대화기억(작업 일지): 완료된 작업을 파일로 영속해 두고,
-// "그거 메일로 보내줘" / "방금 만든 파일 열어줘" 같은 지시어를 실제 파일로 해석한다.
-// Core 서비스·브릿지·PC에이전트가 각자 런타임을 합성하므로 매크로처럼 홈 고정 경로를 공유한다.
 const DEFAULT_JOURNAL = resolve(homedir(), '.jarvis', 'work-journal.jsonl');
-const MAX_ENTRIES = 300; // 파일이 이 배수(2배)를 넘으면 최근 것만 남기고 다시 쓴다.
-
-// 지시어의 명사가 파일 종류를 특정하면 그 확장자만 후보로 삼는다.
+const MAX_ENTRIES = 300;
+const MAX_OUTPUTS = 10;
+const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
+export const WORK_MEMORY_VERSION = 'jarvis-work-memory-v2';
+export const WORK_MEMORY_MAX_HASH_BYTES = 16 * 1024 * 1024;
+const MAX_TOTAL_HASH_BYTES = 32 * 1024 * 1024;
+const scopeFields = ['workspaceId', 'conversationId', 'userId'];
 const typeHints = [
-  { pattern: /엑셀|xlsx|스프레드시트|정산표|가계부/i, exts: ['.xlsx'] },
-  { pattern: /워드|docx/i, exts: ['.docx'] },
-  { pattern: /pdf|피디에프/i, exts: ['.pdf'] },
-  { pattern: /한글|hwpx?|아래아/i, exts: ['.hwp', '.hwpx'] },
-  { pattern: /피피티|파워포인트|발표|슬라이드|프레젠테이션|pptx?/i, exts: ['.pptx', '.ppt'] },
-  { pattern: /메모|텍스트|txt/i, exts: ['.txt'] }
+  { pattern: /엑셀|xlsx|스프레드시트|정산표|가계부/iu, exts: ['.xlsx', '.xls'] },
+  { pattern: /워드|docx/iu, exts: ['.docx'] },
+  { pattern: /pdf|피디에프/iu, exts: ['.pdf'] },
+  { pattern: /한글|hwpx?|아래아/iu, exts: ['.hwp', '.hwpx'] },
+  { pattern: /피피티|파워포인트|발표|슬라이드|프레젠테이션|pptx?/iu, exts: ['.pptx', '.ppt'] },
+  { pattern: /메모|텍스트|txt/iu, exts: ['.txt'] },
+  { pattern: /CSV/iu, exts: ['.csv'] }, { pattern: /JSON/iu, exts: ['.json'] },
+  { pattern: /이미지|그림|사진|PNG/iu, exts: ['.png', '.jpg', '.jpeg', '.webp'] }
 ];
+const consumingVerb = /보내|전송|첨부|공유|올려|열어|실행|수정|고쳐|바꿔|편집|이동|옮겨|복사|이름|확인|보여|읽|요약|분석|정리|압축|비교|변환|가져와/u;
+const nouns = '(?:파일|문서|산출물|결과물|엑셀|워드|보고서|피피티|발표\\s*자료|pdf|한글|메모|이미지|그림|사진|CSV|JSON)';
+const temporalWords = '(?:방금|아까|조금\\s*전|좀\\s*전|마지막(?:에|으로)?|최근에?)';
+const creationWords = '(?:만든|작성한|생성한|만들었던|저장한)';
+const ordinalPattern = new RegExp(`(첫\\s*번째|첫|두\\s*번째|세\\s*번째|네\\s*번째|다섯\\s*번째|여섯\\s*번째|일곱\\s*번째|여덟\\s*번째|아홉\\s*번째|열\\s*번째|\\d+\\s*번째)\\s*${nouns}(?:[을를은는이가]?)`, 'giu');
+const demoPattern = new RegExp(`(?:그\\s*${nouns}|그거|그것|이거)(?:[을를은는이가]?)`, 'giu');
+const timePattern = new RegExp(`${temporalWords}\\s*(?:${creationWords}\\s*)?(?:그\\s*)?(?:${nouns})?(?:[을를은는이가]?)`, 'iu');
 
-// 시간 단서(방금/아까/최근) 또는 지시 대명사(그거/그 파일)가 있어야 참조로 본다.
-const temporalCue = /(방금|아까|조금\s*전|좀\s*전|마지막(에|으로)?|최근에?)\s*(만든|작성한|생성한|만들었던|저장한)?/;
-const demonstrativeCue = /(그거|그것|이거|그\s*(파일|문서|엑셀|워드|보고서|피피티|발표\s*자료|pdf|한글|메모))/;
-// 참조를 소비하는 동사가 함께 있어야 오탐을 줄인다(새 문서 생성 문장과 구분).
-const consumingVerb = /(보내|전송|첨부|공유|올려|열어|실행|수정|고쳐|바꿔|편집|이동|옮겨|복사|이름|확인|보여)/;
-
+/** Durable artifact identity with strict workspace/conversation/user boundaries. */
 export class WorkMemory {
-  constructor({ journalPath = null, clock = () => new Date() } = {}) {
+  constructor({ journalPath = null, clock = () => new Date(), scope = {}, maxHashBytes = WORK_MEMORY_MAX_HASH_BYTES, maxTotalHashBytes = MAX_TOTAL_HASH_BYTES } = {}) {
     this.journalPath = journalPath ?? process.env.JARVIS_WORK_JOURNAL ?? DEFAULT_JOURNAL;
     this.clock = clock;
+    this.scope = normalizeScope(scope);
+    this.maxHashBytes = boundedInteger(maxHashBytes, 1, WORK_MEMORY_MAX_HASH_BYTES);
+    this.maxTotalHashBytes = boundedInteger(maxTotalHashBytes, 1, MAX_TOTAL_HASH_BYTES);
   }
-
   load() {
+    let fd;
     try {
       if (!existsSync(this.journalPath)) return [];
-      const lines = readFileSync(this.journalPath, 'utf8').split(/\r?\n/).filter(Boolean);
-      const entries = [];
-      for (const line of lines) {
-        try { entries.push(JSON.parse(line)); } catch { /* 손상 줄은 건너뛴다 */ }
+      const size = statSync(this.journalPath).size;
+      let text;
+      if (size <= MAX_JOURNAL_BYTES) text = readFileSync(this.journalPath, 'utf8');
+      else {
+        fd = openSync(this.journalPath, 'r');
+        const buffer = Buffer.alloc(MAX_JOURNAL_BYTES);
+        const length = readSync(fd, buffer, 0, buffer.length, size - buffer.length);
+        text = buffer.subarray(0, length).toString('utf8');
+        text = text.slice(text.indexOf('\n') + 1);
       }
-      return entries;
-    } catch {
-      return [];
-    }
+      return text.split(/\r?\n/u).filter(Boolean).flatMap((line) => {
+        try { const entry = JSON.parse(line); return entry && typeof entry === 'object' && !Array.isArray(entry) ? [entry] : []; } catch { return []; }
+      });
+    } catch { return []; }
+    finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
   }
-
-  record({ taskId = null, rawText = '', actionType = null, outputPaths = [], summary = null, status = 'success' } = {}) {
+  record(input = {}, options = {}) {
     try {
-      const entry = {
-        at: this.clock().toISOString(),
-        taskId,
-        rawText: String(rawText).slice(0, 300),
-        actionType,
-        outputPaths: (Array.isArray(outputPaths) ? outputPaths : []).map((p) => String(p)).slice(0, 10),
-        summary: summary ? String(summary).slice(0, 300) : null,
-        status
-      };
+      const { taskId = null, missionId = null, operationId = null, rawText = '', actionType = null, outputPaths = [], summary = null, status = 'success' } = input;
+      const scope = resolveScope(options, resolveScope(input, this.scope));
+      const history = this.load();
+      const uniquePaths = [...new Map((Array.isArray(outputPaths) ? outputPaths : []).filter((path) => typeof path === 'string' && validPath(path)).map((path) => [pathIdentity(path), path])).values()];
+      const paths = uniquePaths.slice(0, MAX_OUTPUTS);
+      const budget = { remaining: this.maxTotalHashBytes };
+      const at = this.clock().toISOString();
+      const previousArtifacts = history.flatMap((entry) => Array.isArray(entry.artifacts) ? entry.artifacts : []);
+      const artifacts = paths.map((path, index) => {
+        const artifactId = stableArtifactId(scope, path);
+        const previous = previousArtifacts.filter((artifact) => artifact.artifactId === artifactId).at(-1);
+        const identity = inspectFile(path, this.maxHashBytes, budget);
+        const unchanged = previous && previous.sha256 === identity.sha256 && previous.exists === identity.exists && previous.size === identity.size && previous.identityStatus === identity.identityStatus;
+        return { artifactId, path, name: fileName(path), ordinal: index + 1,
+          version: previous ? Math.max(1, Number(previous.version) || 1) + (unchanged ? 0 : 1) : 1,
+          ...identity, observedAt: at };
+      });
+      const entry = { schemaVersion: WORK_MEMORY_VERSION, at, taskId, missionId, operationId, rawText: String(rawText).slice(0, 300), actionType,
+        outputPaths: paths, outputCount: uniquePaths.length, outputsTruncated: uniquePaths.length > MAX_OUTPUTS,
+        summary: summary ? String(summary).slice(0, 300) : null, status, scope, artifacts };
       mkdirSync(dirname(this.journalPath), { recursive: true });
-      appendFileSync(this.journalPath, JSON.stringify(entry) + '\n', 'utf8');
-      this.compactIfNeeded();
+      appendFileSync(this.journalPath, `${JSON.stringify(entry)}\n`, 'utf8');
+      if (history.length >= MAX_ENTRIES * 2) this.compactIfNeeded();
       return entry;
-    } catch {
-      return null; // 기억 기록 실패가 본 작업을 깨면 안 된다.
-    }
+    } catch { return null; }
   }
-
   compactIfNeeded() {
     try {
       const entries = this.load();
       if (entries.length <= MAX_ENTRIES * 2) return;
-      const keep = entries.slice(-MAX_ENTRIES);
-      writeFileSync(this.journalPath, keep.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
-    } catch { /* ignore */ }
+      writeFileSync(this.journalPath, `${entries.slice(-MAX_ENTRIES).map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+    } catch {}
   }
-
-  recent(limit = 20) {
-    return this.load().slice(-limit).reverse(); // 최신 우선
+  recent(limit = 20, options = {}) {
+    try {
+      const scope = resolveScope(options, this.scope);
+      return this.load().filter((entry) => sameScope(entry.scope ?? {}, scope)).slice(-boundedInteger(limit, 1, MAX_ENTRIES)).reverse();
+    } catch { return []; }
   }
-
-  // 산출물이 있는 성공 작업만, 최신 우선.
-  recentOutputs(limit = 20) {
-    return this.recent(50)
-      .filter((e) => e.status === 'success' && e.outputPaths?.length)
-      .slice(0, limit);
+  recentOutputs(limit = 20, options = {}) {
+    return this.recent(MAX_ENTRIES, options).filter((entry) => entry.status === 'success' && Array.isArray(entry.outputPaths)
+      && entry.outputPaths.length && entry.outputPaths.every((path) => typeof path === 'string' && validPath(path))).slice(0, boundedInteger(limit, 1, MAX_ENTRIES));
   }
-
-  // 지시어("그거/방금 만든 보고서")를 최근 산출물로 해석한다.
-  // 해석 성공 시 { path, entry, matchedPhrase, hintedExts } 반환, 아니면 null.
-  resolveReference(rawText) {
+  /** Only `resolved` carries a selected path and rewritten command; failures never pick a fallback. */
+  resolveArtifactReference(rawText, options = {}) {
     const text = String(rawText ?? '');
-    if (!text) return null;
-    if (!consumingVerb.test(text)) return null; // 산출물을 쓰는 동사가 없으면 참조 아님
-    const temporal = text.match(temporalCue);
-    const demonstrative = text.match(demonstrativeCue);
-    const hinted = typeHints.find((h) => h.pattern.test(text));
-    // 지시 대명사("그거/그 파일")는 그 자체로 참조.
-    // 시간 단서("방금/아까")만 있을 때는 생성 수식어나 파일 종류 명사가 함께 있어야 한다
-    // ("방금 목록 보여줘" 같은 문장을 참조로 오인하지 않기 위해).
-    const creationModifier = /(만든|작성한|생성한|만들었던|저장한)/.test(text);
-    const isReference = Boolean(demonstrative) || (Boolean(temporal?.[0]?.trim()) && (creationModifier || Boolean(hinted)));
-    if (!isReference) return null;
-
-    const candidates = this.recentOutputs(20).filter((entry) =>
-      !hinted || entry.outputPaths.some((p) => hinted.exts.some((ext) => p.toLowerCase().endsWith(ext)))
-    );
-    if (!candidates.length) return null;
-    const entry = candidates[0];
-    const path = hinted
-      ? entry.outputPaths.find((p) => hinted.exts.some((ext) => p.toLowerCase().endsWith(ext)))
-      : entry.outputPaths[entry.outputPaths.length - 1];
-    if (!path) return null;
-
-    // 문장에서 치환할 구간: 시간단서+수식어+명사 또는 지시 대명사 구.
-    const phrasePattern = new RegExp(
-      `(방금|아까|조금\\s*전|좀\\s*전|마지막(?:에|으로)?|최근에?)?\\s*(만든|작성한|생성한|만들었던|저장한)?\\s*(그\\s*)?(거|것|파일|문서|엑셀|워드|보고서|피피티|발표\\s*자료|pdf|한글|메모|그거|그것|이거)(?:[을를은는이가]?)`
-    );
-    const phrase = text.match(phrasePattern);
-    const fallbackPhrase = demonstrative?.[0] ?? temporal?.[0]?.trim() ?? '';
-    const matchedPhrase = phrase && phrase[0].trim() ? phrase[0] : fallbackPhrase;
-    if (!matchedPhrase) return null;
-    return {
-      path,
-      entry,
-      matchedPhrase,
-      hintedExts: hinted?.exts ?? null
-    };
+    let scope;
+    try { scope = resolveScope(options, this.scope); } catch { return { status: 'not_found', reason: 'invalid_scope', candidates: [] }; }
+    if (!text || !consumingVerb.test(text)) return { status: 'not_reference', reason: 'no_reference', scope };
+    const reference = locateReference(text);
+    if (!reference) return { status: 'not_reference', reason: 'no_reference', scope };
+    if (hasExplicitSourcePath(text)) return { status: 'not_reference', reason: 'explicit_path', scope };
+    if (reference.multiple) return { status: 'ambiguous', reason: 'multiple_reference_phrases', scope, candidates: [] };
+    const typedInput = /^(?:["'”’])?\s*(JSON|CSV|텍스트)(?:를|을)\s/iu.exec(text.slice(reference.end));
+    const hinted = typeHints.find((hint) => hint.pattern.test(`${reference.matchedPhrase} ${typedInput?.[1] ?? ''}`));
+    const entries = this.recentOutputs(MAX_ENTRIES, { scope });
+    const entry = entries.find((item) => item.outputPaths.some((path) => !hinted || hinted.exts.includes(extname(path).toLowerCase())));
+    if (!entry) return { status: 'not_found', reason: 'no_artifact_in_scope', scope, ...reference, candidates: [] };
+    const paths = entry.outputPaths.filter((path) => !hinted || hinted.exts.includes(extname(path).toLowerCase()));
+    const recordedArtifacts = Array.isArray(entry.artifacts) ? entry.artifacts.filter((artifact) => artifact && typeof artifact.path === 'string' && validPath(artifact.path)) : [];
+    const artifacts = paths.map((path, index) => recordedArtifacts.find((artifact) => pathIdentity(artifact.path) === pathIdentity(path))
+      ?? { artifactId: stableArtifactId(scope, path), path, name: fileName(path), ordinal: index + 1, version: 1,
+        ...(entry.schemaVersion ? { identityStatus: 'recorded_identity_missing' } : { legacySnapshot: true }) });
+    const candidates = artifacts.map(candidateSummary);
+    if (entry.outputsTruncated) return { status: 'ambiguous', reason: 'recorded_output_limit', scope, ...reference, taskId: entry.taskId, candidates };
+    if (reference.ordinal === undefined && artifacts.length !== 1) return { status: 'ambiguous', reason: 'multiple_outputs_in_latest_task', scope, ...reference, taskId: entry.taskId, candidates };
+    const selected = artifacts[(reference.ordinal ?? 1) - 1];
+    if (!selected) return { status: 'not_found', reason: 'ordinal_out_of_range', scope, ...reference, candidates };
+    const current = inspectFile(selected.path, this.maxHashBytes, { remaining: this.maxTotalHashBytes });
+    const common = { scope, ...reference, hintedExts: hinted?.exts ?? null, artifactId: selected.artifactId,
+      artifact: { ...selected, scope, currentExists: current.exists, currentIdentityStatus: current.identityStatus }, entry, candidates };
+    const issue = identityIssue(selected, current);
+    if (issue) return { ...issue, ...common, current: { sha256: current.sha256, size: current.size } };
+    const artifact = { ...selected, ...(selected.legacySnapshot ? current : {}), scope, currentExists: true, currentIdentityStatus: 'verified' };
+    const rewritten = text.slice(0, reference.start) + `"${fileName(selected.path)}"` + text.slice(reference.end) + ` [파일 경로: ${selected.path}]`;
+    return { status: 'resolved', reason: 'verified_artifact_identity', ...common, artifact, path: selected.path, rewritten };
   }
-
-  // 지시어를 파일명으로 바꾼 새 문장을 만든다. 해석 불가면 원문 유지.
-  rewriteWithReference(rawText) {
-    const hit = this.resolveReference(rawText);
-    if (!hit) return null;
-    const name = basename(hit.path);
-    const rewritten = String(rawText).replace(hit.matchedPhrase, `"${name}"`)
-      + ` [파일 경로: ${hit.path}]`;
-    return { rewritten, ...hit };
+  /** Re-check a saved binding against this scope's journal and actual bytes immediately before use. */
+  verifyArtifactReference(binding, options = {}) {
+    let scope;
+    try { scope = resolveScope(options, this.scope); } catch { return { status: 'not_found', reason: 'invalid_scope' }; }
+    const artifact = binding?.artifact ?? binding;
+    const boundScope = binding?.scope ?? artifact?.scope ?? scope;
+    if (!artifact?.artifactId || !artifact.path || !sameScope(boundScope, scope)) return { status: 'not_found', reason: 'binding_scope_mismatch', scope };
+    const entry = this.recentOutputs(MAX_ENTRIES, { scope }).find((item) => item.outputPaths.some((path) => pathIdentity(path) === pathIdentity(artifact.path)));
+    if (!entry) return { status: 'not_found', reason: 'binding_not_recorded', scope };
+    const known = Array.isArray(entry.artifacts) ? entry.artifacts.find((item) => item && item.artifactId === artifact.artifactId) : null;
+    if (known && (known.version !== artifact.version || known.sha256 !== artifact.sha256 || known.size !== artifact.size || pathIdentity(known.path) !== pathIdentity(artifact.path))) return { status: 'stale', reason: 'binding_version_changed', scope };
+    if (!known && !(artifact.legacySnapshot && artifact.artifactId === stableArtifactId(scope, artifact.path))) return { status: 'not_found', reason: 'binding_not_recorded', scope };
+    const current = inspectFile(artifact.path, this.maxHashBytes, { remaining: this.maxTotalHashBytes });
+    const issue = identityIssue({ ...(known ?? artifact), legacySnapshot: false }, current);
+    if (issue) return { ...issue, scope, artifactId: artifact.artifactId };
+    return { status: 'resolved', reason: 'verified_artifact_identity', scope, artifactId: artifact.artifactId, artifact: { ...(known ?? artifact), scope }, path: artifact.path };
   }
-
-  // LLM 프롬프트에 넣을 최근 작업 요약(간결).
-  contextHints(limit = 5) {
-    return this.recentOutputs(limit).map((e) => {
-      const files = e.outputPaths.map((p) => basename(p)).join(', ');
-      return `- ${e.at.slice(0, 16).replace('T', ' ')} "${e.rawText}" → ${files}`;
-    });
+  // Compatibility facade: legacy callers only receive a consumable success or null.
+  resolveReference(rawText, options = {}) {
+    const resolution = this.resolveArtifactReference(rawText, options);
+    return resolution.status === 'resolved' ? resolution : null;
   }
+  rewriteWithReference(rawText, options = {}) { return this.resolveReference(rawText, options); }
+  contextHints(limit = 5, options = {}) {
+    return this.recentOutputs(limit, options).map((entry) => `- ${String(entry.at ?? '').slice(0, 16).replace('T', ' ')} "${entry.rawText ?? ''}" → ${entry.outputPaths.map(fileName).join(', ')}`);
+  }
+}
+
+function resolveScope(input = {}, fallback = {}) {
+  const given = input?.scope && typeof input.scope === 'object' ? input.scope : input;
+  return normalizeScope(Object.fromEntries(scopeFields.map((key) => [key, Object.hasOwn(given, key) ? given[key]
+    : key === 'workspaceId' && Object.hasOwn(given, 'workspaceRoot') ? given.workspaceRoot : fallback[key] ?? null])));
+}
+function normalizeScope(value = {}) {
+  return Object.fromEntries(scopeFields.map((key) => {
+    const raw = key === 'workspaceId' && !Object.hasOwn(value, key) ? value.workspaceRoot : value[key];
+    if (raw === undefined || raw === null || raw === '') return [key, null];
+    if (typeof raw !== 'string' || raw.length > 4096 || /[\u0000-\u001f\u007f]/u.test(raw)) throw new Error('WORK_MEMORY_SCOPE_INVALID');
+    const trimmed = raw.trim();
+    return [key, key === 'workspaceId' && (/^[A-Za-z]:[\\/]|^[\\/]/u.test(trimmed)) ? pathIdentity(trimmed) : trimmed];
+  }));
+}
+function sameScope(left, right) { try { return scopeKey(normalizeScope(left)) === scopeKey(right); } catch { return false; } }
+function scopeKey(value) { return JSON.stringify(scopeFields.map((key) => value[key] ?? null)); }
+function validPath(value) { return Boolean(value.trim()) && value.length <= 32_768 && !/[\u0000-\u001f\u007f]/u.test(value); }
+function pathIdentity(value) {
+  const path = /^[A-Za-z]:[\\/]|^\\\\/u.test(value) ? win32.resolve(value) : resolve(value);
+  return process.platform === 'win32' ? path.toLowerCase() : path;
+}
+function fileName(path) { return /[\\]/u.test(path) ? win32.basename(path) : basename(path); }
+function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
+function stableArtifactId(scope, path) { return `artifact_${sha256(`${scopeKey(scope)}\0${pathIdentity(path)}`).slice(0, 32)}`; }
+function boundedInteger(value, minimum, maximum) { return Number.isInteger(Number(value)) ? Math.min(maximum, Math.max(minimum, Number(value))) : maximum; }
+function identityIssue(recorded, current) {
+  if (!current.exists) return { status: 'not_found', reason: current.identityStatus === 'missing' ? 'file_missing' : 'file_unavailable' };
+  if (current.identityStatus !== 'verified') return { status: 'unverified', reason: current.identityStatus };
+  if (!recorded.legacySnapshot && recorded.identityStatus !== 'verified') return { status: 'unverified', reason: 'recorded_identity_unverified' };
+  if (!recorded.legacySnapshot && (recorded.sha256 !== current.sha256 || recorded.size !== current.size || recorded.realPath !== current.realPath)) return { status: 'stale', reason: 'artifact_content_changed' };
+  return null;
+}
+function inspectFile(path, maximum, budget) {
+  let fd;
+  try {
+    const linkInfo = lstatSync(path);
+    const realPath = realpathSync.native(path);
+    const info = statSync(path);
+    const base = { exists: true, sha256: null, size: info.size, mtimeMs: info.mtimeMs, realPath, symbolicLink: linkInfo.isSymbolicLink() };
+    if (!info.isFile()) return { ...base, identityStatus: 'not_a_file' };
+    if (info.size > maximum || info.size > budget.remaining) return { ...base, identityStatus: 'hash_size_limit' };
+    budget.remaining -= info.size;
+    fd = openSync(path, 'r');
+    const opened = fstatSync(fd);
+    if (opened.size !== info.size || opened.mtimeMs !== info.mtimeMs || opened.ino !== info.ino || opened.dev !== info.dev) return { ...base, identityStatus: 'changed_during_inspection' };
+    const hash = createHash('sha256');
+    const buffer = Buffer.alloc(Math.min(64 * 1024, Math.max(1, info.size)));
+    let offset = 0;
+    while (offset < info.size) {
+      const count = readSync(fd, buffer, 0, Math.min(buffer.length, info.size - offset), offset);
+      if (!count) return { ...base, identityStatus: 'changed_during_inspection' };
+      hash.update(buffer.subarray(0, count)); offset += count;
+    }
+    const after = fstatSync(fd);
+    const currentPathInfo = statSync(path);
+    if (after.size !== info.size || after.mtimeMs !== info.mtimeMs || realpathSync.native(path) !== realPath
+      || currentPathInfo.ino !== opened.ino || currentPathInfo.dev !== opened.dev || currentPathInfo.size !== after.size || currentPathInfo.mtimeMs !== after.mtimeMs) return { ...base, identityStatus: 'changed_during_inspection' };
+    return { ...base, sha256: hash.digest('hex'), identityStatus: 'verified' };
+  } catch (error) {
+    return { exists: false, sha256: null, size: null, realPath: null, identityStatus: ['ENOENT', 'ENOTDIR'].includes(error.code) ? 'missing' : 'unavailable', errorCode: error.code ?? 'WORK_MEMORY_FILE_INSPECTION_FAILED' };
+  } finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+}
+function hasExplicitSourcePath(text) {
+  // Destination paths in a typed save clause do not replace the missing input operand.
+  const withoutDestinations = text.replace(/["'“‘][^"'”’\r\n]+["'”’]\s*(?:(?:JSON|CSV|텍스트)(?:으로|로)|(?:으로|로))\s*저장/giu, ' 저장');
+  return /[A-Za-z]:[\\/][^\r\n]|\\\\[^\s\\]+\\|(?:^|\s|["'“‘])\.{0,2}[\\/][^\s"'”’]+|(?:[\p{L}\p{N}_ .-]+[\\/])*[\p{L}\p{N}_-][\p{L}\p{N}_ .-]*\.[A-Za-z][A-Za-z0-9]{0,9}(?=$|[\s"'”’),;:!?]|[을를은는이가])/u.test(withoutDestinations);
+}
+function locateReference(text) {
+  const ordinals = [...text.matchAll(ordinalPattern)];
+  const demos = [...text.matchAll(demoPattern)];
+  if (ordinals.length > 1 || demos.length > 1 || ordinals.length && demos.length) return { multiple: true };
+  let phrase;
+  let ordinal;
+  if (ordinals[0]) {
+    phrase = ordinals[0];
+    const words = phrase[1].replace(/\s/gu, '');
+    ordinal = ({ 첫: 1, 첫번째: 1, 두번째: 2, 세번째: 3, 네번째: 4, 다섯번째: 5, 여섯번째: 6, 일곱번째: 7, 여덟번째: 8, 아홉번째: 9, 열번째: 10 })[words] ?? Number.parseInt(words, 10);
+  } else if (demos[0]) {
+    const time = text.match(timePattern);
+    const end = (time?.index ?? -1) + (time?.[0]?.length ?? 0);
+    phrase = time && end >= demos[0].index + demos[0][0].length ? time : demos[0];
+  } else {
+    phrase = text.match(timePattern);
+    if (!phrase || !new RegExp(creationWords, 'u').test(phrase[0]) && !typeHints.some((hint) => hint.pattern.test(phrase[0]))) return null;
+  }
+  return { matchedPhrase: phrase[0], start: phrase.index, end: phrase.index + phrase[0].length, ...(ordinal !== undefined ? { ordinal } : {}) };
+}
+function candidateSummary(artifact) {
+  return { artifactId: artifact.artifactId, name: artifact.name ?? fileName(artifact.path), path: artifact.path, ordinal: artifact.ordinal, version: artifact.version, exists: artifact.exists ?? null, sha256: artifact.sha256 ?? null, size: artifact.size ?? null };
 }

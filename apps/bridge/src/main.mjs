@@ -1,9 +1,11 @@
 import http from 'node:http';
+import { createCoreBridgeGateway } from './core-gateway.js';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createAgRuntime } from '../../runtime-compose/src/create-runtime.js';
+import { createCoreGrowthReviewAuthorizer } from './core-growth-review-authorizer.js';
 import { allBridgeRouteContracts, bridgeRouteContracts, BridgeRequestValidator, createBridgeOpenApiSpec } from './request-validator.js';
 import { createBridgeReverseProxyDeploymentGuide, LocalNetworkGuard } from './network-guard.js';
 import { bearerToken, readJsonBody, routeParams, routePath, safeHandle, sendJson } from '../../../packages/shared/src/http.js';
@@ -11,6 +13,8 @@ import { ModuleId } from '../../../packages/shared/src/types.js';
 
 const jarvisWebSocketProtocol = 'jarvis-events.v1';
 const webSocketGuid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+export const maximumBridgeWebSocketFrameBytes = 64 * 1024;
+export const maximumBridgeWebSocketBufferBytes = 128 * 1024;
 
 function sha256Hex(value) {
   return createHash('sha256').update(String(value)).digest('hex');
@@ -484,7 +488,8 @@ export function createBridgeServer(bridgeRuntime, {
         return sendJson(response, 200, await bridgeRuntime.rollbackResult({
           taskId: rollbackParams.taskId,
           token,
-          reason: body.reason
+          reason: body.reason,
+          confirmed: body.confirmed === true
         }));
       }
       if (request.method === 'GET' && path === '/pc-agent/poison-packets') {
@@ -500,7 +505,8 @@ export function createBridgeServer(bridgeRuntime, {
         if (!query.success) return undefined;
         return sendJson(response, 200, bridgeRuntime.listPcConfirmationHandoffs({
           token,
-          status: query.value.status
+          status: query.value.status,
+          requestContext: { remoteAddress: request.socket.remoteAddress }
         }));
       }
       const pcConsoleDecisionParams = routeParams('/pc-console/approval-handoffs/:handoffId/decision', path);
@@ -510,6 +516,7 @@ export function createBridgeServer(bridgeRuntime, {
         return sendJson(response, 200, bridgeRuntime.decidePcConfirmationHandoff({
           token,
           handoffId: pcConsoleDecisionParams.handoffId,
+          requestContext: { remoteAddress: request.socket.remoteAddress },
           ...body.value
         }));
       }
@@ -620,6 +627,26 @@ export function createBridgeServer(bridgeRuntime, {
         return sendJson(response, 200, bridgeRuntime.decideGrowthHygieneBatch({
           token,
           ...body.value
+        }));
+      }
+      const growthSkillRevisionRoutes = [
+        { action: 'create', pattern: '/growth/skills/:skillId/revisions' },
+        { action: 'evaluate', pattern: '/growth/skills/:skillId/revisions/:revisionId/evaluate' },
+        { action: 'review', pattern: '/growth/skills/:skillId/revisions/:revisionId/review' },
+        { action: 'promote', pattern: '/growth/skills/:skillId/revisions/:revisionId/promote' },
+        { action: 'rollback', pattern: '/growth/skills/:skillId/revisions/:revisionId/rollback' }
+      ];
+      for (const route of growthSkillRevisionRoutes) {
+        const params = routeParams(route.pattern, path);
+        if (request.method !== 'POST' || !params) continue;
+        const body = await readValidatedBody(request, response, requestValidator, `growth.skill_revision.${route.action}`);
+        if (!body.success) return undefined;
+        return sendJson(response, 200, await bridgeRuntime.mutateGrowthSkillRevision({
+          token,
+          action: route.action,
+          skillId: params.skillId,
+          revisionId: params.revisionId ?? null,
+          payload: body.value
         }));
       }
       if (request.method === 'GET' && path === '/cache/snapshot') {
@@ -1562,8 +1589,27 @@ function handleEventWebSocketUpgrade({
   socket.once('error', cleanup);
   let frameBuffer = Buffer.alloc(0);
   socket.on('data', (chunk) => {
+    if (frameBuffer.length + chunk.length > maximumBridgeWebSocketBufferBytes) {
+      sendWebSocketJson(socket, {
+        type: 'error',
+        error: {
+          code: 'D_WEBSOCKET_BUFFER_LIMIT_EXCEEDED',
+          message: 'WebSocket receive buffer limit exceeded.'
+        }
+      });
+      socket.end(encodeWebSocketCloseFrame(1009, 'message_too_large'));
+      return;
+    }
     frameBuffer = Buffer.concat([frameBuffer, chunk]);
-    const parsed = decodeClientWebSocketFrames(frameBuffer);
+    const parsed = decodeClientWebSocketFrames(frameBuffer, {
+      maximumFrameBytes: maximumBridgeWebSocketFrameBytes
+    });
+    if (parsed.error) {
+      sendWebSocketJson(socket, { type: 'error', error: parsed.error });
+      socket.end(encodeWebSocketCloseFrame(parsed.closeCode, parsed.error.code));
+      frameBuffer = Buffer.alloc(0);
+      return;
+    }
     frameBuffer = parsed.remaining;
     for (const frame of parsed.frames) {
       if (frame.opcode === 0x8) {
@@ -1662,18 +1708,35 @@ function encodeWebSocketTextFrame(text) {
   return Buffer.concat([header, payload]);
 }
 
-function encodeWebSocketCloseFrame() {
-  return Buffer.from([0x88, 0x00]);
+function encodeWebSocketCloseFrame(code = 1000, reason = '') {
+  const reasonBuffer = Buffer.from(String(reason), 'utf8').subarray(0, 123);
+  const payload = Buffer.alloc(2 + reasonBuffer.length);
+  payload.writeUInt16BE(code, 0);
+  reasonBuffer.copy(payload, 2);
+  return Buffer.concat([Buffer.from([0x88, payload.length]), payload]);
 }
 
-function decodeClientWebSocketFrames(buffer) {
+export function decodeClientWebSocketFrames(buffer, {
+  maximumFrameBytes = maximumBridgeWebSocketFrameBytes
+} = {}) {
   const frames = [];
   let offset = 0;
   while (offset + 2 <= buffer.length) {
     const first = buffer[offset];
     const second = buffer[offset + 1];
+    const final = (first & 0x80) === 0x80;
+    const reservedBits = first & 0x70;
     const opcode = first & 0x0f;
     const masked = (second & 0x80) === 0x80;
+    if (reservedBits !== 0 || !final) {
+      return webSocketFrameError('D_WEBSOCKET_FRAGMENT_UNSUPPORTED', 1002, buffer, offset, frames);
+    }
+    if (!masked) {
+      return webSocketFrameError('D_WEBSOCKET_CLIENT_FRAME_UNMASKED', 1002, buffer, offset, frames);
+    }
+    if (![0x1, 0x8, 0x9, 0xa].includes(opcode)) {
+      return webSocketFrameError('D_WEBSOCKET_OPCODE_UNSUPPORTED', 1003, buffer, offset, frames);
+    }
     let length = second & 0x7f;
     let headerLength = 2;
     if (length === 126) {
@@ -1683,9 +1746,17 @@ function decodeClientWebSocketFrames(buffer) {
     } else if (length === 127) {
       if (offset + 10 > buffer.length) break;
       const bigLength = buffer.readBigUInt64BE(offset + 2);
-      if (bigLength > BigInt(Number.MAX_SAFE_INTEGER)) break;
+      if (bigLength > BigInt(maximumFrameBytes)) {
+        return webSocketFrameError('D_WEBSOCKET_FRAME_LIMIT_EXCEEDED', 1009, buffer, offset, frames);
+      }
       length = Number(bigLength);
       headerLength = 10;
+    }
+    if (length > maximumFrameBytes) {
+      return webSocketFrameError('D_WEBSOCKET_FRAME_LIMIT_EXCEEDED', 1009, buffer, offset, frames);
+    }
+    if (opcode >= 0x8 && length > 125) {
+      return webSocketFrameError('D_WEBSOCKET_CONTROL_FRAME_INVALID', 1002, buffer, offset, frames);
     }
     const maskLength = masked ? 4 : 0;
     const frameLength = headerLength + maskLength + length;
@@ -1707,7 +1778,21 @@ function decodeClientWebSocketFrames(buffer) {
   }
   return {
     frames,
-    remaining: buffer.subarray(offset)
+    remaining: buffer.subarray(offset),
+    error: null,
+    closeCode: null
+  };
+}
+
+function webSocketFrameError(code, closeCode, buffer, offset, frames) {
+  return {
+    frames,
+    remaining: buffer.subarray(offset),
+    error: {
+      code,
+      message: 'WebSocket client frame violates the JARVIS event channel policy.'
+    },
+    closeCode
   };
 }
 
@@ -1716,20 +1801,38 @@ async function readValidatedBody(request, response, validator, routeName) {
   try {
     body = await readJsonBody(request);
   } catch (error) {
+    const statusCode = error?.expose === true && Number.isInteger(error?.statusCode)
+      ? error.statusCode
+      : 400;
+    const issueCode = error?.code === 'REQUEST_BODY_TOO_LARGE'
+      ? 'request_body_too_large'
+      : error?.code === 'INVALID_JSON_ENCODING'
+        ? 'invalid_json_encoding'
+        : 'invalid_json';
     const payload = {
       success: false,
-      statusCode: 400,
+      statusCode,
       error: {
         code: 'D_REQUEST_VALIDATION_FAILED',
-        message: `Invalid JSON body for ${routeName}.`
+        message: statusCode === 413
+          ? 'Request body is too large.'
+          : `Invalid JSON body for ${routeName}.`
       },
       validation: {
         routeName,
-        issues: [{ path: '$', code: 'invalid_json', detail: error.message }]
+        issues: [{
+          path: '$',
+          code: issueCode,
+          detail: issueCode === 'request_body_too_large'
+            ? 'body_limit_exceeded'
+            : issueCode === 'invalid_json_encoding'
+              ? 'invalid_utf8'
+              : 'malformed_json'
+        }]
       }
     };
     validator.auditLog?.write('request.validation.failed', payload.validation);
-    sendJson(response, 400, payload);
+    sendJson(response, statusCode, payload);
     return { success: false };
   }
   const result = validator.validate(routeName, body);
@@ -1784,6 +1887,12 @@ function rateLimitActionFor(method, path) {
   if (method === 'POST' && routeParams('/growth/preferences/:hypothesisId/decision', path)) return 'growth.preference.decision';
   if (method === 'POST' && path === '/growth/hygiene/decisions/batch') return 'growth.hygiene.batch_decision';
   if (method === 'POST' && path === '/growth/hygiene/decisions') return 'growth.hygiene.decision';
+  for (const action of ['create', 'evaluate', 'review', 'promote', 'rollback']) {
+    const suffix = action === 'create'
+      ? '/growth/skills/:skillId/revisions'
+      : `/growth/skills/:skillId/revisions/:revisionId/${action}`;
+    if (method === 'POST' && routeParams(suffix, path)) return `growth.skill_revision.${action}`;
+  }
   if (method === 'GET' && path === '/rate-limit/status') return 'rate_limit.status';
   if (method === 'GET' && path === '/rate-limit/abuse-corpus') return 'rate_limit.abuse_corpus';
   if (method === 'POST' && path === '/rate-limit/product-gate') return 'rate_limit.product_gate';
@@ -1808,15 +1917,33 @@ function rateLimitActionFor(method, path) {
 function matchBridgeRouteContract(method, path) {
   for (const [routeName, contract] of Object.entries(allBridgeRouteContracts())) {
     if (contract.method !== method) continue;
-    let params = null;
-    try {
-      params = routeParams(contractRoutePattern(contract.path), path);
-    } catch {
-      params = null;
-    }
+    const pattern = contractRoutePattern(contract.path);
+    const params = routeParams(pattern, path)
+      ?? matchBridgeRouteShapeForValidation(pattern, path);
     if (params) return { routeName, contract, params };
   }
   return null;
+}
+
+function matchBridgeRouteShapeForValidation(pattern, path) {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = path.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  const params = {};
+  for (let index = 0; index < patternParts.length; index += 1) {
+    const patternPart = patternParts[index];
+    const pathPart = pathParts[index];
+    if (!patternPart.startsWith(':')) {
+      if (patternPart !== pathPart) return null;
+      continue;
+    }
+    try {
+      params[patternPart.slice(1)] = decodeURIComponent(pathPart);
+    } catch {
+      params[patternPart.slice(1)] = pathPart;
+    }
+  }
+  return params;
 }
 
 function contractRoutePattern(path) {
@@ -1863,6 +1990,20 @@ export function resolveBridgeListenOptions(env = process.env) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (process.env.JARVIS_CORE_API_URL) {
+    const { host, port } = resolveBridgeListenOptions();
+    const gateway = createCoreBridgeGateway({ coreUrl: process.env.JARVIS_CORE_API_URL,
+      networkGuard: new LocalNetworkGuard({
+        allowedHostnames: parseEnvList(process.env.JARVIS_BRIDGE_ALLOWED_HOSTS),
+        trustedProxyHosts: parseEnvList(process.env.JARVIS_BRIDGE_TRUSTED_PROXY_HOSTS),
+        allowForwardedHeaders: process.env.JARVIS_BRIDGE_ALLOW_FORWARDED_HEADERS !== 'false',
+        allowCgnat: ['1', 'true'].includes(process.env.JARVIS_BRIDGE_ALLOW_TAILSCALE)
+      }) });
+    gateway.listen(port, host, () => console.log(`JARVIS-D Core gateway listening at http://${host}:${port}`));
+    const shutdown = () => { gateway.closeGatewayConnections(); gateway.close(); };
+    process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
+  } else {
+  if (process.env.JARVIS_BRIDGE_STANDALONE_DEVELOPMENT !== '1') throw new Error('D_GATEWAY_CORE_URL_REQUIRED');
   // 상시 브리지(폰 실사용)는 승인 시 실제 A-G 계획을 실행한다. 끄려면 JARVIS_BRIDGE_REAL_EXECUTION=0.
   // auditRoot를 고정 경로로 주면 기기 등록/토큰이 디스크에 저장되어 브리지 재시작·PC 재부팅 후에도
   // 폰이 재페어링 없이 자동 재연결된다(연결 실패의 근본 원인 해결).
@@ -1872,6 +2013,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     bridgeRealExecution: process.env.JARVIS_BRIDGE_REAL_EXECUTION !== '0',
     auditRoot: bridgeStateDir
   });
+  bridgeRuntime.growthSkillReviewAuthorizer = createCoreGrowthReviewAuthorizer();
+  bridgeRuntime.growthSkillReviewAuthorizationKeyId = process.env.JARVIS_BRIDGE_GROWTH_REVIEW_TOKEN_KEY_ID ?? null;
   // 완료 산출물을 PC 기본 프로그램으로 자동 열기(끄려면 JARVIS_BRIDGE_OPEN_OUTPUTS=0).
   if (process.env.JARVIS_BRIDGE_OPEN_OUTPUTS !== '0') {
     bridgeRuntime.outputOpener = (paths) => {
@@ -1892,4 +2035,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   createBridgeServer(bridgeRuntime).listen(port, host, () => {
     console.log(`JARVIS-D Bridge listening at http://${host}:${port} (${ModuleId.BRIDGE})`);
   });
+  }
 }

@@ -14,6 +14,7 @@ import {
   wearableHudAdapterVersion
 } from '../apps/wearable-hud/src/index.js';
 import { writeWearableHudFieldKit } from './wearable-hud-field-kit.mjs';
+import { runWearablePhysicalFieldGate } from './wearable-physical-field-gate.mjs';
 
 const defaultJsonPath = 'dist/wearable-hud-verification-report.json';
 const defaultMarkdownPath = 'dist/wearable-hud-verification-report.md';
@@ -85,6 +86,7 @@ export async function runWearableHudVerification({
     workspaceRoot,
     bridgeUrl: bridgeSyncPlan.bridgeUrl
   });
+  const physicalField = await runWearablePhysicalFieldGate({ workspaceRoot });
   const releaseDossier = createWearableHudReleaseDossier({
     frame,
     voiceIntent,
@@ -156,7 +158,12 @@ export async function runWearableHudVerification({
       && fieldKit.productGate?.checks?.every((item) => item.passed), {
       status: fieldKit.status,
       outputDir: fieldKit.outputDir
-    })
+    }),
+    check('field:physical-gate-not-invalid', physicalField.status !== 'blocked', {
+      status: physicalField.status,
+      physicalValidationPassed: physicalField.physicalValidationPassed,
+      evidenceState: physicalField.evidence.state
+    }, 'operational')
   ];
   const status = checks.every((item) => item.passed) ? 'passed' : 'blocked';
   const report = {
@@ -174,7 +181,9 @@ export async function runWearableHudVerification({
       highRiskDirectApproveEnabled: approvalState.actions.approve.enabled,
       pcHandoffEnabled: approvalState.actions.pcHandoff.enabled,
       rawTranscriptStored: voiceIntent.privacy.rawTranscriptStored,
-      rawBridgeTokenStored: bridgeSyncPlan.privacy.rawBridgeTokenStored
+      rawBridgeTokenStored: bridgeSyncPlan.privacy.rawBridgeTokenStored,
+      physicalFieldStatus: physicalField.status,
+      physicalValidationPassed: physicalField.physicalValidationPassed
     },
     scenario: {
       deviceProfile,
@@ -185,6 +194,7 @@ export async function runWearableHudVerification({
       textPreview: text
     },
     fieldKit,
+    physicalField,
     productGate,
     releaseDossier,
     checks,
@@ -192,7 +202,8 @@ export async function runWearableHudVerification({
       jsonPath: resolve(jsonPath),
       markdownPath: resolve(markdownPath),
       htmlPath: resolve(htmlPath),
-      fieldKitDir: fieldKit.outputDir
+      fieldKitDir: fieldKit.outputDir,
+      physicalFieldJsonPath: physicalField.artifacts.jsonPath
     }
   };
 
@@ -221,6 +232,8 @@ function renderMarkdown(report) {
     `Raw transcript stored: ${report.summary.rawTranscriptStored}`,
     `Raw bridge token stored: ${report.summary.rawBridgeTokenStored}`,
     `Field kit: ${report.fieldKit.status}`,
+    `Physical field gate: ${report.summary.physicalFieldStatus}`,
+    `Physical validation passed: ${report.summary.physicalValidationPassed}`,
     '',
     '## Checks',
     '',

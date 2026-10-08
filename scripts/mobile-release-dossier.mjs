@@ -10,12 +10,14 @@ export async function runMobileReleaseDossier({
   csvPath = 'dist/mobile-release-dossier.csv',
   verificationJsonPath = 'dist/mobile-verification-report.json',
   verificationMarkdownPath = 'dist/mobile-verification-report.md',
-  verificationHtmlPath = 'dist/mobile-verification-report.html'
+  verificationHtmlPath = 'dist/mobile-verification-report.html',
+  probeExternalDevices = process.env.JARVIS_EXTERNAL_DEVICE_PROBES !== '0'
 } = {}) {
   const verificationReport = await runMobileVerification({
     jsonPath: verificationJsonPath,
     markdownPath: verificationMarkdownPath,
-    htmlPath: verificationHtmlPath
+    htmlPath: verificationHtmlPath,
+    probeExternalDevices
   });
   const releaseDossier = createMobileReleaseDossier({
     verificationReport,
@@ -126,7 +128,8 @@ export function createMobileReleaseDossier({
     deviceEvidence: {
       actualDeviceVerified: verificationReport?.deviceProbe?.actualDeviceVerified === true,
       deviceSmokeStatus: verificationReport?.deviceSmoke?.status ?? null,
-      routeNavigation: verificationReport?.deviceSmoke?.routeNavigation ?? null
+      homeSurface: verificationReport?.deviceSmoke?.devices?.find((device) => device.verified)?.homeSurface ?? null,
+      installedPackageCapabilities: verificationReport?.deviceSmoke?.devices?.find((device) => device.verified)?.packageCapabilities ?? null
     },
     artifacts: {
       verificationJsonPath: resolve(verificationJsonPath),

@@ -178,7 +178,7 @@ export async function runCoreServiceSoak({
 
       const details = [];
       for (const task of taskRecords) {
-        const detail = await getJson(`${baseUrl}/tasks/${task.taskId}`);
+        const detail = await getJson(`${baseUrl}/tasks/${task.taskId}`, adminToken);
         details.push(detail.body);
       }
       completedCount = details.filter((task) => task.status === TaskStatus.COMPLETED).length;
@@ -197,7 +197,7 @@ export async function runCoreServiceSoak({
     const finalQueue = await getJson(`${baseUrl}/worker/queue`);
     const finalDetails = [];
     for (const task of taskRecords) {
-      const detail = await getJson(`${baseUrl}/tasks/${task.taskId}`);
+      const detail = await getJson(`${baseUrl}/tasks/${task.taskId}`, adminToken);
       finalDetails.push(detail.body);
     }
     for (const task of taskRecords) {

@@ -15,6 +15,8 @@ import {
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
+import * as Application from 'expo-application';
+import * as FileSystem from 'expo-file-system';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Mic,
@@ -24,13 +26,14 @@ import {
   FileText,
   X,
   Check,
-  Sparkles,
   Lightbulb,
   ChevronRight,
   CircleCheck
 } from 'lucide-react-native';
 import { createMobileAppShell } from './App.js';
 import { BridgeClient, defaultBridgeClientTimeoutMs } from './api/BridgeClient.js';
+import { normalizeBridgeUrlForPlatform } from './api/bridge-url.js';
+import { openOfficialDocument } from './api/android-official-intents.js';
 import { canNavigate, MobileRoutes } from './navigation/routes.js';
 import { ConnectionStatusBar } from './components/ConnectionStatusBar';
 import { NativeRuntimeProbe } from './components/NativeRuntimeProbe';
@@ -40,7 +43,7 @@ import { ApprovalCardView } from './components/ApprovalCardView';
 import { TaskStatusPill } from './components/TaskStatusPill';
 import { ResultSummaryCard } from './components/ResultSummaryCard';
 import { createResultFileUri } from './components/ResultFeedbackPanel.js';
-import { GrowthReviewDecisionPanel } from './components/GrowthReviewDecisionPanel';
+import { createSkillRevisionDiff, GrowthReviewDecisionPanel } from './components/GrowthReviewDecisionPanel';
 import { PoisonQueueActionPanel } from './components/PoisonQueueActionPanel';
 import { RetryPolicySettingsPanel } from './components/RetryPolicySettingsPanel';
 import { approvalExpiryState } from './approval/approval-expiry.js';
@@ -57,16 +60,24 @@ import {
   approvalSpeech,
   getSpeechRate,
   resultSpeech,
+  rotateRecognitionEngine,
   setSpeechRate,
   speak,
   speakAsync,
   speechRatePresets,
   startListening,
+  startListeningFromAudioFile,
   stopListening,
   stopSpeaking,
   useVoiceEvents,
   voiceSupport
 } from './voice/voiceMode';
+import {
+  evaluateVoiceAutoSubmit,
+  evaluateVoiceReadbackConfirmation,
+  evaluateVoiceRepeatConfirmation
+} from './voice/voice-evidence.js';
+import { createVoiceCommandTurn, observeVoiceCommandTurn } from './voice/voice-command-turn.js';
 import { classifyUtterance } from './voice/conversation';
 import {
   createMobileProductState,
@@ -80,6 +91,29 @@ const storageKeys = {
   bridgeUrl: 'jarvis.bridgeUrl',
   deviceToken: 'jarvis.deviceToken'
 };
+const isolatedE2EPackage = 'local.eureka.jarvis.e2e';
+const isolatedE2EVoiceFixturePath = '/jarvis-e2e-voice.wav';
+const isolatedE2ECommandFixtures = new Set(['list files']);
+
+function isAllowedIsolatedVoiceFixtureSource(input: string | null) {
+  if (!input) return false;
+  try {
+    const source = new URL(input);
+    const port = Number(source.port);
+    return source.protocol === 'http:'
+      && source.hostname === '127.0.0.1'
+      && Number.isInteger(port)
+      && port >= 1
+      && port <= 65535
+      && source.pathname === isolatedE2EVoiceFixturePath
+      && source.username === ''
+      && source.password === ''
+      && source.search === ''
+      && source.hash === '';
+  } catch {
+    return false;
+  }
+}
 
 type ActionButtonProps = {
   label: string;
@@ -137,6 +171,67 @@ function ActionButton({ label, onPress, disabled = false, tone = 'neutral', test
   );
 }
 
+const dataLabelKo: Record<string, string> = {
+  'Live Bridge': '실시간 브리지',
+  Token: '인증 토큰',
+  'Live source': '실시간 데이터 출처',
+  'Effective URL': '실제 접속 주소',
+  'PC Bridge': 'PC 브리지',
+  'Token sealed': '토큰 보안 저장',
+  'Plaintext exposed': '평문 노출',
+  'Session lock': '세션 잠금',
+  'App lifecycle': '앱 실행 상태',
+  'Lock reason': '잠금 사유',
+  'Last lock': '최근 잠금',
+  'Stored token': '저장된 토큰',
+  approvalId: '승인 ID',
+  taskId: '작업 ID',
+  decidedBy: '결정 기기',
+  paired: '페어링',
+  approval: '승인',
+  task: '작업',
+  notifications: '알림'
+};
+
+const dataValueKo: Record<string, string> = {
+  connected: '연결됨',
+  'not connected': '연결되지 않음',
+  disconnected: '연결 끊김',
+  none: '없음',
+  yes: '예',
+  no: '아니요',
+  locked: '잠김',
+  unlocked: '잠금 해제됨',
+  active: '활성',
+  passed: '통과',
+  failed: '실패',
+  blocked: '차단됨',
+  pending: '대기 중',
+  queued: '대기열에 있음',
+  retrying: '재시도 중',
+  quarantined: '격리됨',
+  retry_scheduled: '재시도 예정',
+  needs_review: '검토 필요',
+  ignored: '무시됨',
+  running: '실행 중',
+  succeeded: '완료',
+  granted: '허용됨',
+  denied: '거부됨',
+  undetermined: '미결정',
+  notDetermined: '미결정',
+  not_configured: '미설정'
+};
+
+function localizedDataValue(value: string) {
+  const normalized = String(value ?? '');
+  if (dataValueKo[normalized]) return dataValueKo[normalized];
+  const waiting = normalized.match(/^(\d+) waiting$/);
+  if (waiting) return `${waiting[1]}건 대기`;
+  const unread = normalized.match(/^(\d+) unread$/);
+  if (unread) return `${unread[1]}건 미확인`;
+  return normalized;
+}
+
 function DataRow({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'neutral' | 'good' | 'warning' | 'danger' }) {
   const valueColor = tone === 'good'
     ? colors.accent
@@ -147,8 +242,8 @@ function DataRow({ label, value, tone = 'neutral' }: { label: string; value: str
         : colors.text;
   return (
     <View style={styles.dataRow}>
-      <Text style={styles.dataLabel}>{label}</Text>
-      <Text style={[styles.dataValue, { color: valueColor }]}>{value}</Text>
+      <Text style={styles.dataLabel}>{dataLabelKo[label] ?? label}</Text>
+      <Text style={[styles.dataValue, { color: valueColor }]}>{localizedDataValue(value)}</Text>
     </View>
   );
 }
@@ -175,17 +270,7 @@ function appendAudit(state: any, label: string) {
 }
 
 function normalizeBridgeUrlForDevice(input: string | null | undefined) {
-  const fallback = 'http://127.0.0.1:17777';
-  const raw = String(input || fallback).trim().replace(/\/+$/, '');
-  try {
-    const url = new URL(raw);
-    if (Platform.OS === 'android' && ['localhost', '127.0.0.1'].includes(url.hostname)) {
-      url.hostname = '10.0.2.2';
-    }
-    return url.toString().replace(/\/+$/, '');
-  } catch {
-    return raw;
-  }
+  return normalizeBridgeUrlForPlatform(input, { platform: Platform.OS });
 }
 
 function tokenPreview(token: string | null | undefined) {
@@ -264,6 +349,10 @@ function AppInner() {
   const deepLinkHandlerRef = useRef<(url: string) => boolean>(() => false);
   const [route, setRoute] = useState<string>(MobileRoutes.HomeScreen);
   const [state, setState] = useState<any>(() => createMobileProductState());
+  const [skillRegistryReview, setSkillRegistryReview] = useState<any>(null);
+  const [skillRevisionSteps, setSkillRevisionSteps] = useState<Record<string, string>>({});
+  const [skillRevisionBusy, setSkillRevisionBusy] = useState(false);
+  const [skillRevisionMessage, setSkillRevisionMessage] = useState<string | null>(null);
   // 홈(가면) 화면 전용 대화 흐름 상태. 명령→승인→실행→결과를 한 화면에서 따라간다.
   const [home, setHome] = useState<any>({
     phase: 'idle',
@@ -271,11 +360,15 @@ function AppInner() {
     answer: '',
     taskId: null,
     approval: null,
+    pcHandoff: null,
     taskStatus: null,
     result: null,
     error: null,
     notice: null,
     listening: false,
+    voicePhase: 'idle',
+    voicePeak: -2,
+    voiceEngine: null,
     voiceOn: true
   });
   const homeFlowSeq = useRef(0);
@@ -385,45 +478,298 @@ function AppInner() {
   const convSpokenKeyRef = useRef('');
   // 인식 오류 연속 재시도 상한 (음성 결과가 나오면 리셋).
   const convRetryRef = useRef(0);
+  // 일부 Android STT 엔진은 같은 최종 결과를 연속 방출한다. 중복 작업 생성을 짧은 창에서 차단한다.
+  const voiceFinalRef = useRef({ key: '', at: 0 });
+  const voiceConfirmationRef = useRef<any>(null);
+  const voiceSessionRef = useRef({
+    peak: -2,
+    speechDetected: false,
+    resultReceived: false,
+    finalReceived: false,
+    cancelled: false,
+    engineRotated: false
+  });
+  const voiceCommandTurnRef = useRef(createVoiceCommandTurn());
+  const isolatedVoiceFixtureRef = useRef<{ localUri: string; sourceUrl: string } | null>(null);
+
+  async function cleanupIsolatedVoiceFixture() {
+    const fixture = isolatedVoiceFixtureRef.current;
+    if (!fixture) return;
+    isolatedVoiceFixtureRef.current = null;
+    await FileSystem.deleteAsync(fixture.localUri, { idempotent: true }).catch(() => undefined);
+    try {
+      const cleanupUrl = new URL('/jarvis-e2e-voice-cleanup', fixture.sourceUrl);
+      await fetch(cleanupUrl.toString(), { method: 'POST' });
+    } catch {
+      // The disposable E2E server may already be closed; local deletion is authoritative.
+    }
+  }
 
   // ── 음성 이벤트 라우팅: 단발 마이크(홈 입력)와 대화 모드를 함께 처리한다 ──
   useVoiceEvents({
-    onResult: (transcript, isFinal) => {
+    onStart: (engine) => {
+      voiceCommandTurnRef.current = createVoiceCommandTurn();
+      if (!convRef.current.active) {
+        voiceSessionRef.current = {
+          peak: -2,
+          speechDetected: false,
+          resultReceived: false,
+          finalReceived: false,
+          cancelled: false,
+          engineRotated: false
+        };
+        setHome((current: any) => ({ ...current, listening: true, voicePhase: 'ready', voicePeak: -2, voiceEngine: engine, error: null }));
+      }
+    },
+    onSpeechStart: () => {
+      if (!convRef.current.active) {
+        voiceSessionRef.current.speechDetected = true;
+        setHome((current: any) => ({ ...current, listening: true, voicePhase: 'speech' }));
+      }
+    },
+    onVolume: (value) => {
+      if (convRef.current.active || value <= voiceSessionRef.current.peak) return;
+      voiceSessionRef.current.peak = value;
+      if (value > 0) voiceSessionRef.current.speechDetected = true;
+      setHome((current: any) => ({
+        ...current,
+        voicePeak: value,
+        voicePhase: value > 0 ? 'speech' : current.voicePhase
+      }));
+    },
+    onNoSpeech: () => {
+      if (convRef.current.active || voiceSessionRef.current.cancelled) return;
+      const heardAudio = voiceSessionRef.current.speechDetected || voiceSessionRef.current.peak > 0;
+      if (!voiceSessionRef.current.engineRotated) {
+        rotateRecognitionEngine();
+        voiceSessionRef.current.engineRotated = true;
+      }
+      setHome((current: any) => ({
+        ...current,
+        listening: false,
+        voicePhase: 'idle',
+        error: heardAudio
+          ? '음성은 들었지만 명령으로 인식하지 못했어요. 다른 인식 방식으로 전환했으니 다시 말씀해 주세요.'
+          : '마이크에 음성이 들어오지 않았어요. 가까이에서 다시 말씀해 주세요.'
+      }));
+    },
+    onResult: (transcript, isFinal, voiceEvidence) => {
+      if (!convRef.current.active) {
+        voiceSessionRef.current.resultReceived = true;
+        if (isFinal) voiceSessionRef.current.finalReceived = true;
+      }
+      const autoSubmit = isFinal ? evaluateVoiceAutoSubmit(voiceEvidence) : null;
+      let acceptedTranscript = transcript;
+      let acceptedVoiceEvidence = voiceEvidence;
+      const pendingConfirmation = voiceConfirmationRef.current;
+      const isolatedFixtureActive = Boolean(isolatedVoiceFixtureRef.current);
+      if (isFinal && pendingConfirmation) {
+        const readback = evaluateVoiceReadbackConfirmation(pendingConfirmation, {
+          transcript,
+          engine: voiceEvidence.engine,
+          evidence: voiceEvidence
+        });
+        if (readback.handled && readback.rejected) {
+          voiceConfirmationRef.current = null;
+          rotateRecognitionEngine();
+          voiceSessionRef.current.engineRotated = true;
+          const retryMessage = '알겠습니다. 명령을 다시 말씀해 주세요.';
+          if (convRef.current.active) {
+            setConv((current) => ({ ...current, transcript: '' }));
+            void convSayThenListen(retryMessage);
+            return;
+          }
+          setHome((current: any) => ({
+            ...current,
+            text: '',
+            listening: false,
+            voicePhase: 'idle',
+            error: retryMessage
+          }));
+          if (!isolatedFixtureActive) void homeSayThenListen(retryMessage, { requireConfirmation: false });
+          return;
+        }
+        if (readback.handled && readback.accepted) {
+          acceptedTranscript = readback.transcript;
+          acceptedVoiceEvidence = {
+            ...(readback.evidence ?? voiceEvidence),
+            confirmationMode: 'voice-readback',
+            confirmationReason: readback.reason,
+            confirmationCount: readback.confirmationCount,
+            independentEngineCount: readback.independentEngineCount,
+            confirmationEngine: readback.confirmationEngine,
+            confirmationConfidence: readback.confirmationConfidence
+          };
+          voiceConfirmationRef.current = null;
+        } else if (readback.handled) {
+          rotateRecognitionEngine();
+          voiceSessionRef.current.engineRotated = true;
+          const retryMessage = '확인 응답이 불확실합니다. 맞으면 네, 틀리면 아니요라고 다시 말해 주세요.';
+          if (convRef.current.active) {
+            setConv((current) => ({ ...current, transcript: '' }));
+            void convSayThenListen(retryMessage);
+            return;
+          }
+          setHome((current: any) => ({
+            ...current,
+            text: pendingConfirmation.transcript,
+            listening: false,
+            voicePhase: 'idle',
+            error: retryMessage
+          }));
+          if (!isolatedFixtureActive) void homeSayThenListen(retryMessage);
+          return;
+        } else {
+          const confirmation = evaluateVoiceRepeatConfirmation(pendingConfirmation.repeatCandidate, {
+            transcript,
+            engine: voiceEvidence.engine
+          });
+          if (confirmation.accepted) {
+            acceptedVoiceEvidence = {
+              ...voiceEvidence,
+              confirmationMode: 'repeat-consensus',
+              confirmationReason: confirmation.reason,
+              confirmationCount: confirmation.count,
+              independentEngineCount: confirmation.independentEngineCount
+            };
+            voiceConfirmationRef.current = null;
+          } else {
+            voiceConfirmationRef.current = {
+              ...pendingConfirmation,
+              repeatCandidate: confirmation.candidate
+            };
+            rotateRecognitionEngine();
+            voiceSessionRef.current.engineRotated = true;
+            const retryMessage = `앞서 ${pendingConfirmation.transcript}로 들었습니다. 맞으면 네, 틀리면 아니요라고 말해 주세요.`;
+            if (convRef.current.active) {
+              setConv((current) => ({ ...current, transcript: '' }));
+              void convSayThenListen(retryMessage);
+              return;
+            }
+            setHome((current: any) => ({
+              ...current,
+              text: pendingConfirmation.transcript,
+              listening: false,
+              voicePhase: 'idle',
+              error: retryMessage
+            }));
+            if (!isolatedFixtureActive) void homeSayThenListen(retryMessage);
+            return;
+          }
+        }
+      } else if (isFinal && autoSubmit?.accepted === false) {
+        const confirmation = evaluateVoiceRepeatConfirmation(null, {
+          transcript,
+          engine: voiceEvidence.engine
+        });
+        const now = Date.now();
+        voiceConfirmationRef.current = {
+          at: now,
+          transcript,
+          evidence: voiceEvidence,
+          repeatCandidate: confirmation.candidate
+        };
+        rotateRecognitionEngine();
+        voiceSessionRef.current.engineRotated = true;
+        const spokenTranscript = transcript.length > 180 ? `${transcript.slice(0, 180)}. 이하 생략` : transcript;
+        const retryMessage = `${spokenTranscript}로 들었습니다. 맞으면 네, 틀리면 아니요라고 말해 주세요.`;
+        if (convRef.current.active) {
+          setConv((current) => ({ ...current, transcript: '' }));
+          void convSayThenListen(retryMessage);
+          return;
+        }
+        setHome((current: any) => ({
+          ...current,
+          text: transcript,
+          listening: false,
+          voicePhase: 'idle',
+          error: retryMessage
+        }));
+        if (!isolatedFixtureActive) void homeSayThenListen(retryMessage);
+        return;
+      } else if (isFinal && autoSubmit?.accepted === true) {
+        voiceConfirmationRef.current = null;
+      }
+      const turnResult = observeVoiceCommandTurn(voiceCommandTurnRef.current, { transcript: acceptedTranscript, isFinal });
+      voiceCommandTurnRef.current = turnResult.turn;
+      if (!turnResult.accepted) return;
+      acceptedTranscript = turnResult.transcript ?? acceptedTranscript;
+      if (turnResult.correctionApplied) {
+        acceptedVoiceEvidence = { ...acceptedVoiceEvidence, correctionApplied: true, supersededDraftDiscarded: true };
+      }
+      if (isFinal && !turnResult.committed) return;
       if (convRef.current.active) {
-        setConv((current) => ({ ...current, transcript }));
-        if (isFinal) void convHandleUtterance(transcript);
+        setConv((current) => ({ ...current, transcript: acceptedTranscript }));
+        if (isFinal && acceptVoiceFinal(acceptedTranscript)) {
+          void convHandleUtterance(acceptedTranscript, acceptedVoiceEvidence);
+        }
         return;
       }
-      setHome((current: any) => ({ ...current, text: transcript, error: null }));
-      if (isFinal) {
-        setHome((current: any) => ({ ...current, listening: false }));
-        void homeSubmit(transcript);
+      setHome((current: any) => ({ ...current, text: acceptedTranscript, voicePhase: 'speech', error: null }));
+      if (isFinal && acceptVoiceFinal(acceptedTranscript)) {
+        setHome((current: any) => ({ ...current, listening: false, voicePhase: 'idle' }));
+        void homeSubmit(acceptedTranscript, { inputMode: 'voice', voiceEvidence: acceptedVoiceEvidence });
       }
     },
     onEnd: () => {
+      void cleanupIsolatedVoiceFixture();
       if (convRef.current.active) {
         // 침묵 등으로 인식이 끝났으면 대화가 이어지도록 조용히 다시 듣는다.
         if (convRef.current.phase === 'listening') void convListen(600);
         return;
       }
-      setHome((current: any) => ({ ...current, listening: false }));
+      const session = voiceSessionRef.current;
+      const heardAudio = session.speechDetected || session.peak > 0;
+      if (!session.finalReceived && !session.cancelled && !session.engineRotated) {
+        rotateRecognitionEngine();
+        session.engineRotated = true;
+      }
+      setHome((current: any) => ({
+        ...current,
+        listening: false,
+        voicePhase: 'idle',
+        error: session.cancelled || session.finalReceived || current.error
+          ? current.error
+          : heardAudio
+            ? '음성은 들었지만 명령으로 인식하지 못했어요. 다른 인식 방식으로 전환했으니 다시 말씀해 주세요.'
+            : '마이크에 음성이 들어오지 않았어요. 가까이에서 다시 말씀해 주세요.'
+      }));
     },
-    onError: (message) => {
+    onError: (message, code) => {
+      void cleanupIsolatedVoiceFixture();
       if (convRef.current.active) {
         if (convRef.current.phase === 'listening') {
+          if (!['aborted', 'not-allowed'].includes(code)) rotateRecognitionEngine();
           convRetryRef.current += 1;
           if (convRetryRef.current > 8) {
             convExit(false);
             setHome((current: any) => ({ ...current, error: `음성 인식이 계속 실패해 대화 모드를 종료했습니다. (${message})` }));
             return;
           }
-          void convListen(900);
         }
         return;
       }
-      setHome((current: any) => ({ ...current, listening: false, error: message }));
+      const canRotate = !voiceSessionRef.current.cancelled && !['aborted', 'not-allowed'].includes(code);
+      if (canRotate && !voiceSessionRef.current.engineRotated) {
+        rotateRecognitionEngine();
+        voiceSessionRef.current.engineRotated = true;
+      }
+      setHome((current: any) => ({
+        ...current,
+        listening: false,
+        voicePhase: 'idle',
+        error: canRotate ? '음성 인식 엔진을 다른 방식으로 전환했어요. 다시 말씀해 주세요.' : message
+      }));
     }
   });
+
+  function acceptVoiceFinal(transcript: string) {
+    const key = String(transcript ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const now = Date.now();
+    if (key && voiceFinalRef.current.key === key && now - voiceFinalRef.current.at < 2500) return false;
+    voiceFinalRef.current = { key, at: now };
+    return true;
+  }
 
   async function convListen(delayMs = 0) {
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
@@ -450,7 +796,7 @@ function AppInner() {
     await convListen();
   }
 
-  async function convHandleUtterance(transcript: string) {
+  async function convHandleUtterance(transcript: string, voiceEvidence: any = null) {
     convRetryRef.current = 0;
     setConv((current) => ({ ...current, phase: 'thinking', transcript }));
     const h = homeRef.current;
@@ -473,10 +819,10 @@ function AppInner() {
       }
       // 명료화 답변/추가 정보 → 그 내용으로 다시 계획한다.
       await convSay('그 정보로 다시 계획해 볼게요.');
-      void homeResubmitWithAnswer(transcript);
+      void homeResubmitWithAnswer(transcript, 'voice', voiceEvidence);
       return;
     }
-    void homeSubmit(transcript);
+    void homeSubmit(transcript, { inputMode: 'voice', voiceEvidence });
   }
 
   function convEnter() {
@@ -522,6 +868,18 @@ function AppInner() {
       }
       return;
     }
+    if (home.phase === 'pc-confirmation' && home.pcHandoff) {
+      const challenge = String(home.pcHandoff.voiceChallenge?.phrase ?? '').trim();
+      const key = `pc-confirmation:${home.pcHandoff.handoffId}:${challenge}`;
+      if (convSpokenKeyRef.current !== key) {
+        convSpokenKeyRef.current = key;
+        const phrase = challenge
+          ? `PC 앞에서 자비스 ${challenge} 승인이라고 말씀해 주세요.`
+          : 'PC의 자비스 화면에서 음성 확인을 진행해 주세요.';
+        void convSay(`${phrase} 완료될 때까지 상태를 확인하겠습니다.`);
+      }
+      return;
+    }
     if (home.phase === 'done') {
       const key = `done:${home.taskId ?? ''}:${home.taskStatus ?? ''}`;
       if (convSpokenKeyRef.current !== key) {
@@ -541,7 +899,7 @@ function AppInner() {
         void convSayThenListen(`문제가 있었어요. ${home.error} 다시 말씀해 주세요.`);
       }
     }
-  }, [conv.active, home.phase, home.approval, home.taskStatus, home.error, home.notice]);
+  }, [conv.active, home.phase, home.approval, home.pcHandoff, home.taskStatus, home.error, home.notice]);
 
   // 듣는 중 상태를 시각화하는 맥동 애니메이션.
   const convPulse = useRef(new Animated.Value(1)).current;
@@ -558,18 +916,71 @@ function AppInner() {
     return undefined;
   }, [conv.active, conv.phase]);
 
-  async function homeToggleListening() {
-    if (home.listening) {
-      stopListening();
-      setHome((current: any) => ({ ...current, listening: false }));
-      return;
-    }
-    stopSpeaking();
+  function prepareHomeVoiceSession() {
+    voiceSessionRef.current = {
+      peak: -2,
+      speechDetected: false,
+      resultReceived: false,
+      finalReceived: false,
+      cancelled: false,
+      engineRotated: false
+    };
+    setHome((current: any) => ({ ...current, listening: true, voicePhase: 'starting', voicePeak: -2, error: null, text: '' }));
+  }
+
+  async function homeSayThenListen(prompt: string, { requireConfirmation = true } = {}) {
+    stopListening();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    if (requireConfirmation && !voiceConfirmationRef.current) return;
+    await speakAsync(prompt);
+    if (requireConfirmation && !voiceConfirmationRef.current) return;
+    prepareHomeVoiceSession();
     try {
       await startListening();
-      setHome((current: any) => ({ ...current, listening: true, error: null, text: '' }));
     } catch (error) {
-      setHome((current: any) => ({ ...current, listening: false, error: errorMessage(error) }));
+      setHome((current: any) => ({ ...current, listening: false, voicePhase: 'idle', error: errorMessage(error) }));
+    }
+  }
+
+  async function homeSetListening(nextListening: boolean) {
+    if (!nextListening) {
+      if (!homeRef.current.listening) return;
+      voiceSessionRef.current.cancelled = true;
+      stopListening();
+      setHome((current: any) => ({ ...current, listening: false, voicePhase: 'idle' }));
+      return;
+    }
+    if (homeRef.current.listening) return;
+    stopSpeaking();
+    prepareHomeVoiceSession();
+    try {
+      await startListening();
+    } catch (error) {
+      setHome((current: any) => ({ ...current, listening: false, voicePhase: 'idle', error: errorMessage(error) }));
+    }
+  }
+
+  async function homeToggleListening() {
+    await homeSetListening(!homeRef.current.listening);
+  }
+
+  async function homeStartIsolatedVoiceFixture(sourceUrl: string) {
+    stopSpeaking();
+    prepareHomeVoiceSession();
+    try {
+      await cleanupIsolatedVoiceFixture();
+      if (!FileSystem.cacheDirectory) throw new Error('앱 내부 음성 캐시를 사용할 수 없습니다.');
+      const localUri = `${FileSystem.cacheDirectory}jarvis-e2e-voice-${Date.now()}.wav`;
+      const downloaded = await FileSystem.downloadAsync(sourceUrl, localUri);
+      if (downloaded.status !== 200) {
+        await FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => undefined);
+        throw new Error(`음성 검증 파일 다운로드 실패 (${downloaded.status})`);
+      }
+      isolatedVoiceFixtureRef.current = { localUri: downloaded.uri, sourceUrl };
+      await startListeningFromAudioFile(downloaded.uri);
+    } catch (error) {
+      await cleanupIsolatedVoiceFixture();
+      setHome((current: any) => ({ ...current, listening: false, voicePhase: 'idle', error: errorMessage(error) }));
     }
   }
 
@@ -645,7 +1056,7 @@ function AppInner() {
         if (!mounted) return;
         setState((current: any) => applyLiveBridgeState(current, {
           restored: true,
-          error: `SecureStore restore failed: ${errorMessage(error)}`
+          error: `보안 저장소 복원 실패: ${errorMessage(error)}`
         }));
       }
     }
@@ -684,7 +1095,7 @@ function AppInner() {
             : current.screenMessage
         };
         return reason
-          ? appendAudit(nextState, `Mobile session locked by native AppState ${reason}.`)
+          ? appendAudit(nextState, `기기 앱 상태 변경으로 모바일 세션이 잠겼습니다: ${reason}`)
           : nextState;
       });
     });
@@ -725,10 +1136,10 @@ function AppInner() {
       const nextRoute = decodeURIComponent(link.segment);
       if (canNavigate(nextRoute)) {
         navigate(nextRoute);
-        updateMessage(`Deep link route opened: ${nextRoute}`);
+        updateMessage(`바로 가기 화면을 열었습니다: ${routeMeta[nextRoute as keyof typeof routeMeta]?.label ?? nextRoute}`);
         return true;
       }
-      updateMessage(`Deep link route ignored: ${nextRoute || 'missing'}`);
+      updateMessage(`지원하지 않는 바로 가기 화면을 무시했습니다: ${nextRoute || '경로 없음'}`);
       return false;
     }
 
@@ -747,7 +1158,7 @@ function AppInner() {
           pairingCode: pairingCode ?? current.device.pairingCode,
           pairingStatus: pairingCode ? 'pairing' : current.device.pairingStatus
         },
-        screenMessage: `Pairing deep link loaded: ${pairingCode ?? 'no-code'}`
+        screenMessage: `페어링 바로 가기를 불러왔습니다: ${pairingCode ?? '코드 없음'}`
       }));
       // 코드와 브리지 주소가 모두 담긴 링크는 원터치 페어링으로 바로 확정한다.
       if (pairingCode && bridgeUrl) {
@@ -775,6 +1186,49 @@ function AppInner() {
       return true;
     }
 
+    if (link.host === 'e2e-voice' && link.segment === 'transcribe') {
+      const source = link.params.get('source');
+      if (Application.applicationId !== isolatedE2EPackage || !isAllowedIsolatedVoiceFixtureSource(source)) {
+        updateMessage('격리된 음성 시험 파일 바로 가기를 차단했습니다.');
+        return false;
+      }
+      navigate(MobileRoutes.HomeScreen);
+      void homeStartIsolatedVoiceFixture(source as string);
+      return true;
+    }
+
+    if (link.host === 'e2e-voice' && ['start', 'stop'].includes(link.segment)) {
+      if (Application.applicationId !== isolatedE2EPackage) {
+        updateMessage('격리된 음성 입력 시험 바로 가기를 차단했습니다.');
+        return false;
+      }
+      navigate(MobileRoutes.HomeScreen);
+      void homeSetListening(link.segment === 'start');
+      return true;
+    }
+
+    if (link.host === 'e2e-command' && link.segment === 'create') {
+      const commandText = String(link.params.get('text') ?? '').trim();
+      if (Application.applicationId !== isolatedE2EPackage || !isolatedE2ECommandFixtures.has(commandText)) {
+        updateMessage('격리된 명령 제출 시험 바로 가기를 차단했습니다.');
+        return false;
+      }
+      navigate(MobileRoutes.HomeScreen);
+      setHome((current: any) => ({ ...current, text: commandText, error: null }));
+      void homeSubmit(commandText);
+      return true;
+    }
+
+    if (link.host === 'e2e-approval' && ['approve', 'reject'].includes(link.segment)) {
+      if (Application.applicationId !== isolatedE2EPackage || !homeRef.current.approval) {
+        updateMessage('격리된 승인 결정 시험 바로 가기를 차단했습니다.');
+        return false;
+      }
+      navigate(MobileRoutes.HomeScreen);
+      void homeDecide(link.segment === 'approve' ? 'approve' : 'reject');
+      return true;
+    }
+
     if (link.host === 'task' && link.segment === 'create') {
       void submitCommand();
       return true;
@@ -788,7 +1242,7 @@ function AppInner() {
     if (link.host === 'approval' && link.segment === 'open') {
       const approvalId = link.params.get('approvalId') ?? state.approvals.selectedApprovalId;
       if (!approvalId) {
-        updateMessage('Approval deep link ignored: missing approvalId');
+        updateMessage('승인 ID가 없어 승인 바로 가기를 무시했습니다.');
         return false;
       }
       void chooseApproval(approvalId);
@@ -805,7 +1259,7 @@ function AppInner() {
       return true;
     }
 
-    updateMessage(`Deep link ignored: ${rawUrl}`);
+    updateMessage(`지원하지 않는 바로 가기를 무시했습니다: ${rawUrl}`);
     return false;
   }
 
@@ -817,7 +1271,7 @@ function AppInner() {
       error: null,
       lastResponse: null
     }));
-    updateMessage(`D Bridge /health 확인 중: ${effectiveBridgeUrl}`);
+    updateMessage(`D 브리지 연결 상태 확인 중: ${effectiveBridgeUrl}`);
     try {
       await SecureStore.setItemAsync(storageKeys.bridgeUrl, state.connection.bridgeUrl);
       const result = await createBridgeClient().getHealth();
@@ -836,8 +1290,8 @@ function AppInner() {
           error: connected ? null : 'D_BRIDGE_HEALTH_NOT_OK'
         },
         screenMessage: connected
-          ? `D Bridge /health 연결 성공: ${effectiveBridgeUrl}`
-          : 'D Bridge가 응답했지만 status=ok가 아닙니다.'
+          ? `D 브리지 연결 성공: ${effectiveBridgeUrl}`
+          : 'D 브리지가 응답했지만 정상 상태가 아닙니다.'
       }, {
         loading: false,
         lastAction: 'health',
@@ -857,7 +1311,7 @@ function AppInner() {
           latencyMs: Date.now() - startedAt,
           error: message
         },
-        screenMessage: `D Bridge /health 연결 실패: ${message}`
+        screenMessage: `D 브리지 연결 실패: ${message}`
       }, {
         loading: false,
         lastAction: 'health',
@@ -874,7 +1328,7 @@ function AppInner() {
       error: null,
       lastResponse: null
     }));
-    updateMessage(`D Bridge pairing/start 요청 중: ${effectiveBridgeUrl}`);
+    updateMessage(`D 브리지 페어링 시작 요청 중: ${effectiveBridgeUrl}`);
     try {
       await SecureStore.setItemAsync(storageKeys.bridgeUrl, state.connection.bridgeUrl);
       const result = await createBridgeClient(null).startPairing();
@@ -894,7 +1348,7 @@ function AppInner() {
           pairingCode: result?.pairingCode ?? current.device.pairingCode,
           pairingStatus: 'pairing'
         },
-        screenMessage: `D Bridge pairing code 발급: ${result?.pairingCode ?? 'unknown'}`
+        screenMessage: `D 브리지 페어링 코드 발급: ${result?.pairingCode ?? '확인 불가'}`
       }, {
         loading: false,
         lastAction: 'pairing.start',
@@ -907,7 +1361,7 @@ function AppInner() {
       const message = errorMessage(error);
       setState((current: any) => applyLiveBridgeState({
         ...current,
-        screenMessage: `pairing/start 실패: ${message}`
+        screenMessage: `페어링 시작 실패: ${message}`
       }, {
         loading: false,
         lastAction: 'pairing.start',
@@ -927,7 +1381,7 @@ function AppInner() {
       error: null,
       lastResponse: null
     }));
-    updateMessage(`D Bridge pairing/confirm 요청 중: ${pairingCode}`);
+    updateMessage(`D 브리지 페어링 확인 요청 중: ${pairingCode}`);
     try {
       await SecureStore.setItemAsync(storageKeys.bridgeUrl, targetBridgeUrl);
       const result = await new BridgeClient({
@@ -968,8 +1422,8 @@ function AppInner() {
             backendName: 'expo-secure-store'
           }
         },
-        screenMessage: '실제 D Bridge 페어링 완료. deviceToken을 SecureStore에 저장했습니다.'
-      }, 'Live D Bridge pairing confirmed; token sealed in Expo SecureStore.'), {
+        screenMessage: 'D 브리지 페어링을 완료하고 기기 토큰을 보안 저장소에 저장했습니다.'
+      }, 'D 브리지 페어링을 완료하고 기기 토큰을 보안 저장소에 저장했습니다.'), {
         loading: false,
         lastAction: 'pairing.confirm',
         lastResponse: { ...result, deviceToken: tokenPreview(result.deviceToken) },
@@ -1024,8 +1478,8 @@ function AppInner() {
           plaintextExposed: false
         }
       },
-      screenMessage: '페어링 완료. 이후 요청은 Authorization: Bearer deviceToken 형태로 D Bridge에 전달됩니다.'
-    }, 'Pairing confirmed through D Bridge; token sealed in SecureStore.'));
+      screenMessage: '페어링 완료. 이후 요청은 기기 인증 토큰과 함께 D 브리지로 전달됩니다.'
+    }, 'D 브리지 페어링을 확인하고 기기 토큰을 보안 저장소에 저장했습니다.'));
     navigate(MobileRoutes.CommandScreen);
   }
 
@@ -1066,6 +1520,7 @@ function AppInner() {
         ...current.device,
         paired: false,
         pairingStatus: 'unpaired',
+        pairingCode: '',
         authTokenExists: false,
         tokenStorage: {
           ...current.device.tokenStorage,
@@ -1074,9 +1529,9 @@ function AppInner() {
         }
       },
       screenMessage: revokeError
-        ? `로컬 토큰은 제거했습니다. D Bridge revoke는 실패했습니다: ${revokeError}`
-        : '기기 연결이 해제되었습니다. D Bridge device revoke와 로컬 토큰 제거가 완료되었습니다.'
-    }, revokeError ? 'Device local token removed after revoke failure.' : 'Device revoked through D Bridge and mobile token removed.'), {
+        ? `로컬 토큰은 제거했지만 D 브리지의 기기 해제에 실패했습니다: ${revokeError}`
+        : '기기 연결을 해제하고 D 브리지 등록과 로컬 토큰을 제거했습니다.'
+    }, revokeError ? '기기 해제 실패 후 로컬 토큰만 제거했습니다.' : 'D 브리지에서 기기를 해제하고 모바일 토큰을 제거했습니다.'), {
       loading: false,
       deviceToken: null,
       deviceTokenLoaded: false,
@@ -1094,7 +1549,7 @@ function AppInner() {
       setState((current: any) => ({
         ...current,
         command: { ...current.command, error: '명령을 입력해야 합니다.' },
-        screenMessage: '빈 명령은 TaskRequest로 전송하지 않습니다.'
+        screenMessage: '빈 명령은 작업 요청으로 전송하지 않습니다.'
       }));
       return;
     }
@@ -1118,7 +1573,7 @@ function AppInner() {
         screenMessage: state.connection.connected
           ? 'deviceToken이 없어 명령을 오프라인 큐에 저장했습니다. 먼저 페어링이 필요합니다.'
           : 'PC Bridge가 연결되지 않아 명령을 오프라인 큐에 저장했습니다. 자동 전송은 하지 않습니다.'
-      }, 'Offline command queued; auto-send is disabled by C policy.'));
+      }, '오프라인 명령을 대기열에 저장했습니다. 안전 정책에 따라 자동 전송하지 않습니다.'));
       return;
     }
 
@@ -1175,8 +1630,8 @@ function AppInner() {
             }
           }
         },
-        screenMessage: '실제 TaskRequest가 D Bridge /tasks로 전송되었습니다.'
-      }, 'Live TaskRequest sent to D Bridge /tasks.'), {
+        screenMessage: '작업 요청을 D 브리지로 전송했습니다.'
+      }, '작업 요청을 D 브리지로 전송했습니다.'), {
         lastAction: 'tasks.create',
         lastResponse: result,
         error: null
@@ -1191,7 +1646,7 @@ function AppInner() {
           sending: false,
           error: message
         },
-        screenMessage: `TaskRequest 전송 실패: ${message}`
+        screenMessage: `작업 요청 전송 실패: ${message}`
       }, {
         lastAction: 'tasks.create',
         error: message
@@ -1257,7 +1712,7 @@ function AppInner() {
 
   async function refreshLiveApprovals() {
     if (!state.connection.connected || !state.liveBridge.deviceToken) {
-      updateMessage('승인 목록을 가져오려면 먼저 D Bridge 페어링이 필요합니다.');
+      updateMessage('승인 목록을 가져오려면 먼저 D 브리지 페어링이 필요합니다.');
       return null;
     }
     setState((current: any) => applyLiveBridgeState(current, {
@@ -1280,7 +1735,7 @@ function AppInner() {
           loading: false,
           error: null
         },
-        screenMessage: `D Bridge /approvals 조회 완료: ${items.length}건`
+        screenMessage: `D 브리지 승인 목록 조회 완료: ${items.length}건`
       }, {
         loading: false,
         lastAction: 'approvals.list',
@@ -1354,7 +1809,7 @@ function AppInner() {
           }
         },
         screenMessage: '승인 카드가 만료되어 결정을 전송하지 않았습니다. 새 승인을 요청하거나 만료 연장을 진행하세요.'
-      }, 'Expired approval decision blocked on mobile before D Bridge submit.'));
+      }, '만료된 승인 결정을 D 브리지로 보내기 전에 모바일에서 차단했습니다.'));
       navigate(MobileRoutes.TaskStatusScreen);
       return;
     }
@@ -1369,7 +1824,7 @@ function AppInner() {
             taskId: card.taskId,
             title: card.title,
             status: 'BLOCKED',
-            summary: 'Tier 3 이상 또는 외부 전송 포함 작업은 모바일 단순 승인이 차단됩니다.',
+            summary: '위험 3단계 이상이거나 외부 전송이 포함된 작업은 모바일 단독 승인이 차단됩니다.',
             blockedReason: 'PC에서 직접 확인이 필요합니다.',
             updatedAt: new Date().toISOString(),
             progress: {
@@ -1402,7 +1857,7 @@ function AppInner() {
           }
         },
         screenMessage: '고위험 작업은 모바일에서 최종 승인하지 않고 PC 확인으로 넘겼습니다.'
-      }, 'High-risk mobile approval blocked; PC confirmation required.'));
+      }, '고위험 모바일 승인을 차단하고 PC 확인을 요청했습니다.'));
       navigate(MobileRoutes.TaskStatusScreen);
       return;
     }
@@ -1427,7 +1882,7 @@ function AppInner() {
         const message = errorMessage(error);
         setState((current: any) => applyLiveBridgeState({
           ...current,
-          screenMessage: `ApprovalDecision 전송 실패: ${message}`
+          screenMessage: `승인 결정 전송 실패: ${message}`
         }, {
           loading: false,
           lastAction: 'approval.decision',
@@ -1474,7 +1929,7 @@ function AppInner() {
           title: card.title,
           status: liveResult?.status ?? (decision === 'reject' ? 'CANCELLED' : 'EXECUTING'),
           summary: decision === 'approve'
-            ? 'ApprovalDecision이 D Bridge로 전송되어 B 실행 대기열로 넘어갔습니다.'
+            ? '승인 결정이 D 브리지로 전송되어 PC 실행 대기열로 넘어갔습니다.'
             : `${decisionLabels[decision as keyof typeof decisionLabels] ?? decision} 결정이 A 재계획/중단 흐름으로 전달되었습니다.`,
           blockedReason: null,
           updatedAt: new Date().toISOString(),
@@ -1485,8 +1940,8 @@ function AppInner() {
           }
         }
       },
-      screenMessage: `${decisionLabels[decision as keyof typeof decisionLabels] ?? decision} 결정이 감사 가능한 ApprovalDecision으로 기록되었습니다.`
-    }, `ApprovalDecision ${decision} sent through D Bridge.`));
+      screenMessage: `${decisionLabels[decision as keyof typeof decisionLabels] ?? decision} 결정을 감사 가능한 승인 기록으로 남겼습니다.`
+    }, `${decisionLabels[decision as keyof typeof decisionLabels] ?? decision} 결정을 D 브리지로 전송했습니다.`));
     setState((current: any) => applyLiveBridgeState(current, {
       loading: false,
       lastAction: liveResult ? 'approval.decision' : current.liveBridge.lastAction,
@@ -1498,7 +1953,7 @@ function AppInner() {
 
   async function renewSelectedApproval() {
     if (!state.connection.connected || !state.liveBridge.deviceToken) {
-      updateMessage('승인 만료 연장은 D Bridge 페어링 후 사용할 수 있습니다.');
+      updateMessage('승인 만료 연장은 D 브리지 페어링 후 사용할 수 있습니다.');
       return null;
     }
     setState((current: any) => applyLiveBridgeState(current, {
@@ -1536,7 +1991,7 @@ function AppInner() {
           error: null
         },
         screenMessage: `승인 카드 만료 시간이 ${result.expiresAt}까지 연장되었습니다.`
-      }, 'Expired approval card renewed through D Bridge.'), {
+      }, '만료된 승인 카드를 D 브리지를 통해 연장했습니다.'), {
         loading: false,
         lastAction: 'approval.renew',
         lastResponse: result,
@@ -1564,7 +2019,7 @@ function AppInner() {
   async function requestPcConfirmationForSelectedApproval() {
     const reason = 'mobile_user_requested_pc_confirmation_for_high_risk_approval';
     if (!state.connection.connected || !state.liveBridge.deviceToken) {
-      updateMessage('PC 확인 요청은 D Bridge 페어링 후 사용할 수 있습니다.');
+      updateMessage('PC 확인 요청은 D 브리지 페어링 후 사용할 수 있습니다.');
       return null;
     }
     setState((current: any) => applyLiveBridgeState(current, {
@@ -1641,7 +2096,7 @@ function AppInner() {
           }
         },
         screenMessage: 'PC 확인 요청이 기록되었습니다. 모바일은 이 작업을 단독 승인하지 않습니다.'
-      }, 'High-risk approval routed to PC confirmation handoff.'), {
+      }, '고위험 승인을 PC 확인 절차로 전달했습니다.'), {
         loading: false,
         lastAction: 'approval.pc_handoff',
         lastResponse: result,
@@ -1711,7 +2166,7 @@ function AppInner() {
           }
         },
         screenMessage: '오프라인 상태에서 로컬 승인 카드를 취소했습니다.'
-      }, 'Approval cancelled locally on mobile.'));
+      }, '모바일에서 승인을 취소했습니다.'));
       navigate(MobileRoutes.TaskStatusScreen);
       return null;
     }
@@ -1760,13 +2215,13 @@ function AppInner() {
             taskId: result.taskId,
             title: selectedApproval.title,
             status: result.status,
-            summary: 'D Bridge에서 승인 카드 취소가 기록되었습니다.',
+            summary: 'D 브리지에 승인 카드 취소를 기록했습니다.',
             blockedReason: null,
             updatedAt: result.cancelledAt
           }
         },
         screenMessage: '승인 카드가 취소되어 실행으로 넘어가지 않습니다.'
-      }, 'Approval cancelled through D Bridge.'), {
+      }, 'D 브리지를 통해 승인을 취소했습니다.'), {
         loading: false,
         lastAction: 'approval.cancel',
         lastResponse: result,
@@ -1795,7 +2250,7 @@ function AppInner() {
   async function reRequestSelectedApproval() {
     const reason = 'mobile_user_requested_fresh_approval';
     if (!state.connection.connected || !state.liveBridge.deviceToken) {
-      updateMessage('새 승인 재요청은 D Bridge 페어링 후 사용할 수 있습니다.');
+      updateMessage('새 승인 재요청은 D 브리지 페어링 후 사용할 수 있습니다.');
       return null;
     }
     setState((current: any) => applyLiveBridgeState(current, {
@@ -1872,7 +2327,7 @@ function AppInner() {
           }
         },
         screenMessage: '새 승인 카드가 생성되었습니다. 최신 카드에서 다시 검토하세요.'
-      }, 'Approval re-requested through D Bridge.'), {
+      }, 'D 브리지를 통해 새 승인을 요청했습니다.'), {
         loading: false,
         lastAction: 'approval.re_request',
         lastResponse: result,
@@ -1907,6 +2362,77 @@ function AppInner() {
     });
   }
 
+  async function refreshSkillRegistryReview() {
+    if (!state.liveBridge.deviceToken) return null;
+    try {
+      const review = await homeClient().getGrowthReview();
+      if (review?.success === false) throw new Error(review.error?.message ?? review.error?.code ?? '검토 자료를 가져오지 못했습니다.');
+      setSkillRegistryReview(review);
+      setSkillRevisionMessage(null);
+      return review;
+    } catch (error) {
+      setSkillRevisionMessage(`업무 절차를 불러오지 못했습니다: ${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  async function runSkillRevisionAction(action: 'create' | 'evaluate' | 'review' | 'promote' | 'rollback', entry: any, revisionId?: string, reviewDecision: 'approve' | 'reject' = 'approve') {
+    if (skillRevisionBusy) return;
+    setSkillRevisionBusy(true);
+    setSkillRevisionMessage(null);
+    try {
+      const client = homeClient();
+      const pendingId = revisionId ?? entry.pendingRevisionId;
+      let result: any;
+      if (action === 'create') {
+        const suggestedSteps = String(skillRevisionSteps[entry.skillId] ?? '').split(/\r?\n/).map((step) => step.trim()).filter(Boolean);
+        result = await client.createGrowthSkillRevision(entry.skillId, {
+          expectedActiveRevisionId: entry.activeRevisionId,
+          suggestedSteps,
+          reason: '모바일에서 사용자가 수정한 업무 절차'
+        });
+      } else if (action === 'evaluate') {
+        result = await client.evaluateGrowthSkillRevision(entry.skillId, pendingId);
+      } else if (action === 'review') {
+        result = await client.reviewGrowthSkillRevision(entry.skillId, pendingId, {
+          decision: reviewDecision, reason: '사용자가 모바일 화면에서 절차 변경을 검토했습니다.'
+        });
+      } else if (action === 'promote') {
+        result = await client.promoteGrowthSkillRevision(entry.skillId, pendingId, {
+          expectedActiveRevisionId: entry.activeRevisionId,
+          reason: '검토 승인된 절차 버전을 사용자가 승격했습니다.'
+        });
+      } else {
+        result = await client.rollbackGrowthSkillRevision(entry.skillId, entry.activeRevisionId, {
+          expectedActiveRevisionId: entry.activeRevisionId,
+          targetRevisionId: entry.revisions?.find((revision: any) => revision.revisionId !== entry.activeRevisionId
+            && ['superseded', 'active'].includes(revision.status))?.revisionId,
+          reason: '사용자가 이전 활성 버전으로 복원했습니다.'
+        });
+      }
+      if (result?.success === false) throw new Error(result.error?.message ?? result.error?.code ?? '업무 절차 변경을 완료하지 못했습니다.');
+      setSkillRevisionMessage(action === 'create'
+        ? '수정 초안을 만들었습니다. 자동으로 실행되지는 않습니다.'
+        : action === 'review' && reviewDecision === 'reject'
+          ? '수정안을 거절했습니다. 활성 절차는 그대로 유지됩니다.'
+        : '업무 절차 상태를 갱신했습니다.');
+      if (action === 'create') setSkillRevisionSteps((current) => ({ ...current, [entry.skillId]: '' }));
+      await refreshSkillRegistryReview();
+    } catch (error) {
+      setSkillRevisionMessage(`업무 절차 작업 실패: ${errorMessage(error)}`);
+    } finally {
+      setSkillRevisionBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!state.device.paired || !state.liveBridge.deviceToken) {
+      setSkillRegistryReview(null);
+      return;
+    }
+    void refreshSkillRegistryReview();
+  }, [state.device.paired, state.liveBridge.deviceToken, effectiveBridgeUrl]);
+
   function homeSleep(ms: number) {
     return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
   }
@@ -1915,7 +2441,10 @@ function AppInner() {
     return statusResult?.status ?? statusResult?.task?.status ?? null;
   }
 
-  async function homeSubmit(overrideText: string | null = null) {
+  async function homeSubmit(
+    overrideText: string | null = null,
+    { inputMode = 'text', voiceEvidence = null }: { inputMode?: 'text' | 'voice'; voiceEvidence?: any } = {}
+  ) {
     const rawText = String(overrideText ?? home.text ?? '').trim();
     if (!rawText) {
       setHome((current: any) => ({ ...current, error: '자비스에게 시킬 일을 입력해 주세요.' }));
@@ -1940,9 +2469,31 @@ function AppInner() {
       const request = {
         requestId: `req_home_${Date.now()}`,
         createdAt: new Date().toISOString(),
-        source: { module: 'C_MOBILE', deviceId: state.device.deviceId, inputMode: 'text' },
+        source: { type: 'mobile', module: 'C_MOBILE', deviceId: state.device.deviceId, inputMode },
         command: { rawText, locale: 'ko-KR' },
-        context: { currentScreen: MobileRoutes.HomeScreen, userTimezone: 'Asia/Seoul' }
+        context: { currentScreen: MobileRoutes.HomeScreen, userTimezone: 'Asia/Seoul' },
+        metadata: inputMode === 'voice'
+          ? {
+              voiceRecognition: {
+                confidence: voiceEvidence?.confidence ?? null,
+                alternativesCount: voiceEvidence?.alternativesCount ?? 1,
+                locale: voiceEvidence?.locale ?? 'ko-KR',
+                engine: voiceEvidence?.engine ?? 'expo-speech-recognition',
+                confirmationMode: voiceEvidence?.confirmationMode ?? null,
+                confirmationReason: voiceEvidence?.confirmationReason ?? null,
+                confirmationCount: voiceEvidence?.confirmationCount ?? 0,
+                independentEngineCount: voiceEvidence?.independentEngineCount ?? 0,
+                confirmationEngine: voiceEvidence?.confirmationEngine ?? null,
+                confirmationConfidence: voiceEvidence?.confirmationConfidence ?? null,
+                correctionApplied: voiceEvidence?.correctionApplied === true,
+                supersededDraftDiscarded: voiceEvidence?.supersededDraftDiscarded === true,
+                confirmationTranscriptStored: false,
+                rawAudioStored: false,
+                alternativesStored: false,
+                commandTextRetainedAsTask: true
+              }
+            }
+          : {}
       };
       // 복합 명령(여러 단계 + 문서 내용 생성)은 계획에 시간이 더 걸릴 수 있어 타임아웃을 넉넉히 잡는다.
       const created = await homeClient(240000).createTask(request);
@@ -2007,10 +2558,40 @@ function AppInner() {
     const card = home.approval;
     if (!card) return;
     if (decision === 'approve' && Number(card.riskTier ?? 5) <= 3) {
+      const seq = homeFlowSeq.current;
       setHome((current: any) => ({
         ...current,
-        notice: '위험도가 높은 작업이라 모바일 단독 승인이 차단됩니다. PC에서 직접 확인해 주세요.'
+        phase: 'deciding',
+        notice: '고위험 작업을 PC 음성 확인으로 넘기는 중입니다...',
+        error: null
       }));
+      try {
+        const handoff = await homeClient().requestPcConfirmation(card.approvalId, {
+          reason: 'mobile_voice_conversation_requires_pc_confirmation'
+        });
+        if (handoff?.success === false) {
+          throw new Error(bridgeFailureMessage(handoff, 'approval-pc-handoff-failed'));
+        }
+        if (homeFlowSeq.current !== seq) return;
+        const phrase = String(handoff.voiceChallenge?.phrase ?? '').trim();
+        setHome((current: any) => ({
+          ...current,
+          phase: 'pc-confirmation',
+          pcHandoff: handoff,
+          notice: phrase
+            ? `PC에서 "자비스 ${phrase} 승인"이라고 말해 주세요.`
+            : 'PC 자비스 화면에서 음성 확인을 진행해 주세요.'
+        }));
+        await homeTrackPcConfirmation(card.taskId, seq);
+      } catch (error) {
+        if (homeFlowSeq.current !== seq) return;
+        setHome((current: any) => ({
+          ...current,
+          phase: 'approval',
+          notice: null,
+          error: errorMessage(error)
+        }));
+      }
       return;
     }
     const seq = homeFlowSeq.current;
@@ -2063,6 +2644,45 @@ function AppInner() {
     }
   }
 
+  async function homeTrackPcConfirmation(taskId: string, seq: number) {
+    const client = homeClient();
+    let elapsed = 0;
+    let approvedAt: number | null = null;
+    for (let attempt = 0; elapsed < homePollTotalBudgetMs; attempt += 1) {
+      if (homeFlowSeq.current !== seq) return;
+      try {
+        const status = String(homeTaskStatusOf(await client.getTaskStatus(taskId)) ?? '');
+        if (['COMPLETED', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(status)) {
+          await homeFinish(taskId, status, seq);
+          return;
+        }
+        if (status === 'APPROVED') {
+          approvedAt ??= elapsed;
+          setHome((current: any) => ({
+            ...current,
+            notice: 'PC 음성 승인이 확인되었습니다. 실행 결과를 기다리는 중입니다...'
+          }));
+          if (elapsed - approvedAt >= 8_000) {
+            await homeFinish(taskId, status, seq);
+            return;
+          }
+        }
+      } catch {
+        // A brief bridge interruption is retried within the existing bounded poll budget.
+      }
+      const delay = homeBackoffDelay(attempt);
+      await homeSleep(delay);
+      elapsed += delay;
+    }
+    if (homeFlowSeq.current !== seq) return;
+    setHome((current: any) => ({
+      ...current,
+      phase: 'pc-confirmation',
+      notice: null,
+      error: 'PC 음성 확인 시간이 초과되었습니다. PC의 승인 대기 화면에서 상태를 확인해 주세요.'
+    }));
+  }
+
   async function homeFinish(taskId: string, status: string, seq: number) {
     let result: any = null;
     try {
@@ -2085,8 +2705,12 @@ function AppInner() {
       phase: 'done',
       taskStatus: status,
       result,
-      notice: status === 'COMPLETED' ? '작업이 완료되었습니다.' : null,
-      error: status === 'COMPLETED' ? null : `작업이 ${status} 상태로 끝났습니다.`
+      notice: status === 'COMPLETED'
+        ? '작업이 완료되었습니다.'
+        : status === 'APPROVED'
+          ? 'PC 확인은 완료되었지만 이 작업은 검토 전용이거나 실행 인계가 필요합니다.'
+          : null,
+      error: ['COMPLETED', 'APPROVED'].includes(status) ? null : `작업이 ${status} 상태로 끝났습니다.`
     }));
     homeSpeak(resultSpeech(status, result));
   }
@@ -2100,22 +2724,31 @@ function AppInner() {
       answer: '',
       taskId: null,
       approval: null,
+      pcHandoff: null,
       taskStatus: null,
       result: null,
       error: null,
-      notice: null
+      notice: null,
+      listening: false,
+      voicePhase: 'idle',
+      voicePeak: -2,
+      voiceEngine: null
     }));
   }
 
   // 명료화 질문에 답하면 원 명령에 답을 덧붙여 더 정확한 계획으로 다시 제출한다.
   // 대화 모드에서는 음성으로 받은 답을 overrideAnswer로 넘긴다.
-  async function homeResubmitWithAnswer(overrideAnswer: string | null = null) {
+  async function homeResubmitWithAnswer(
+    overrideAnswer: string | null = null,
+    inputMode: 'text' | 'voice' = 'text',
+    voiceEvidence: any = null
+  ) {
     const answer = String(overrideAnswer ?? home.answer ?? '').trim();
     if (!answer) return;
     const baseText = String(homeRef.current.text ?? home.text ?? '').trim();
     const composed = `${baseText} (추가 정보: ${answer})`;
     setHome((current: any) => ({ ...current, text: composed, answer: '', approval: null }));
-    await homeSubmit(composed);
+    await homeSubmit(composed, { inputMode, voiceEvidence });
   }
 
   function completeTask() {
@@ -2136,7 +2769,7 @@ function AppInner() {
         }
       },
       screenMessage: '작업이 완료되었습니다. 결과 화면에서 산출물과 피드백을 확인할 수 있습니다.'
-    }, 'Task completed by B and verified by G.'));
+    }, 'PC 에이전트가 작업을 완료하고 검증 시스템이 확인했습니다.'));
   }
 
   function submitFeedback(feedbackType: string) {
@@ -2151,35 +2784,23 @@ function AppInner() {
           timestamp: new Date().toISOString()
         }
       },
-      screenMessage: `${feedbackLabels[feedbackType as keyof typeof feedbackLabels] ?? feedbackType} 피드백을 F 성장형 기억 후보로 전달했습니다.`
-    }, `Feedback ${feedbackType} sent to F through D Bridge.`));
+      screenMessage: `${feedbackLabels[feedbackType as keyof typeof feedbackLabels] ?? feedbackType} 피드백을 성장형 기억 후보로 전달했습니다.`
+    }, `${feedbackLabels[feedbackType as keyof typeof feedbackLabels] ?? feedbackType} 피드백을 D 브리지를 통해 기억 시스템으로 전송했습니다.`));
   }
 
   async function previewResultFile(previewId: string, path: string) {
     const uri = createResultFileUri(path);
-    let action: any = {
+    const viewResult = await openOfficialDocument({ uri, openURL: (selected: string) => Linking.openURL(selected) });
+    const action: any = {
       actionVersion: 'c-native-document-action-v1',
       previewId,
-      path,
-      uri,
+      path: viewResult.status === 'blocked' ? null : path,
+      uri: viewResult.uri,
       actionType: 'preview',
-      status: 'contract-fallback',
-      fallbackUsed: true,
+      ...viewResult,
+      fallbackUsed: false,
       actedAt: new Date().toISOString()
     };
-    try {
-      if (uri) {
-        await Linking.openURL(uri);
-        action = { ...action, status: 'opened', fallbackUsed: false };
-      }
-    } catch (error) {
-      action = {
-        ...action,
-        status: 'contract-fallback',
-        fallbackUsed: true,
-        error: errorMessage(error)
-      };
-    }
     setState((current: any) => appendAudit({
       ...current,
       feedback: {
@@ -2188,8 +2809,10 @@ function AppInner() {
       },
       screenMessage: action.status === 'opened'
         ? '산출물 미리보기를 네이티브 앱으로 열었습니다.'
-        : '네이티브 미리보기를 사용할 수 없어 산출물 경로를 화면에 유지합니다.'
-    }, `Result file preview ${action.status}: ${path}`));
+        : action.status === 'blocked'
+          ? '이 주소는 문서 보기에서 열 수 없습니다. 검증된 산출물을 다시 선택해 주세요.'
+          : '미리보기 앱을 열지 못했습니다. 산출물 경로를 확인하거나 다른 앱을 사용해 주세요.'
+    }, `Result file preview ${action.status}`));
   }
 
   async function shareResultFile(previewId: string, path: string) {
@@ -2245,8 +2868,8 @@ function AppInner() {
           outputPathCount: current.result.outputPaths.length
         }
       },
-      screenMessage: '되돌리기 전 B rollback 증거와 변경 항목을 확인하세요.'
-    }, 'Result rollback confirmation requested from ResultScreen.'));
+      screenMessage: '되돌리기 전에 PC 에이전트의 복구 근거와 변경 항목을 확인하세요.'
+    }, '결과 화면에서 되돌리기 확인을 요청했습니다.'));
   }
 
   function cancelResultRollback() {
@@ -2261,7 +2884,7 @@ function AppInner() {
         }
       },
       screenMessage: '되돌리기 확인을 취소했습니다.'
-    }, 'Result rollback confirmation cancelled.'));
+    }, '결과 되돌리기 확인을 취소했습니다.'));
   }
 
   function confirmResultRollback() {
@@ -2288,8 +2911,8 @@ function AppInner() {
           completedAt: new Date().toISOString()
         }
       },
-      screenMessage: '되돌리기 확인이 완료되었습니다. 실제 실행은 D Bridge를 통해 B rollback API로 전달됩니다.'
-    }, 'Result rollback confirmed with mobile confirmation panel.'));
+      screenMessage: '되돌리기 확인을 완료했습니다. 실제 실행은 D 브리지를 통해 PC 에이전트의 되돌리기 기능으로 전달됩니다.'
+    }, '모바일 확인 화면에서 결과 되돌리기를 확정했습니다.'));
   }
 
   function decideGrowthPreference(hypothesisId: string, decision: string) {
@@ -2307,7 +2930,7 @@ function AppInner() {
         },
         lastDecision: { hypothesisId, decision, decidedAt: new Date().toISOString() }
       },
-      screenMessage: '성장 리뷰 결정은 F로 전달되는 사용자 검토 신호입니다. C가 기억 DB를 직접 수정하지는 않습니다.'
+      screenMessage: '성장 리뷰 결정은 기억 시스템으로 전달되는 사용자 검토 신호입니다. 모바일 앱이 기억 저장소를 직접 수정하지는 않습니다.'
     }, `Growth preference ${decision} recorded for ${hypothesisId}.`));
   }
 
@@ -2331,7 +2954,7 @@ function AppInner() {
         )),
         lastAction: { action, queueId, actedAt: new Date().toISOString() }
       },
-      screenMessage: '격리 큐 조치는 B 실행 큐에 대한 검토 신호입니다. 모바일이 직접 패킷을 실행하지는 않습니다.'
+      screenMessage: '격리 대기열 조치는 PC 실행 대기열에 대한 검토 신호입니다. 모바일 앱이 작업을 직접 실행하지는 않습니다.'
     }, `Poison packet ${queueId} ${action} action sent.`));
   }
 
@@ -2359,8 +2982,8 @@ function AppInner() {
             }
           }
         },
-        screenMessage: `${processed}건의 PC Agent 큐 drain 결과를 반영했습니다.`
-      }, 'Poison queue drain refresh verified from mobile screen.');
+        screenMessage: `PC 에이전트 대기열 처리 결과 ${processed}건을 반영했습니다.`
+      }, '모바일 화면에서 격리 대기열 처리 결과를 검증했습니다.');
     });
   }
 
@@ -2380,8 +3003,8 @@ function AppInner() {
           baseBackoffMs: draft.baseBackoffMs
         }
       },
-      screenMessage: '재시도 정책 변경 요청을 D Bridge를 통해 B queue policy로 보냈습니다.'
-    }, 'Queue retry policy update requested from SettingsScreen.'));
+      screenMessage: '재시도 정책 변경 요청을 D 브리지를 통해 PC 에이전트로 보냈습니다.'
+    }, '설정 화면에서 대기열 재시도 정책 변경을 요청했습니다.'));
   }
 
   function requestNotifications() {
@@ -2405,8 +3028,8 @@ function AppInner() {
         },
         unreadCount: current.notifications.items.length
       },
-      screenMessage: '알림 권한이 허용되었습니다. MVP에서는 앱 내부 배지와 로컬 로그를 우선 사용합니다.'
-    }, 'Notification permission granted in mobile settings.'));
+      screenMessage: '알림 권한이 허용되었습니다. 현재 버전은 앱 내부 배지와 로컬 기록을 우선 사용합니다.'
+    }, '모바일 설정에서 알림 권한을 허용했습니다.'));
   }
 
   function verifyNotificationReceipts() {
@@ -2435,7 +3058,7 @@ function AppInner() {
           issueQueue: []
         },
         screenMessage: `${receiptLog.length}건의 알림 수신 기록을 확인했습니다.`
-      }, 'Notification receipts verified from SettingsScreen.');
+      }, '설정 화면에서 알림 수신 기록을 검증했습니다.');
     });
   }
 
@@ -2454,7 +3077,7 @@ function AppInner() {
   }
 
   function renderHomeScreen() {
-    const busy = ['submitting', 'waiting-approval', 'deciding', 'executing'].includes(home.phase);
+    const busy = ['submitting', 'waiting-approval', 'deciding', 'pc-confirmation', 'executing'].includes(home.phase);
     const approvalCard = home.phase === 'approval' ? home.approval : null;
     return (
       <View testID="screen-content-HomeScreen" style={styles.screenStack}>
@@ -2528,7 +3151,9 @@ function AppInner() {
             testID="home-command-input"
             value={home.text}
             onChangeText={(value) => setHome((current: any) => ({ ...current, text: value, error: null }))}
-            placeholder={home.listening ? '듣고 있어요... 말씀해 주세요' : '예: 주간 정산표 엑셀로 만들어줘'}
+            placeholder={home.voicePhase === 'starting'
+              ? '마이크를 준비하고 있어요...'
+              : home.listening ? '듣고 있어요... 말씀해 주세요' : '예: 주간 정산표 엑셀로 만들어줘'}
             placeholderTextColor={colors.muted}
             multiline
             editable={!busy && !home.listening}
@@ -2539,7 +3164,11 @@ function AppInner() {
               <Pressable
                 testID="home-mic-button"
                 accessibilityRole="button"
-                accessibilityLabel={home.listening ? '음성 인식 중지' : '말로 시키기'}
+                accessibilityLabel={!home.listening
+                  ? '말로 시키기'
+                  : home.voicePhase === 'starting'
+                    ? '음성 인식 준비 중'
+                    : home.voicePhase === 'speech' ? '음성 감지됨' : '음성 인식 중지'}
                 disabled={busy || !paired}
                 onPress={() => void homeToggleListening()}
                 style={[
@@ -2550,7 +3179,7 @@ function AppInner() {
               >
                 <Mic size={18} color={home.listening ? colors.onAccent : colors.text} strokeWidth={2.2} />
                 <Text style={home.listening ? styles.homePrimaryButtonText : styles.homeMicButtonText}>
-                  {home.listening ? '듣는 중' : '음성입력'}
+                  {home.voicePhase === 'starting' ? '준비 중' : home.listening ? '듣는 중' : '음성입력'}
                 </Text>
               </Pressable>
             ) : null}
@@ -2565,6 +3194,17 @@ function AppInner() {
               <Text style={styles.homePrimaryButtonText}>{busy ? '처리 중...' : '실행'}</Text>
             </Pressable>
           </View>
+          {home.listening ? (
+            <Text
+              testID="home-voice-status"
+              accessibilityLabel="음성 인식 사용 중"
+              style={styles.homeNotice}
+            >
+              {home.voicePhase === 'starting'
+                ? '마이크 준비 중'
+                : home.voicePhase === 'speech' ? '음성 감지됨' : '말씀해 주세요'}
+            </Text>
+          ) : null}
           {voiceSupport.stt ? (
             <Pressable
               testID="home-conversation-button"
@@ -2598,8 +3238,68 @@ function AppInner() {
             </View>
           ) : null}
           {home.notice ? <Text style={styles.homeNotice}>{home.notice}</Text> : null}
-          {home.error ? <Text style={styles.warningText}>{home.error}</Text> : null}
+          {home.error ? (
+            <Text
+              testID="home-error"
+              accessibilityLabel={home.voiceEngine ? '음성 인식 오류' : undefined}
+              style={styles.warningText}
+            >
+              {home.error}
+            </Text>
+          ) : null}
         </View>
+
+        {paired ? (
+          <View style={styles.homeCard} testID="home-skill-revision-review">
+            <Text style={styles.homeCardTitle}>내 업무 절차</Text>
+            <Text style={styles.homeHint}>절차를 고치고 검사할 수 있습니다. 검토 승인·승격·복원은 PC에서 소유자 모드를 켜면 사용할 수 있습니다. 승격해도 자동 실행 권한은 생기지 않습니다.</Text>
+            <ActionButton label={skillRevisionBusy ? '갱신 중...' : '절차 목록 새로고침'} onPress={() => void refreshSkillRegistryReview()} disabled={skillRevisionBusy} testID="skill-registry-refresh" />
+            {(skillRegistryReview?.skillRegistry?.registryEntries ?? []).length === 0 ? (
+              <Text style={styles.mutedText}>검토를 마친 업무 절차가 아직 없습니다.</Text>
+            ) : (skillRegistryReview.skillRegistry.registryEntries ?? []).slice(0, 5).map((entry: any) => {
+              const pendingRevision = entry.revisions?.find((revision: any) => revision.revisionId === entry.pendingRevisionId);
+              const activeRevision = entry.revisions?.find((revision: any) => revision.revisionId === entry.activeRevisionId);
+              const previousRevision = entry.revisions?.find((revision: any) => revision.revisionId !== entry.activeRevisionId && revision.status === 'superseded');
+              return (
+                <View key={entry.skillId} style={styles.compactCard} testID={`skill-registry-entry-${entry.skillId}`}>
+                  <Text style={styles.cardTitle}>{entry.title ?? entry.skillId}</Text>
+                  <Text style={styles.mutedText}>활성 버전 {entry.activeRevisionId ?? '없음'} · 자동 실행 꺼짐</Text>
+                  <Text style={styles.mutedText}>현재 절차: {activeRevision?.suggestedSteps?.join(' → ') ?? entry.suggestedSteps?.join(' → ') ?? '없음'}</Text>
+                  <TextInput
+                    testID={`skill-revision-steps-${entry.skillId}`}
+                    value={skillRevisionSteps[entry.skillId] ?? ''}
+                    onChangeText={(value) => setSkillRevisionSteps((current) => ({ ...current, [entry.skillId]: value }))}
+                    placeholder="수정할 절차를 한 줄씩 입력"
+                    placeholderTextColor={colors.muted}
+                    multiline
+                    style={styles.homeInput}
+                  />
+                  <ActionButton label="수정 초안 만들기" onPress={() => void runSkillRevisionAction('create', entry)} disabled={skillRevisionBusy || !String(skillRevisionSteps[entry.skillId] ?? '').trim()} testID={`skill-revision-create-${entry.skillId}`} />
+                  {pendingRevision ? (
+                    <>
+                      <Text style={styles.mutedText}>변경안 비교 · 상태: {pendingRevision.status}</Text>
+                      {createSkillRevisionDiff(activeRevision?.suggestedSteps ?? entry.suggestedSteps, pendingRevision.suggestedSteps).map((line, index) => (
+                        <Text key={`${pendingRevision.revisionId}-${index}`} style={styles.homeHint}>
+                          {line.status === 'added' ? '+ ' : line.status === 'removed' ? '− ' : '= '}{line.text}
+                        </Text>
+                      ))}
+                      {pendingRevision.status === 'draft' ? <ActionButton label="정적 계약 검사" onPress={() => void runSkillRevisionAction('evaluate', entry, pendingRevision.revisionId)} disabled={skillRevisionBusy} testID={`skill-revision-evaluate-${entry.skillId}`} /> : null}
+                      {pendingRevision.status === 'awaiting_user_review' ? (
+                        <>
+                          <ActionButton label="검사 결과 검토 승인" onPress={() => void runSkillRevisionAction('review', entry, pendingRevision.revisionId, 'approve')} disabled={skillRevisionBusy} testID={`skill-revision-review-${entry.skillId}`} />
+                          <ActionButton label="수정안 거절" onPress={() => void runSkillRevisionAction('review', entry, pendingRevision.revisionId, 'reject')} disabled={skillRevisionBusy} testID={`skill-revision-reject-${entry.skillId}`} />
+                        </>
+                      ) : null}
+                      {pendingRevision.status === 'review_approved' ? <ActionButton label="새 절차 버전 승격" onPress={() => void runSkillRevisionAction('promote', entry, pendingRevision.revisionId)} disabled={skillRevisionBusy} tone="primary" testID={`skill-revision-promote-${entry.skillId}`} /> : null}
+                    </>
+                  ) : null}
+                  {previousRevision ? <ActionButton label="이전 버전 복원" onPress={() => void runSkillRevisionAction('rollback', entry)} disabled={skillRevisionBusy} testID={`skill-revision-rollback-${entry.skillId}`} /> : null}
+                </View>
+              );
+            })}
+            {skillRevisionMessage ? <Text style={styles.mutedText}>{skillRevisionMessage}</Text> : null}
+          </View>
+        ) : null}
 
         {paired && suggestions.length && home.phase === 'idle' ? (
           <View style={styles.homeSuggestCard}>
@@ -2749,6 +3449,22 @@ function AppInner() {
           </View>
         ) : null}
 
+        {home.phase === 'pc-confirmation' && home.pcHandoff ? (
+          <View style={[styles.homeCard, styles.homeApprovalCard]} testID="home-pc-voice-confirmation">
+            <Text style={styles.homeCardTitle}>PC 음성 확인 대기</Text>
+            <Text style={styles.homeHint}>{home.approval?.title ?? '고위험 작업'}</Text>
+            {home.pcHandoff.voiceChallenge?.phrase ? (
+              <View style={styles.homeClarifyBox}>
+                <Text style={styles.homeClarifyTitle}>PC에서 말할 문구</Text>
+                <Text style={styles.homeApprovalTitle}>
+                  자비스 {home.pcHandoff.voiceChallenge.phrase} 승인
+                </Text>
+              </View>
+            ) : null}
+            <Text style={styles.homeNotice}>{home.notice ?? 'PC 확인 상태를 기다리고 있습니다.'}</Text>
+          </View>
+        ) : null}
+
         {home.phase === 'done' ? (
           <View style={[styles.homeCard, home.taskStatus === 'COMPLETED' ? styles.homeDoneCard : null]}>
             <View style={styles.homeDoneTitleRow}>
@@ -2794,14 +3510,14 @@ function AppInner() {
   function renderPairingScreen() {
     return (
       <View testID="screen-content-PairingScreen" style={styles.screenStack}>
-        <Section title="PC Bridge 페어링" caption="Phase C-6">
+        <Section title="PC 브리지 페어링" caption="모바일 연결">
           <DataRow label="실제 호출 URL" value={effectiveBridgeUrl} />
           <DataRow label="Live Bridge" value={state.connection.connected ? 'connected' : 'not connected'} tone={state.connection.connected ? 'good' : 'warning'} />
           <DataRow label="Token" value={state.liveBridge.deviceTokenPreview ?? 'none'} tone={state.liveBridge.deviceTokenPreview ? 'good' : 'warning'} />
           <View style={styles.buttonRow}>
-            <ActionButton testID="bridge-health-button" label={state.liveBridge.loading ? '확인 중' : '/health'} tone="primary" onPress={checkBridgeHealth} disabled={state.liveBridge.loading} />
-            <ActionButton testID="pairing-start-button" label="pairing/start" onPress={startLivePairing} disabled={state.liveBridge.loading} />
-            <ActionButton testID="pairing-confirm-button" label="pairing/confirm" tone="primary" onPress={() => confirmPairing()} disabled={state.liveBridge.loading} />
+            <ActionButton testID="bridge-health-button" label={state.liveBridge.loading ? '확인 중' : '연결 상태 확인'} tone="primary" onPress={checkBridgeHealth} disabled={state.liveBridge.loading} />
+            <ActionButton testID="pairing-start-button" label="페어링 시작" onPress={startLivePairing} disabled={state.liveBridge.loading} />
+            <ActionButton testID="pairing-confirm-button" label="페어링 확인" tone="primary" onPress={() => confirmPairing()} disabled={state.liveBridge.loading} />
             <ActionButton testID="demo-pairing-confirm-button" label="데모 페어링" onPress={confirmDemoPairing} />
           </View>
           <PairingQrPanel
@@ -2820,7 +3536,7 @@ function AppInner() {
                 effectiveBridgeUrl: normalizeBridgeUrlForDevice(value)
               }
             }))}
-            placeholder="Bridge URL"
+            placeholder="브리지 접속 주소"
             placeholderTextColor={colors.muted}
             style={styles.input}
           />
@@ -2831,26 +3547,26 @@ function AppInner() {
               ...current,
               device: { ...current.device, pairingCode: value, pairingStatus: 'pairing' }
             }))}
-            placeholder="Pairing code"
+            placeholder="페어링 코드"
             placeholderTextColor={colors.muted}
             keyboardType="number-pad"
             style={styles.input}
           />
-          {state.liveBridge.error ? <Text style={styles.warningText}>Live error: {state.liveBridge.error}</Text> : null}
+          {state.liveBridge.error ? <Text style={styles.warningText}>실시간 연결 오류: {state.liveBridge.error}</Text> : null}
           {state.liveBridge.lastResponse ? (
             <Text style={styles.mutedText}>
-              Last response: {state.liveBridge.lastResponse.status ?? state.liveBridge.lastResponse.module ?? state.liveBridge.lastAction}
+              최근 응답: {localizedDataValue(state.liveBridge.lastResponse.status ?? state.liveBridge.lastResponse.module ?? state.liveBridge.lastAction)}
             </Text>
           ) : null}
         </Section>
 
-        <Section title="C 안전 원칙" caption="Mobile First, Execution Never">
+        <Section title="모바일 안전 원칙" caption="모바일은 요청하고 PC가 실행합니다">
           <BulletList
             items={[
-              'C는 D Bridge와만 통신합니다.',
-              'C는 권한 토큰을 직접 생성하지 않습니다.',
-              'C는 PC 파일/브라우저를 직접 조작하지 않습니다.',
-              'deviceToken은 SecureStore에 sealed 상태로 저장합니다.'
+              '모바일 앱은 D 브리지와만 통신합니다.',
+              '모바일 앱은 권한 토큰을 직접 생성하지 않습니다.',
+              '모바일 앱은 PC 파일이나 브라우저를 직접 조작하지 않습니다.',
+              '기기 토큰은 보안 저장소에 암호화해 보관합니다.'
             ]}
           />
         </Section>
@@ -2861,7 +3577,7 @@ function AppInner() {
   function renderCommandScreen() {
     return (
       <View testID="screen-content-CommandScreen" style={styles.screenStack}>
-        <Section title="자연어 명령 입력" caption="Phase C-2">
+        <Section title="자연어 명령 입력" caption="명령 작성">
           <CommandComposerPanel
             rawText={state.command.rawText}
             connected={state.connection.connected}
@@ -2876,14 +3592,14 @@ function AppInner() {
           {state.command.error ? <Text style={styles.warningText}>{state.command.error}</Text> : null}
           {state.command.lastRequest ? (
             <View style={styles.payloadPreview}>
-              <Text style={styles.payloadTitle}>최근 TaskRequest</Text>
+              <Text style={styles.payloadTitle}>최근 작업 요청</Text>
               <Text style={styles.mutedText}>{state.command.lastRequest.requestId}</Text>
               <Text style={styles.mutedText}>{state.command.lastRequest.command.rawText}</Text>
             </View>
           ) : null}
         </Section>
 
-        <Section title="오프라인 큐" caption="Phase C-7">
+        <Section title="오프라인 대기열" caption="연결 복구 후 전송">
           <DataRow label="자동 전송" value={state.offline.autoSend ? '허용' : '금지'} tone={state.offline.autoSend ? 'danger' : 'good'} />
           <DataRow label="대기 명령" value={`${state.offline.pending.length}건`} tone={state.offline.pending.length ? 'warning' : 'good'} />
           {state.offline.pending.map((item: any) => (
@@ -2894,7 +3610,7 @@ function AppInner() {
           ))}
         </Section>
 
-        <Section title="빠른 이동" caption="Approval-centric UX">
+        <Section title="빠른 이동" caption="승인 중심 작업 흐름">
           <View style={styles.buttonRow}>
             <ActionButton label="승인 대기 보기" tone="primary" onPress={() => navigate(MobileRoutes.ApprovalQueueScreen)} />
             <ActionButton label="작업 상태" onPress={() => navigate(MobileRoutes.TaskStatusScreen)} />
@@ -2908,9 +3624,9 @@ function AppInner() {
   function renderApprovalQueueScreen() {
     return (
       <View testID="screen-content-ApprovalQueueScreen" style={styles.screenStack}>
-        <Section title="승인 대기 작업" caption="Phase C-3">
+        <Section title="승인 대기 작업" caption="승인 목록">
           <DataRow label="대기 카드" value={`${state.approvals.items.length}건`} tone={state.approvals.items.length ? 'warning' : 'good'} />
-          <DataRow label="Live source" value={state.connection.connected && state.liveBridge.deviceToken ? 'D Bridge /approvals' : 'local demo state'} />
+          <DataRow label="Live source" value={state.connection.connected && state.liveBridge.deviceToken ? 'D 브리지 승인 목록' : '로컬 데모 상태'} />
           {state.approvals.error ? <Text style={styles.warningText}>{state.approvals.error}</Text> : null}
           <ActionButton
             testID="approvals-refresh-button"
@@ -2926,14 +3642,14 @@ function AppInner() {
                 key={item.approvalId}
                 testID={`approval-row-${item.approvalId}`}
                 accessibilityRole="button"
-                accessibilityLabel={`approval card ${item.title}`}
+                accessibilityLabel={`승인 카드 ${item.title}`}
                 onPress={() => chooseApproval(item.approvalId)}
                 style={[styles.approvalRow, expiry.expired ? styles.expiredRow : null]}
               >
                 <View style={styles.rowTop}>
                   <Text style={styles.cardTitle}>{item.title}</Text>
                   <Text style={[styles.badgeText, { color: item.riskTier <= 3 || expiry.expired ? colors.warning : colors.accent }]}>
-                    {expiry.expired ? 'EXPIRED' : `Tier ${item.riskTier}`}
+                    {expiry.expired ? '만료됨' : `위험 ${item.riskTier}단계`}
                   </Text>
                 </View>
                 <Text style={styles.mutedText} numberOfLines={2}>{item.interpretedIntent}</Text>
@@ -2975,7 +3691,7 @@ function AppInner() {
 
     return (
       <View testID="screen-content-ApprovalDetailScreen" style={styles.screenStack}>
-        <Section title="승인 카드 상세" caption="Phase C-4">
+        <Section title="승인 카드 상세" caption="승인 검토">
           <ApprovalCardView
             card={selectedApproval}
             safety={safety}
@@ -3001,7 +3717,7 @@ function AppInner() {
           {expiry.expired ? (
             <View style={styles.warningBox}>
               <Text style={styles.warningText}>승인 카드가 만료되었습니다.</Text>
-              <Text style={styles.mutedText}>만료된 결정은 D Bridge로 전송하지 않습니다.</Text>
+              <Text style={styles.mutedText}>만료된 결정은 D 브리지로 전송하지 않습니다.</Text>
               <View style={styles.buttonRow}>
                 <ActionButton
                   testID="approval-renew-button"
@@ -3028,7 +3744,7 @@ function AppInner() {
           ) : null}
         </Section>
 
-        <Section title="승인 이력" caption="카드 생애주기 timeline" testID="approval-history-timeline">
+        <Section title="승인 이력" caption="카드 처리 과정" testID="approval-history-timeline">
           {timeline.map((item: any, index: number) => {
             const tone = approvalHistoryTone(item);
             const markerColor = tone === 'good'
@@ -3051,16 +3767,16 @@ function AppInner() {
                     <Text style={[styles.badgeText, { color: markerColor }]}>{item.status ?? item.eventType}</Text>
                   </View>
                   <Text style={styles.mutedText}>{item.createdAt}</Text>
-                  {item.actor ? <Text style={styles.mutedText}>actor: {item.actor}</Text> : null}
+                  {item.actor ? <Text style={styles.mutedText}>처리 주체: {item.actor}</Text> : null}
                   {item.detail ? <Text style={styles.bodyText}>{item.detail}</Text> : null}
-                  {item.reason ? <Text style={styles.warningText}>reason: {item.reason}</Text> : null}
+                  {item.reason ? <Text style={styles.warningText}>사유: {item.reason}</Text> : null}
                 </View>
               </View>
             );
           })}
         </Section>
 
-        <Section title="승인 결정 payload" caption="D Bridge로 전송">
+        <Section title="승인 결정 데이터" caption="D 브리지로 전송">
           <DataRow label="approvalId" value={selectedApproval.approvalId} />
           <DataRow label="taskId" value={selectedApproval.taskId} />
           <DataRow label="decidedBy" value={`${state.device.deviceId} / C_MOBILE`} />
@@ -3076,7 +3792,7 @@ function AppInner() {
     const current = state.task.current;
     return (
       <View testID="screen-content-TaskStatusScreen" style={styles.screenStack}>
-        <Section title="작업 진행 상태" caption="Phase C-5">
+        <Section title="작업 진행 상태" caption="실행 추적">
           <View style={styles.statusHeader}>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>{current.title}</Text>
@@ -3116,7 +3832,7 @@ function AppInner() {
   function renderResultScreen() {
     return (
       <View testID="screen-content-ResultScreen" style={styles.screenStack}>
-        <Section title="실행 결과" caption="Phase C-5">
+        <Section title="실행 결과" caption="결과 확인">
           <ResultSummaryCard
             result={state.result}
             feedbackText={state.feedback.text}
@@ -3178,7 +3894,7 @@ function AppInner() {
     };
     return (
       <View testID="screen-content-SettingsScreen" style={styles.screenStack}>
-        <Section title="연결 및 보안" caption="Phase C-1 / C-6">
+        <Section title="연결 및 보안" caption="기기 연결과 세션 보호">
           <TextInput
             testID="settings-bridge-url-input"
             value={state.connection.bridgeUrl}
@@ -3190,7 +3906,7 @@ function AppInner() {
                 effectiveBridgeUrl: normalizeBridgeUrlForDevice(value)
               }
             }))}
-            placeholder="Bridge URL"
+            placeholder="브리지 접속 주소"
             placeholderTextColor={colors.muted}
             style={styles.input}
           />
@@ -3203,7 +3919,7 @@ function AppInner() {
           <DataRow label="Lock reason" value={state.security.lastLifecycleLockReason ?? 'none'} tone={state.security.lastLifecycleLockReason ? 'warning' : 'good'} />
           <DataRow label="Last lock" value={state.security.lastLifecycleLockAt ?? 'none'} />
           <DataRow label="Stored token" value={state.liveBridge.deviceTokenPreview ?? 'none'} tone={state.liveBridge.deviceTokenPreview ? 'good' : 'warning'} />
-          {state.liveBridge.error ? <Text style={styles.warningText}>Live error: {state.liveBridge.error}</Text> : null}
+          {state.liveBridge.error ? <Text style={styles.warningText}>실시간 연결 오류: {state.liveBridge.error}</Text> : null}
           <View style={styles.buttonRow}>
             <ActionButton label={state.liveBridge.loading ? '확인 중' : '연결 테스트'} tone="primary" onPress={checkBridgeHealth} disabled={state.liveBridge.loading} />
             <ActionButton label="페어링 코드 발급" onPress={startLivePairing} disabled={state.liveBridge.loading} />
@@ -3212,7 +3928,7 @@ function AppInner() {
           </View>
         </Section>
 
-        <Section title="알림" caption="Phase C-알림 MVP">
+        <Section title="알림" caption="알림 및 수신 검증">
           <DataRow label="권한" value={state.notifications.permission.status} tone={state.notifications.permission.granted ? 'good' : 'warning'} />
           <DataRow label="미확인 알림" value={`${state.notifications.unreadCount}건`} />
           <DataRow label="수신 검증" value={`${state.notifications.receiptLog?.length ?? 0}건`} />
@@ -3227,7 +3943,7 @@ function AppInner() {
           ))}
         </Section>
 
-        <Section title="실행 큐 정책" caption="B queue retry policy">
+        <Section title="실행 대기열 정책" caption="PC 에이전트 재시도 설정">
           <RetryPolicySettingsPanel
             policy={state.queuePolicy}
             readiness={{ allowed: !state.security.locked }}
@@ -3247,7 +3963,7 @@ function AppInner() {
     const learningVerification = maturityScore.learningVerification ?? {};
     return (
       <View testID="screen-content-GrowthReviewScreen" style={styles.screenStack}>
-        <Section title="성장 리뷰" caption="Phase C-8 읽기 전용">
+        <Section title="성장 리뷰" caption="읽기 전용 검토">
           <Text style={styles.bodyText}>{review.summary}</Text>
           <DataRow label="기간" value={review.period} />
           <DataRow label="반복 작업" value={`${review.repeatedTasks.length}건`} />
@@ -3278,7 +3994,7 @@ function AppInner() {
   function renderPoisonQueueScreen() {
     return (
       <View testID="screen-content-PoisonQueueScreen" style={styles.screenStack}>
-        <Section title="PC Agent 격리 큐" caption="B/D/C 결합">
+        <Section title="PC 에이전트 격리 대기열" caption="모바일 검토">
           <DataRow label="상태" value={state.poisonQueue.refreshState?.visualSnapshot?.badgeLabel ?? '정상'} tone={(state.poisonQueue.queue?.quarantined ?? 0) > 0 ? 'warning' : 'good'} />
           <DataRow label="최근 갱신" value={state.poisonQueue.refreshState?.lastRefreshedAt ?? '-'} />
           <ActionButton label="큐 갱신 검증" onPress={verifyPoisonQueueDrain} />
@@ -3293,7 +4009,7 @@ function AppInner() {
             <TouchableOpacity
               key={item.queueId}
               accessibilityRole="button"
-              accessibilityLabel={`select poison packet ${item.queueId}`}
+              accessibilityLabel={`격리된 작업 ${item.queueId} 선택`}
               onPress={() => setState((current: any) => ({
                 ...current,
                 poisonQueue: { ...current.poisonQueue, selectedQueueId: item.queueId }
@@ -3301,7 +4017,7 @@ function AppInner() {
               style={styles.compactCard}
             >
               <Text style={styles.cardTitle}>{item.queueId}</Text>
-              <Text style={styles.mutedText}>{item.status} · {item.reviewStatus}</Text>
+              <Text style={styles.mutedText}>{localizedDataValue(item.status)} · {localizedDataValue(item.reviewStatus)}</Text>
             </TouchableOpacity>
           ))}
         </Section>
@@ -3322,7 +4038,7 @@ function AppInner() {
           key={MobileRoutes.HomeScreen}
           testID={`route-button-${MobileRoutes.HomeScreen}`}
           accessibilityRole="button"
-          accessibilityLabel="navigate to HomeScreen"
+          accessibilityLabel="홈 화면으로 이동"
           accessibilityState={{ selected: route === MobileRoutes.HomeScreen }}
           hitSlop={6}
           onPress={() => navigate(MobileRoutes.HomeScreen)}
@@ -3337,7 +4053,7 @@ function AppInner() {
             key={item}
             testID={`route-button-${item}`}
             accessibilityRole="button"
-            accessibilityLabel={`navigate to ${item}`}
+            accessibilityLabel={`${routeMeta[item as keyof typeof routeMeta]?.label ?? '선택한'} 화면으로 이동`}
             accessibilityState={{ selected: route === item }}
             hitSlop={6}
             onPress={() => navigate(item)}
@@ -3362,16 +4078,22 @@ function AppInner() {
   const paired = state.device.paired && Boolean(state.liveBridge.deviceToken);
 
   return (
-    <View testID="jarvis-mobile-root" accessibilityLabel="JARVIS Mobile root" style={[styles.root, { paddingTop: topInset }]}>
+    <View
+      testID="jarvis-mobile-root"
+      accessibilityLabel={`JARVIS 모바일 앱, ${paired ? '연결됨' : '연결 필요'}`}
+      style={[styles.root, { paddingTop: topInset }]}
+    >
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xl }]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
           <View style={styles.headerRow}>
             <Text testID="jarvis-mobile-title" accessibilityRole="header" style={styles.title}>
-              {isHome ? 'Jarvis' : 'JARVIS Mobile'}
+              {isHome ? 'JARVIS' : 'JARVIS 모바일'}
             </Text>
             {isHome ? (
               <View style={[styles.connPill, paired ? styles.connPillOn : styles.connPillOff]}>
@@ -3384,7 +4106,7 @@ function AppInner() {
           </View>
           <Text
             testID="jarvis-current-route"
-            accessibilityLabel={`current route ${route}`}
+            accessibilityLabel={`현재 화면 ${routeMeta[route as keyof typeof routeMeta]?.label ?? '홈'}`}
             style={isHome ? styles.homeSubtitle : styles.currentRoute}
           >
             {isHome ? '무엇을 도와드릴까요?' : `현재 화면: ${route}`}

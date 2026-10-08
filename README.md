@@ -2,30 +2,34 @@
 
 This repository now keeps two layers together:
 
-1. `src/domain` and `src/ui`: a fast executive operations console for visual/state feedback.
-2. `packages/*` and `apps/*`: a document-aligned local-first A-G runtime skeleton.
+1. `src/domain` and `src/ui`: a live Korean operator console backed by the real Core, PC Agent, and Bridge APIs. It exposes commands, approval decisions, current/recent tasks, concise execution results, and honest release blockers without demo A-G telemetry.
+2. `packages/*` and `apps/*`: the document-aligned local-first A-G runtime implementation.
 
 ## Document-aligned runtime
 
-The implementation has started moving from a visual prototype into the structure described by the seven source documents:
+The repository implements the structure described by the seven source documents, while keeping physical mobile field validation as an explicit external release gate:
 
 - `packages/shared`: shared A-G module ids, task/approval/action types, error envelopes, JSONL helpers, and sensitive-field masking.
 - `packages/core`: A Common Core Engine with `CoreRuntime` health checks/metrics/restart/fault diagnostics, `CoreRuntimeSupervisor` watchdog heartbeats/restart policy/worker-drain ticks/service supervision plan, Core Windows service lifecycle plan/readiness/CLI/API, `CommandIntake` for CLI/mobile/voice/file/image TaskRequest normalization with attachment metadata and raw-evidence policy, approval-gated `CommandInputProviderRegistry` for local text-file extraction, voice transcript sidecars, image OCR sidecars, redacted safe previews, content hashes, and `rawContentStored=false` evidence, slot-aware `IntentParser`, local semantic intent adapter, paraphrase corpus, rule-vs-semantic comparison report, clarification/replan `AmbiguityResolver`, approval-card clarification requests, clarification chain ledger, replan preview diffs, mobile clarification response replan flow, duplicate same-millisecond task-id collision avoidance, metadata-only `ReadOnlyContextCollector`/`ContextSnapshotBuilder`, approval-gated `DesktopContextCollector` for open-app/screen OCR/OS event provider snapshots with redacted previews, `rawContentStored=false`, provider-status/latency/redaction telemetry, and admin context telemetry reports, pre/postcondition `TaskPlanner` with multi-action DAG, failure branches, and compensation plans, plan-graph runner node execution, node artifact bundles, descendant skip, and partial compensation planning, `ContractRegistry` with JSON Schema bundle/compatibility report, schema snapshot hashes, and federated A/B/D/E/F/G OpenAPI bundle generation, retry/expiry/compensation-aware `TaskStateMachine`, worker task lease table, file-backed worker lease store, file-backed worker queue/run store, expired lease recovery, `CoreWorkerDaemon` queue drain/lease recovery/watchdog loop, durable replayable `EventBus` with subscriber ack, dead-letter delivery records, pending/dead-letter redrive, topic backpressure policy, projection leases, and projection recovery, manifest-based `SkillRouter` with signed manifest verification, signed plugin bundle registry, HTTPS/local-only remote registry sync, bundle rotation drills, manifest-only sandbox worker smoke, manifest-only sandbox load plans, compatibility snapshot regression, legacy capability migration, disabled/deprecated routing policy, and a capability matrix, trace-aware `AgentOrchestratorLite`, durable `OrchestrationJournal` checkpoints, node-level compensation execution records, `CoreOrchestrationWorker` for queued E capability issue, B execution, G verification, F memory ingest, task lock/lease, retry/backoff, timeout metadata, resume context, compensation planning/replay, `CoreFacade`, A-only CLI, `CoreClient`, generated Core API TypeScript route/operation declarations, Core API contract snapshot/diff utilities, CI-style core contract gate, hash-backed role/scope admin auth, and A-only HTTP API with admin diagnostics, OpenAPI 3.1 contract, runtime supervisor status/tick endpoint, service lifecycle plan endpoint, bearer-protected worker daemon start/stop/tick endpoint, worker run endpoint, compensation replay endpoint, worker queue/drain endpoints, and worker lease status/recovery endpoints.
+- `src/ui`: practical desktop control center with live A/B/D health, active queue counts, Korean command entry, approval/rejection controls, full task-detail refresh, execution output/change/list summaries, verification score, and sanitized final-release status from `dist/final-release-gate.json` and `dist/ag-operator-handoff.json`.
 - `apps/pc-agent`: B Local PC Agent with capability validation, AES-GCM sealed `CapabilityTokenVault`, opt-in Windows DPAPI-backed vault key provider metadata, durable `ExecutionPacketJournal` idempotency/replay, retry/backoff `ExecutionPacketQueue` with poison quarantine/review/requeue/ignore, service daemon queue-drain supervisor and watchdog heartbeat, registry-enforced tool adapter contracts, shadow runs, filesystem create/list/move tools with overwrite conflict policy, batch move diff/conflict taxonomy, realpath symlink/junction escape guard, and restore rollback, real XLSX workbook creation with template/style/OOXML chart drawing evidence, read-only browser search evidence with GET-only network capture, sanitized DOM snapshot/hash, Playwright live read-only capture with Python Playwright/system Chrome fallback and screenshot-hash evidence, blocked-operation proofs for download/form/upload/cookie/script paths, tool-specific evidence schema validation and privacy redaction, restart-readable tamper-evident JSONL `UndoJournal`, rollback dry-run plans, rollback transaction lock/journal, digest-signed rollback archive export, bearer-token guarded Local API routes with packet schema validation, OpenAPI 3.1 contract, and rate-limit headers, Windows service install/status/start/stop/restart/update/uninstall planner with recovery restart actions, installer package generator with lifecycle PowerShell scripts, file-integrity manifest, local digest signature, verify-package, installed-service smoke verification, full install orchestrator, diagnostic log collection scripts, service readiness verifier through CLI/API, Windows Forms notification-area tray script with queue/poison review state, C# native tray source/build script, tray launcher/startup shortcut scripts, Authenticode signing/verification scripts, dev code-signing certificate helper, NSIS installer template/build script, release manifest/evidence aggregator, tray state/actions/API, sample execution packets, G verification evidence, and F memory events.
 - `apps/bridge`: D Bridge runtime with local/private-network guard for IPv4, IPv6, IPv4-mapped IPv6, and forwarded-host checks, health/openapi/server-profile endpoints, random expiring pairing sessions with QR payloads and re-pair token replacement, device-token authentication, IP/token/device/action token-bucket rate limiting, request validation/sanitization/tier guard with path/header/body/query contracts, device listing/revocation, heartbeat, requestId replay blocking, task/approval/result/feedback/growth routing, JSONL-backed state cache with restart replay, categorized hash-chained audit trail with cursor summary, signed export, archive rotation APIs, sanitized recent events, `task.status.changed`/`approval.created`/`execution.completed` events, and SSE streaming with heartbeat, bounded replay, reconnect cursor, stream status, and ack cursor APIs.
 - `apps/policy-security`: E Policy/Security runtime with OpenAPI 3.1 route contract, JSON policy-as-code manifest/compiler, signed HMAC policy bundles, policy hot reload, policy versioning, immutable constitution endpoint with SHA-256 hash pinning, risk classification, approval policy, mobile approval guard, approval expiry/renewal, signed capability issue/validate/consume/revoke, token hash journal, TTL/scope enforcement, multi-rule PII/ministry data classification with risk-tier hints, trust-boundary labeling, policy-driven prompt-injection rules, quoted-content non-executable quarantine, tool-output poisoning eligibility gate with durable JSONL provenance/taint lineage replay, external-content quarantine, autonomy candidate checks, and hash-chain audit summary/export/rotation APIs.
 - `apps/growth-memory`: F Growth Memory runtime with OpenAPI 3.1 route contract, MemoryEvent union schema validation, source-specific safety downgrades, duplicate/do-not-remember handling, E-classifier-linked sensitive-memory minimization with hash-only redaction diffs, retention report/apply workflow, retention scheduler/status/run APIs, hygiene trend report, batch hygiene decision API, field retention metadata and safe fingerprints, workflow-signature pattern mining with positive/negative evidence, cadence/support scoring, local token-vector cosine similarity, semantic cluster merge evidence, trend history, and threshold calibration, preference hypotheses with explanations/conflict profiles and local semantic conflict classifier, confirmed/rejected/updated/revoked preference lifecycle, A planning-context preference hints, failure memories with cause taxonomy, plan links, guardrail checklists, prevented-recurrence metrics, A TaskPlanner planningGuardrail injection, recurrence trends, user guardrail review API, and taxonomy fixture coverage, weighted workflow/preference/decision/risk genomes with trend history, CloneEvidence, StyleGenome, SkillDistillation drafts with review-gated SkillDraftRegistry entries, G LearningVerifier-linked maturity scoring with trend, threshold alerts, and threshold calibration API, autonomy candidate lifecycle generation/submission/review with E policy results, memory context query, hygiene reports with keep/delete/redact/defer review decisions, SQLite-backed hygiene decision replay, audit records, storage status/backup/restore, restore drill, backup retention/rotation APIs, and growth reviews.
 - `apps/growth-memory/src/db`: SQLite-backed MemoryEvent, ConfirmedPreference, GrowthReview, and HygieneDecision persistence with schema migrations, schema metadata retention, WAL/foreign-key pragmas, transaction boundaries, integrity checks, local backup/restore, read-only restore drill reports, and backup retention/rotation. Runtime reviews are also written as JSON files under the configured review directory.
 - `apps/mobile`: C Mobile/Tablet app shell with typed API contracts, BridgeClient, Expo native capability contract for SecureStore/Notifications, QR/manual pairing contract with sealed token evidence, pairing/connection runtime, AES-GCM sealed token storage metadata, PIN/session-timeout lock gates, background/inactive lifecycle auto-lock for sensitive approvals, execution handoff, poison packet operations, queue drain/soak refresh, and retry policy updates, command composer validation/offline queue review, approval queue/detail action-state UI with mobile high-risk block reasons and clarification choice responses, task live polling, result file preview, rollback, feedback pending/error action-state flows, growth review confidence explanation, contradiction evidence, hygiene trend, single/batch hygiene decision client path, and decision pending/error/latency state, PC agent poison queue review/requeue/ignore/drain view-models with refresh delta and visual snapshot, retry policy settings view-models, RN action panel states, NativeRuntimeProbe UI for SecureStore/Notifications device evidence, notification permission/channel/delivery-log/receipt verification pipeline with background issue queue, mobile verification harness with native readiness checks, poison queue runtime/drain/soak evidence, retry policy update evidence, notification receipt evidence, and native runtime probe evidence, Android Platform Tools setup/report helper, Android Emulator/AVD readiness report, Android Gradle/APK/install verification report, app.json package-aligned ADB device probe, product build/install command matrix, artifact manifest, growth review decision view-models, and approval card UI components.
-- `apps/wearable-hud`: C/D Wearable HUD Adapter for voice-driven AI glasses and monochrome green VR displays. It compacts bridge/task/approval state into a six-line safe HUD frame, stores only transcript hashes/redacted previews, blocks high-risk direct wearable approvals, routes Tier 3+ approval to PC confirmation, renders a black/green browser HUD preview, ships a browser-safe live HUD client with memory-only token handling and Web Speech API support, and writes product-gate/field-kit evidence through `npm run wearable:verify`.
+- `apps/wearable-hud`: C/D Wearable HUD Adapter for voice-driven AI glasses and monochrome green VR displays. It compacts bridge/task/approval state into a six-line safe HUD frame, blocks direct approval for high-risk Tier 1-3 actions, routes them to PC confirmation, and ships a Korean-first browser HUD with memory-only tokens. Voice 2.0 provides continuous/interim browser recognition, silence endpointing, bounded recovery, speech feedback with barge-in, and a push-to-talk local STT fallback without retaining raw audio or transcripts. The physical field lab measures viewport overflow, microphone SNR/clipping, command recognition, Bridge latency, indoor/outdoor/motion/offline/thermal scenarios, and saves integrity-addressed evidence without self-certifying an absent device.
 - `apps/verification`: G Verification runtime with OpenAPI 3.1 route contract, plan/approval-flow/bridge/policy/execution/learning verification, C session lock/biometric/native approval-flow checks, policy-as-code/capability compliance checks, execution evidence profile, B adapter fixture corpus coverage, undo/rollback transaction hash-chain checks, bridge network/replay/rate-limit security corpus checks, durable request nonce/rate-limit replay checks, authenticated SSE/WebSocket-fallback policy checks, F MemoryEvent union-schema, redaction-diff, hygiene decision, hygiene trend, and retention scheduler checks, capability and evidence checks, g-simulation-scenario-pack-v2 dry-run scenario fixture file with B execution replay and trend API, plan/policy/learning fixture matrix with CI threshold/triage, prompt-injection redteam fixture pack with pass-rate threshold, tool-poisoning/sensitive-leak fixture pack with HTML diff artifact, regression suite with g-regression-dashboard-v1 and g-regression-triage-html-v1 artifacts, g-operational-release-gate-v1 product-promotion gate, approved GoldenTrace/BaselineComparator update, baseline diff HTML artifact, and trend APIs, F learning-signal emission, sanitized persisted JSON/HTML reports with index/trend/diff/retention-dashboard/cleanup APIs, and rubric-based 12D score output with rubric/gate APIs and dimension details.
 - Runtime HTTP APIs are implemented for B/D/E/F/G, including local execution packets, rollback, pairing, device management, heartbeat, task creation/list/status, approval decisions/renewal, execution handoff confirmation, results, feedback, event feed/SSE, state cache snapshots, policy evaluation, capability token issue/validate/consume/revoke, memory event ingest/query/review/autonomy, growth review, verification, redteam, simulation, regression dashboard, release gate, reports, and 12D score routes.
 
-Current note: the source documents specify TypeScript + pnpm workspaces, and several apps eventually call for Fastify, Expo, and SQLite. This repo now has the workspace-shaped runtime and tests first, while still using dependency-free Node modules so the contract can run immediately on this machine. The next implementation pass can replace the lightweight HTTP/runtime pieces with Fastify/SQLite/Expo without changing the A-G safety contracts.
+Current note: most local runtime and verification paths execute on this machine today. Product promotion remains intentionally blocked until the Android physical-device smoke and the live mobile-to-Bridge E2E run produce fresh matching evidence.
 
 ## Runtime scripts
 
 ```bash
+npm run product:start
+npm run product:status
+npm run ui:start
 npm test
 npm run build
 npm run ag:smoke -- "엑셀 만들어"
@@ -41,6 +45,8 @@ npm run core:service-runtime
 npm run core:service-smoke -- --output dist/core-service-smoke-report.json
 npm run core:service-soak -- --output dist/core-service-soak-report.json --task-count 4 --duration-ms 250
 npm run core:service-package -- --output-dir dist/core-service-package
+npm run core:performance
+npm run core:worker-performance
 npm run pc-agent:dev -- "엑셀 만들어"
 npm run pc-agent:packet
 npm run pc-agent:api
@@ -66,6 +72,8 @@ npm run growth:quality
 npm run verification:dashboard
 npm run wearable:verify
 npm run wearable:field-kit
+npm run wearable:physical-gate
+npm run wearable:chaos
 npm run verification:dev
 npm run ops:completion-ledger
 npm run ops:ci-annotations -- --no-emit
@@ -116,7 +124,18 @@ The dashboard and readiness report rank work in this order:
 
 This keeps the next step visible instead of leaving the A-G document map as passive status.
 
-## LLM intent brain (Claude adapter)
+## Autonomous Mission Executive
+
+The Core now includes a durable goal executive above individual tasks. It observes verified outcomes, plans bounded multi-wave work against the live PC tool registry, parallelizes independent reads, requires scoped decision gates for ungranted writes and external/irreversible commits, rejects planned-vs-routed tool mismatches before execution, replans after failures, detects repeated stalls, and only completes when every success criterion cites a G-verified action. Mission state survives runtime restarts through an atomic file store.
+
+- API: bearer-protected `/missions`, `/missions/:missionId/run`, per-action gate decisions, settings, detail, list, and cancel routes.
+- Runtime: `packages/core/src/mission/mission-runtime.js` and `packages/core/src/mission/mission-planner.js`.
+- Audit: `npm run mission:audit` writes `dist/verification/mission-executive-audit.json` and `.md`.
+- Operator guide: [`docs/mission-executive.md`](docs/mission-executive.md).
+
+This layer composes registered capabilities. Windows controls, canvas text, and icon-only controls backed by trusted local templates have verified closed loops; it does not claim unrestricted access to missing credentials, unregistered applications, external accounts, physical hardware, or previously unseen visual interfaces.
+
+## LLM intent brain (provider fallback adapter)
 
 The A core can consult a real LLM for intent classification through the policy-gated
 semantic adapter chain. It is off by default and never bypasses the E policy gates.
@@ -126,20 +145,35 @@ set JARVIS_LLM_INTENT=1
 npm run core:dev -- "요즘 로키드 글래스 신형 나왔는지 궁금하네"
 ```
 
-- Backend: `claude -p` CLI (`packages/core/src/intent/claude-cli-intent-adapter.js`), so it reuses
-  the local Claude Code subscription. No API key is stored in this repo.
+- Backend priority: Anthropic API (`JARVIS_ANTHROPIC_API_KEY`), OpenAI API
+  (`JARVIS_OPENAI_API_KEY` or `OPENAI_API_KEY`), then `claude -p` CLI. A provider failure advances
+  to the next configured runner; if all LLM runners fail, the local parser remains the safe fallback.
+  API credentials are passed to `curl` through stdin configuration and never appear in argv,
+  generated reports, or repository files.
+- Secure setup: run `npm run llm:configure-key` and enter the OpenAI key at the hidden prompt.
+  The default stores `JARVIS_OPENAI_API_KEY` in the Windows user environment only. Open a new
+  terminal and restart the JARVIS bridge/runtime, then run `npm run llm:diagnose -- --live`.
+  The diagnostic stores provider, effective model, latency, usage, and provider-reported cost,
+  but never the credential, prompt, or response. Use `npm run llm:configure-key -- -Clear` to remove
+  the user-scoped OpenAI key. Anthropic uses `-- -Provider Anthropic`.
+- OpenAI model mapping: `haiku` -> `gpt-5.4-mini`, `sonnet` -> `gpt-5.6-terra`, and `opus` ->
+  `gpt-5.6-sol`. A 5.6 access error falls back within OpenAI to `gpt-5.4-mini` or `gpt-5.4` before
+  the provider chain advances. `JARVIS_OPENAI_MODEL` pins an explicit model and disables that
+  automatic model substitution.
 - Flow: `LocalSemanticIntentAdapter` parses first; the LLM is consulted only when local
   confidence falls below `JARVIS_LLM_INTENT_MIN_LOCAL_CONFIDENCE` (default 0.72).
 - Safety: the model only selects an `actionType`. Risk tier, category, and label come from a
   fixed table inside the adapter, so model output cannot downgrade risk. Confidence is clamped
-  to 0.93. CLI failure/timeout/garbage output falls back to the local parser.
-- Evidence: `intent.semantic` records `externalService: anthropic-claude-cli`,
-  `rawCommandSharedWithModel: true`, model, latency, and a prompt hash.
+  to 0.93. Provider failure, timeout, or malformed output cannot bypass the local parser or E policy.
+- Evidence: `intent.semantic` records the provider and model that actually completed the call,
+  `rawCommandSharedWithModel: true`, latency, usage, provider-reported cost, fallback count, and a
+  prompt hash. A repeated intent cache hit records no second external raw-command disclosure.
 - Tuning: `JARVIS_LLM_INTENT_MODEL` (default `haiku`), `JARVIS_LLM_INTENT_TIMEOUT_MS`
   (default 45000), `JARVIS_LLM_INTENT_COMMAND` (default `claude`).
-- Known limit: the installed `JARVISCoreRuntime` Windows service runs as `LocalSystem`, which has
-  no Claude CLI credentials, so the service path silently falls back to the local parser. Run the
-  runtime in a user context (or move the service to a user account) to get LLM intent there.
+- Known limit: the installed `JARVISCoreRuntime` Windows service runs as `LocalSystem`, so it cannot
+  see user-scoped API keys or Claude CLI credentials. Run the bridge/runtime in the signed-in user
+  session, or provision a machine/service secret through the deployment environment; never copy a
+  key into source, a command argument, or a generated package.
 
 ## LLM plan decomposition (Claude planner)
 
@@ -217,7 +251,11 @@ Security approvals now carry an expiry timestamp. Expired approvals are marked i
 npm start
 ```
 
-Open <http://localhost:4173>.
+`npm start` supervises the Core Runtime, PC Agent, Mobile Bridge, and Control Center together. Healthy existing services are reused; missing services are started and owned child processes receive bounded automatic recovery.
+
+Open <http://127.0.0.1:41730>. Use `npm run product:status` for a non-mutating four-service health and product-identity check, or `npm run ui:start` when only the static UI development server is needed.
+
+For personal local operation, the Control Center includes a 30-minute owner session that pre-authorizes local read, reversible, and high-impact PC work while retaining per-action confirmation for external or irreversible changes. See [docs/personal-owner-mode.md](docs/personal-owner-mode.md) and run `npm run product:personal-audit` to verify personal readiness separately from paid-distribution gates.
 
 ## Build
 
@@ -259,6 +297,16 @@ npm run ag:product-gate
 This runs the strict A-G gap audit and writes `dist/ag-product-readiness-gate.json`, `.md`, and `.csv`. Unlike the implementation audit, this gate is intentionally product-facing: it compares the current product-readiness score against 95%, groups remaining work into execution lanes, checks expected evidence artifacts, and emits exact commands for Windows service validation, mobile device validation, browser soak, growth-quality review, security redteam expansion, and G dashboard evidence.
 
 The gate is expected to stay `blocked` until physical Windows service runs, mobile device runs, long soaks, and larger quality/redteam corpora have been collected. That blocked state is useful: it keeps the remaining real-world work visible instead of letting document-shaped code look finished too early.
+
+## Core performance gate
+
+```bash
+npm run core:performance
+```
+
+This compares the legacy immediate JSONL durability path with operation-scoped durable batching under the same command workload. It requires at least a 2x median speedup, checks event and orchestration record equivalence, verifies durable-write reduction, and writes content-free evidence to `dist/verification/core-performance-report.json` and `.md`.
+
+`npm run core:worker-performance` measures the approved queue-to-PC-to-verification-to-learning path with durable storage enabled. The gate requires at least a 2x median throughput improvement for independent read-only adapter I/O, verifies identical task semantics, limits queue snapshots to two writes per task, and proves that mutating tasks remain strictly sequential. It writes `dist/verification/core-worker-performance-report.json` and `.md`.
 
 ## Final ledger and CI annotations
 
@@ -393,16 +441,25 @@ The first command records native Android project, Gradle, APK, ADB, and package-
 npm run mobile:device
 ```
 
-This runs the Android device smoke probe directly. It resolves `adb` from `JARVIS_ADB_PATH`, `ADB`, `JARVIS_ANDROID_TOOLS_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, the JARVIS local tools cache, or PATH. When ADB has a ready device and `local.eureka.jarvis` is installed, it launches `MainActivity`, waits for the React Native screen to render, captures a PNG screenshot into `dist/mobile-device/`, dumps `jarvis-window.xml`, and checks the UI dump for the JARVIS mobile screen contract plus SecureStore/Notifications native runtime probe labels. Blocked runs still write `dist/mobile-device-smoke-report.json`, `.md`, and `.html` with next actions.
+This runs the Android device smoke probe directly. It resolves `adb` from `JARVIS_ADB_PATH`, `ADB`, `JARVIS_ANDROID_TOOLS_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, the JARVIS local tools cache, or PATH. When ADB has a ready device and `local.eureka.jarvis` is installed, it launches `MainActivity`, captures a hashed PNG and UI hierarchy, verifies the practical production home in either pairing-ready or connected command-ready mode, and confirms the installed package declares microphone, notification, and biometric capabilities. Hidden engineering tabs are not required. Blocked runs still write `dist/mobile-device-smoke-report.json`, `.md`, and `.html` with next actions. Passed physical evidence is additionally retained under the ignored `artifacts/field-evidence/mobile-device/` store, so a later `dist` rebuild cannot erase it. An offline verification may reuse only the last passed run whose complete mobile source fingerprint still matches, whose retained screenshot SHA-256 verifies, and whose age is at most seven days; the report always keeps the current ADB connection state separate from retained evidence.
+
+```bash
+npm run mobile:e2e-install
+npm run mobile:live-bridge-e2e
+```
+
+The first command builds and installs the isolated `local.eureka.jarvis.e2e` Android package for a connected ARM64 device. The second command clears only that test package, creates a fresh Bridge runtime, connects it through ADB reverse, and drives the real production home through pairing, command submission, approval, result rendering, SecureStore restore, device revoke, and SecureStore cleanup. Every run has an isolated runtime journal and follows only the task created during that run; the primary `local.eureka.jarvis` app and its data are left untouched. Keep the device connected and unlocked until the report is complete.
 
 ## Wearable HUD verification
 
 ```bash
 npm run wearable:verify
 npm run wearable:field-kit
+npm run wearable:physical-gate
+npm run wearable:chaos
 ```
 
-This verifies the C/D Wearable HUD Adapter for AI smart glasses: wake-word voice intent parsing, redacted transcript previews, high-risk approval blocking, PC confirmation handoff, bridge sync endpoints, green monochrome frame limits, Korean-first HUD labels, browser-safe live client contracts, and safe HTML preview rendering. It writes `dist/wearable-hud-verification-report.json`, `dist/wearable-hud-verification-report.md`, `dist/wearable-hud-preview.html`, and a launchable field kit under `dist/wearable-hud-field-kit/`.
+This verifies the C/D Wearable HUD Adapter for AI smart glasses: wake-word voice intent parsing, Voice 2.0 recovery and privacy, high-risk approval blocking, PC confirmation handoff, Bridge sync endpoints, green monochrome frame limits, Korean-first HUD labels, and browser-safe rendering. The physical gate is deliberately separate: static readiness can pass while `physicalValidationPassed` remains false until a real device produces valid evidence. Reports are written to `dist/wearable-hud-verification-report.*`, `dist/wearable-physical-field-gate.*`, and the launchable field kit under `dist/wearable-hud-field-kit/`.
 
 To serve the glasses-facing HUD on the local network:
 
@@ -410,7 +467,14 @@ To serve the glasses-facing HUD on the local network:
 node dist/wearable-hud-field-kit/field-server.mjs --host 0.0.0.0 --port 4176
 ```
 
-Open `http://<this-pc-ip>:4176/` on the glasses browser or mirrored display. The device token remains memory-only in the page.
+Open `http://<this-pc-ip>:4176/` on the glasses browser or mirrored display for visual and network checks. Microphone validation requires a secure browser context. For Android/ADB-compatible glasses, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File dist/wearable-hud-field-kit/connect-wearable-adb.ps1`; it reverses ports 4176 and 17777 to the wearable localhost, verifies both tunnels without retaining the raw device serial, and opens the calibration page. Non-ADB devices must use a trusted HTTPS or vendor WebView deployment path. The device token remains memory-only, field evidence excludes raw audio/transcripts/screenshots, and the gate reports `ready-for-physical-device` until the full real-device run is saved.
+
+The default browser speech provider needs no server setup. For browsers without SpeechRecognition, configure a local STT executable before starting the field server. Arguments are a JSON array; `{inputPath}` and `{language}` are replaced without invoking a shell.
+
+```powershell
+$env:JARVIS_WEARABLE_STT_COMMAND = 'C:\path\to\local-stt.exe'
+$env:JARVIS_WEARABLE_STT_ARGS_JSON = '["--input","{inputPath}","--language","{language}"]'
+```
 
 ## A-G implementation audit
 
@@ -426,7 +490,7 @@ This checks that each A-G document stream has concrete code evidence such as run
 npm run ag:gap
 ```
 
-This is the honest document-gap audit. Unlike `ag:audit`, it does not treat file presence as completion. It scores each A-G requirement as complete, substantial, partial, stub, or missing, then separates implementation depth from product readiness. It writes `dist/ag-strict-gap-audit.json`, `dist/ag-strict-gap-audit.md`, and `dist/ag-strict-gap-audit.csv`.
+This is the static document-gap audit. It checks declared A-G requirement status against source, test, and artifact markers, then separates implementation coverage from product readiness. Its strict score is not current-run behavioral proof or field completion; pair it with `dist/test-run-report.json` and `dist/final-release-gate.json`. It writes `dist/ag-strict-gap-audit.json`, `dist/ag-strict-gap-audit.md`, and `dist/ag-strict-gap-audit.csv`.
 
 ## Verified
 
@@ -437,6 +501,8 @@ This is the honest document-gap audit. Unlike `ag:audit`, it does not treat file
 - `npm run mobile:verify`
 - `npm run wearable:verify`
 - `npm run wearable:field-kit`
+- `npm run wearable:physical-gate`
+- `npm run wearable:chaos`
 - `npm run mobile:setup-android`
 - `npm run mobile:emulator`
 - `npm run mobile:android-install`

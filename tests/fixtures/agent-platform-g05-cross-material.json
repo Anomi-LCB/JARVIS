@@ -1,0 +1,52 @@
+{
+  "fixtureId": "g05-cross-material-tabular-report-v1",
+  "procedureDefinition": {
+    "kind": "tabular-group-sum-v1",
+    "reportTitle": "부서별 지출 합계",
+    "groupAliases": ["Team", "Department", "팀", "부서"],
+    "valueAliases": ["Amount", "Total KRW", "금액", "비용"]
+  },
+  "cases": [
+    {
+      "caseId": "demonstration-ledger",
+      "sourceId": "demonstration-source-v1",
+      "split": "demonstration",
+      "rows": [
+        { "Team": "Research", "Amount": 12 },
+        { "Team": "Research", "Amount": 8 },
+        { "Team": "Ministry", "Amount": 5 }
+      ],
+      "expectedRows": [
+        { "group": "Ministry", "total": 5, "count": 1 },
+        { "group": "Research", "total": 20, "count": 2 }
+      ]
+    },
+    {
+      "caseId": "holdout-renamed-columns",
+      "sourceId": "holdout-source-v2",
+      "split": "holdout",
+      "rows": [
+        { "Department": "Education", "Total KRW": "17" },
+        { "Department": "Education", "Total KRW": 3 },
+        { "Department": "Care", "Total KRW": 9 }
+      ],
+      "expectedRows": [
+        { "group": "Care", "total": 9, "count": 1 },
+        { "group": "Education", "total": 20, "count": 2 }
+      ]
+    }
+  ],
+  "failureInjection": {
+    "caseId": "holdout-unknown-column-alias",
+    "sourceId": "holdout-source-v3",
+    "split": "holdout",
+    "rows": [
+      { "Org Unit": "Education", "Ledger Value": 20 },
+      { "Org Unit": "Care", "Ledger Value": 9 }
+    ],
+    "expectedRows": [
+      { "group": "Care", "total": 9, "count": 1 },
+      { "group": "Education", "total": 20, "count": 1 }
+    ]
+  }
+}

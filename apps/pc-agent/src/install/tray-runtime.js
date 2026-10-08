@@ -53,6 +53,13 @@ export class PcAgentTrayRuntime {
       } : null,
       lastExecution,
       warnings,
+      surface: {
+        type: 'native_windows_form',
+        locale: 'ko-KR',
+        opensFromTrayClick: true,
+        backgroundScriptsHidden: true,
+        liveStatusRefresh: true
+      },
       menu: this.menu({ connected, poisonReview, approvalDiffReview }),
       notifications: this.notifications({ connected, warnings, poisonReview, queueSummary, approvalDiffReview })
     };
@@ -60,18 +67,19 @@ export class PcAgentTrayRuntime {
 
   menu({ connected, poisonReview, approvalDiffReview }) {
     return [
-      { id: 'open-console', label: 'Open JARVIS Console', enabled: true, action: 'open_url', target: './dist/index.html' },
-      { id: 'open-health', label: 'Open PC Agent Health', enabled: true, action: 'open_url', target: `http://${this.daemonConfig.host}:${this.daemonConfig.port}/health` },
-      { id: 'open-queue', label: 'Open Execution Queue', enabled: connected, action: 'open_url', target: `http://${this.daemonConfig.host}:${this.daemonConfig.port}/execution-packets/queue` },
-      { id: 'review-approval-diff', label: `Review Approval Diff (${approvalDiffReview.count})`, enabled: connected && approvalDiffReview.required, action: 'open_url', target: approvalDiffReview.reviewUrl },
-      { id: 'review-poison-queue', label: `Review Poison Queue (${poisonReview.count})`, enabled: connected && poisonReview.required, action: 'open_url', target: poisonReview.reviewUrl },
-      { id: 'start-service', label: 'Start Local Agent', enabled: !connected, action: 'run_script', target: 'start-service.ps1', requiresElevation: true },
-      { id: 'stop-service', label: 'Stop Local Agent', enabled: connected, action: 'run_script', target: 'stop-service.ps1', requiresElevation: true },
-      { id: 'restart-service', label: 'Restart Local Agent', enabled: connected, action: 'run_script', target: 'restart-service.ps1', requiresElevation: true },
-      { id: 'update-service', label: 'Update Local Agent', enabled: true, action: 'run_script', target: 'update-service.ps1', requiresElevation: true },
-      { id: 'collect-logs', label: 'Collect Diagnostic Logs', enabled: true, action: 'run_script', target: 'collect-logs.ps1' },
-      { id: 'verify-package', label: 'Verify Installer Package', enabled: true, action: 'run_script', target: 'verify-package.ps1' },
-      { id: 'copy-endpoint', label: 'Copy Local Endpoint', enabled: true, action: 'copy_text', target: `http://${this.daemonConfig.host}:${this.daemonConfig.port}` }
+      { id: 'open-panel', label: 'PC 에이전트 제어 패널 열기', enabled: true, action: 'show_window', target: 'JarvisPcAgentTray.exe --show' },
+      { id: 'open-console', label: 'JARVIS 제어 센터 열기', enabled: true, action: 'open_url', target: './dist/index.html' },
+      { id: 'open-health', label: 'PC 에이전트 상태 열기', enabled: true, action: 'open_url', target: `http://${this.daemonConfig.host}:${this.daemonConfig.port}/health` },
+      { id: 'open-queue', label: '실행 대기열 열기', enabled: connected, action: 'open_url', target: `http://${this.daemonConfig.host}:${this.daemonConfig.port}/execution-packets/queue` },
+      { id: 'review-approval-diff', label: `승인 변경 내용 검토 (${approvalDiffReview.count})`, enabled: connected && approvalDiffReview.required, action: 'open_url', target: approvalDiffReview.reviewUrl },
+      { id: 'review-poison-queue', label: `격리된 작업 검토 (${poisonReview.count})`, enabled: connected && poisonReview.required, action: 'open_url', target: poisonReview.reviewUrl },
+      { id: 'start-service', label: '로컬 에이전트 시작', enabled: !connected, action: 'run_script', target: 'start-service.ps1', requiresElevation: true },
+      { id: 'stop-service', label: '로컬 에이전트 중지', enabled: connected, action: 'run_script', target: 'stop-service.ps1', requiresElevation: true },
+      { id: 'restart-service', label: '로컬 에이전트 다시 시작', enabled: connected, action: 'run_script', target: 'restart-service.ps1', requiresElevation: true },
+      { id: 'update-service', label: '로컬 에이전트 업데이트', enabled: true, action: 'run_script', target: 'update-service.ps1', requiresElevation: true },
+      { id: 'collect-logs', label: '진단 기록 수집', enabled: true, action: 'run_script', target: 'collect-logs.ps1' },
+      { id: 'verify-package', label: '설치 패키지 검증', enabled: true, action: 'run_script', target: 'verify-package.ps1' },
+      { id: 'copy-endpoint', label: '로컬 접속 주소 복사', enabled: true, action: 'copy_text', target: `http://${this.daemonConfig.host}:${this.daemonConfig.port}` }
     ];
   }
 
@@ -80,33 +88,33 @@ export class PcAgentTrayRuntime {
     if (!connected) {
       items.push({
         level: 'warning',
-        title: 'PC Agent offline',
-        body: 'Local execution packets will stay queued until the service is running.'
+        title: 'PC 에이전트 연결 끊김',
+        body: '서비스가 실행될 때까지 로컬 작업이 대기열에 보관됩니다.'
       });
     }
     if (poisonReview.required) {
       items.push({
         level: 'warning',
-        title: 'Poison packets need review',
-        body: `${poisonReview.count} execution packet(s) are quarantined and require review.`
+        title: '격리된 작업 검토 필요',
+        body: `격리된 작업 ${poisonReview.count}건을 검토해야 합니다.`
       });
     }
     if (approvalDiffReview.required) {
       items.push({
         level: approvalDiffReview.conflictCount > 0 ? 'warning' : 'info',
-        title: 'Approval diff ready',
-        body: `${approvalDiffReview.count} pending approval diff(s) are ready for review.`
+        title: '승인 변경 내용 검토 가능',
+        body: `대기 중인 승인 변경 내용 ${approvalDiffReview.count}건을 검토할 수 있습니다.`
       });
     }
     if (queueSummary.retryScheduled > 0) {
       items.push({
         level: 'info',
-        title: 'Execution retry scheduled',
-        body: `${queueSummary.retryScheduled} packet(s) are waiting for retry backoff.`
+        title: '작업 재시도 예약됨',
+        body: `작업 ${queueSummary.retryScheduled}건이 재시도 시점을 기다리고 있습니다.`
       });
     }
     for (const warning of warnings) {
-      items.push({ level: 'info', title: 'PC Agent notice', body: warning });
+      items.push({ level: 'info', title: 'PC 에이전트 알림', body: warning });
     }
     return items;
   }
@@ -164,8 +172,8 @@ function approvalDiffReviewFor({ endpoint, approvalDiffs = [] }) {
     warningCount,
     reviewUrl: `${endpoint}/execution-packets/queue`,
     summary: items.length
-      ? `${items.length} approval diff(s), ${conflictCount} conflict(s), ${warningCount} warning(s)`
-      : 'No pending approval diffs.',
+      ? `승인 변경 ${items.length}건, 충돌 ${conflictCount}건, 주의 ${warningCount}건`
+      : '대기 중인 승인 변경 내용이 없습니다.',
     items: items.slice(0, 5).map((item, index) => ({
       diffId: item.diffId ?? `approval-diff-${index + 1}`,
       diffVersion: item.diffVersion ?? 'b-approval-diff-v1',

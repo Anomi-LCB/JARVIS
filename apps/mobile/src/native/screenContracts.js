@@ -1,57 +1,55 @@
-export const mobileScreenContract = {
+export const mobileScreenContract = Object.freeze({
+  contractVersion: 'c-mobile-production-home-screen-contract-v2',
   rootTestId: 'jarvis-mobile-root',
   titleTestId: 'jarvis-mobile-title',
   routeTestId: 'jarvis-current-route',
-  routeButtonPrefix: 'route-button-',
-  nativeRuntimeProbeTestId: 'native-runtime-probe',
-  nativeRuntimeProbeLabels: ['Native runtime probe', 'SecureStore native:', 'Notifications native:', 'Sharing native:']
-};
+  homeContentTestId: 'screen-content-HomeScreen',
+  commandInputTestId: 'home-command-input',
+  submitButtonTestId: 'home-submit-button',
+  conversationButtonTestId: 'home-conversation-button',
+  pairingTestIds: [
+    'home-bridge-url-input',
+    'home-pairing-code-input',
+    'home-pair-button'
+  ]
+});
 
-export function expectedRouteButtonTestIds(routes = []) {
-  return routes.map((route) => `${mobileScreenContract.routeButtonPrefix}${route}`);
-}
-
-export function validateMobileScreenContract({ appSource = '', routes = [] } = {}) {
+export function validateMobileScreenContract({ appSource = '' } = {}) {
   const expectedTestIds = [
     mobileScreenContract.rootTestId,
     mobileScreenContract.titleTestId,
     mobileScreenContract.routeTestId,
-    mobileScreenContract.nativeRuntimeProbeTestId,
-    ...expectedRouteButtonTestIds(routes)
+    mobileScreenContract.homeContentTestId,
+    mobileScreenContract.commandInputTestId,
+    mobileScreenContract.submitButtonTestId,
+    mobileScreenContract.conversationButtonTestId,
+    ...mobileScreenContract.pairingTestIds
   ];
-  const mappedRouteButtonPattern = `${mobileScreenContract.routeButtonPrefix}\${item}`;
-  const checks = expectedTestIds.map((testId) => {
-    const directMatch = appSource.includes(testId);
-    const mappedRouteMatch = testId.startsWith(mobileScreenContract.routeButtonPrefix)
-      && appSource.includes(mappedRouteButtonPattern);
-    return {
-      id: `screen:test-id:${testId}`,
-      expected: testId,
-      passed: directMatch || mappedRouteMatch,
-      actual: directMatch ? testId : (mappedRouteMatch ? mappedRouteButtonPattern : null)
-    };
-  });
+  const checks = expectedTestIds.map((testId) => ({
+    id: `screen:test-id:${testId}`,
+    expected: testId,
+    passed: appSource.includes(testId),
+    actual: appSource.includes(testId) ? testId : null
+  }));
 
   checks.push({
-    id: 'screen:accessibility:route-buttons',
-    expected: 'accessibilityRole="button"',
-    passed: appSource.includes('accessibilityRole="button"'),
-    actual: appSource.includes('accessibilityRole="button"') ? 'present' : null
+    id: 'screen:accessibility:command-submit',
+    expected: 'accessibilityLabel="자비스에게 시키기"',
+    passed: appSource.includes('accessibilityLabel="자비스에게 시키기"'),
+    actual: appSource.includes('accessibilityLabel="자비스에게 시키기"') ? 'present' : null
   });
   checks.push({
-    id: 'screen:accessibility:current-route',
-    expected: 'accessibilityLabel={`current route ${route}`}',
-    passed: appSource.includes('accessibilityLabel={`current route ${route}`}'),
-    actual: appSource.includes('accessibilityLabel={`current route ${route}`}') ? 'present' : null
+    id: 'screen:accessibility:conversation-mode',
+    expected: 'accessibilityLabel="대화 모드 시작"',
+    passed: appSource.includes('accessibilityLabel="대화 모드 시작"'),
+    actual: appSource.includes('accessibilityLabel="대화 모드 시작"') ? 'present' : null
   });
-  for (const label of mobileScreenContract.nativeRuntimeProbeLabels) {
-    checks.push({
-      id: `screen:native-probe:${label}`,
-      expected: label,
-      passed: appSource.includes(label),
-      actual: appSource.includes(label) ? 'present' : null
-    });
-  }
+  checks.push({
+    id: 'screen:product:home-is-primary-surface',
+    expected: 'renderHomeScreen primary surface',
+    passed: appSource.includes('return renderHomeScreen();') && appSource.includes('const isHome = true;'),
+    actual: appSource.includes('return renderHomeScreen();') && appSource.includes('const isHome = true;') ? 'present' : null
+  });
 
   return {
     status: checks.every((item) => item.passed) ? 'passed' : 'failed',

@@ -415,6 +415,34 @@ export function createSkillDraftReviewState({
 } = {}) {
   const drafts = review?.skillDistillations ?? review?.skillRegistry?.drafts ?? [];
   const registryEntries = review?.skillRegistry?.registryEntries ?? [];
+  const revisionEntries = registryEntries.map((entry) => {
+    const revisions = entry.revisions ?? [];
+    const pendingRevision = revisions.find((revision) => revision.revisionId === entry.pendingRevisionId) ?? null;
+    const activeRevision = revisions.find((revision) => revision.revisionId === entry.activeRevisionId) ?? null;
+    return {
+      skillId: entry.skillId,
+      title: entry.title,
+      status: entry.status,
+      activeRevisionId: entry.activeRevisionId ?? null,
+      activeVersion: activeRevision?.version ?? null,
+      activeSteps: activeRevision?.suggestedSteps ?? entry.suggestedSteps ?? [],
+      pendingRevision: pendingRevision ? {
+        revisionId: pendingRevision.revisionId,
+        version: pendingRevision.version,
+        status: pendingRevision.status,
+        suggestedSteps: pendingRevision.suggestedSteps ?? [],
+        evaluation: pendingRevision.evaluation ?? null
+      } : null,
+      executableByDefault: entry.policy?.executableByDefault === true,
+      requiresUserReview: entry.policy?.requiresUserReview !== false,
+      requiresPolicyCheck: entry.policy?.requiresPolicyCheck !== false,
+      availableActions: pendingRevision
+        ? pendingRevision.status === 'draft' ? ['evaluate']
+          : pendingRevision.status === 'awaiting_user_review' ? ['review']
+            : pendingRevision.status === 'review_approved' ? ['promote'] : []
+        : ['create', ...(revisions.some((revision) => revision.status === 'superseded') ? ['rollback'] : [])]
+    };
+  });
   return {
     stateVersion: 'c-skill-draft-review-ui-v1',
     reviewId: review?.reviewId,
@@ -452,9 +480,40 @@ export function createSkillDraftReviewState({
       error: actionErrors[draft.distilledSkillId] ?? null
     })),
     registryEntries,
+    revisionEntries,
     usefulnessReport: review?.skillRegistry?.usefulnessReport ?? null,
     emptyMessage: drafts.length ? null : '검토할 스킬 초안이 없습니다.'
   };
+}
+
+export function createSkillRevisionDiff(activeSteps = [], proposedSteps = []) {
+  const left = Array.isArray(activeSteps) ? activeSteps.map(String) : [];
+  const right = Array.isArray(proposedSteps) ? proposedSteps.map(String) : [];
+  const rows = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = left.length - 1; i >= 0; i -= 1) {
+    for (let j = right.length - 1; j >= 0; j -= 1) {
+      rows[i][j] = left[i] === right[j]
+        ? rows[i + 1][j + 1] + 1
+        : Math.max(rows[i + 1][j], rows[i][j + 1]);
+    }
+  }
+  const diff = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && left[i] === right[j]) {
+      diff.push({ status: 'unchanged', text: left[i] });
+      i += 1;
+      j += 1;
+    } else if (j < right.length && (i >= left.length || rows[i][j + 1] >= rows[i + 1][j])) {
+      diff.push({ status: 'added', text: right[j] });
+      j += 1;
+    } else {
+      diff.push({ status: 'removed', text: left[i] });
+      i += 1;
+    }
+  }
+  return diff;
 }
 
 export function createAutonomyCandidateReviewState({

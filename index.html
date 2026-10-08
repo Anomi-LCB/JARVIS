@@ -3,11 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>JARVIS Control Center</title>
-    <link rel="stylesheet" href="./src/ui/styles.css" />
+    <title>JARVIS 작업 공간</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" data-workspace-style href="./src/ui/workspace/styles.css?v=1" />
   </head>
   <body>
-    <main id="app" aria-label="JARVIS local control center"></main>
-    <script type="module" src="./src/ui/app.js"></script>
+    <div id="app"></div>
+    <script type="module" src="./src/ui/entry.js?v=1"></script>
   </body>
 </html>

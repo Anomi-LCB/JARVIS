@@ -1,7 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, realpathSync, lstatSync, renameSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, isAbsolute, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import {parsePersonalKnowledgeStatement,projectPersonalKnowledge} from '../personal-knowledge-projection.js';
+import {memoryScopeMatches,normalizeMemoryScope,sourceRecallAllowed} from '../memory-provenance.js';
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
@@ -16,7 +18,17 @@ function sha256Json(value) {
 }
 
 export class SqliteMemoryStore {
-  constructor({ dbPath = 'apps/growth-memory/data/growth.sqlite', reviewDir = 'apps/growth-memory/data/reviews', backupDir = 'apps/growth-memory/data/backups', clock = () => new Date() } = {}) {
+  constructor({ dbPath, reviewDir, backupDir, clock = () => new Date(), reconcileReviewExports = true } = {}) {
+    let defaultRoot='apps/growth-memory/data';
+    if(process.env.JARVIS_TEST_MODE==='1'){
+      const root=process.env.JARVIS_TEST_AUDIT_ROOT;
+      if(!root || !isAbsolute(root))throw Object.assign(new Error('An isolated absolute test root is required.'),{code:'F_TEST_MEMORY_ROOT_REQUIRED'});
+      // Omitted review/backup paths must not silently fall back to production
+      // merely because a test supplied its own database filename.
+      defaultRoot=join(root,'growth-memory-'+process.pid);
+    }
+    dbPath??=join(defaultRoot,'growth.sqlite');
+    reviewDir??=join(defaultRoot,'reviews');backupDir??=join(defaultRoot,'backups');
     this.dbPath = dbPath;
     this.reviewDir = reviewDir;
     this.backupDir = backupDir;
@@ -28,13 +40,15 @@ export class SqliteMemoryStore {
     mkdirSync(backupDir, { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.initialize();
+    this.reviewExportReconciliationEnabled=reconcileReviewExports;
+    if(reconcileReviewExports)this.reconcileReviewExports();
   }
 
   initialize() {
+    this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
-    this.db.exec('PRAGMA busy_timeout = 5000;');
     this.transaction(() => {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -122,6 +136,26 @@ export class SqliteMemoryStore {
         );
         CREATE INDEX IF NOT EXISTS idx_growth_trend_snapshots_type_time ON growth_trend_snapshots(trend_type, generated_at);
       `);
+      // Operational generation is excluded from restored application tables.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS memory_restore_generation (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1), generation INTEGER NOT NULL);
+        INSERT OR IGNORE INTO memory_restore_generation VALUES (1, 0);`);
+      this.db.exec(`CREATE TABLE IF NOT EXISTS pending_memory_events (
+        event_id TEXT PRIMARY KEY, event_json TEXT NOT NULL, event_hash TEXT NOT NULL,
+        queued_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT);`);
+      this.db.exec(`CREATE TABLE IF NOT EXISTS source_retraction_deliveries (
+        delivery_hash TEXT NOT NULL, receiver_hash TEXT NOT NULL, generation INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('attempted','acknowledged')),
+        attempts INTEGER NOT NULL, observed_at TEXT NOT NULL,
+        PRIMARY KEY(delivery_hash,receiver_hash,generation));`);
+      // Content-free monotonic revision fences survive application rollback,
+      // including snapshots where the original source is absent.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_retirements (
+        source_event_id TEXT PRIMARY KEY, successor_event_id TEXT NOT NULL);
+        INSERT OR IGNORE INTO knowledge_retirements
+        SELECT event_id,json_extract(payload_json,'$.knowledgeRetiredBy') FROM memory_events
+        WHERE json_type(payload_json,'$.knowledgeRetiredBy')='text';`);
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_events_owner_conversation_time ON memory_events(json_extract(source_json,'$.memoryScope.userId'),json_extract(source_json,'$.memoryScope.conversationId'),created_at);");
       this.setUserVersion(this.schemaVersion);
     });
   }
@@ -142,20 +176,72 @@ export class SqliteMemoryStore {
     this.db.exec(`PRAGMA user_version = ${Number(version)}`);
   }
 
-  transaction(fn) {
+  transaction(fn, {deferred=false} = {}) {
     if (this.inTransaction) return fn();
     this.inTransaction = true;
-    this.db.exec('BEGIN IMMEDIATE TRANSACTION;');
+    let began = false;
     try {
+      this.db.exec(deferred?'BEGIN DEFERRED TRANSACTION;':'BEGIN IMMEDIATE TRANSACTION;'); began = true;
       const result = fn();
       this.db.exec('COMMIT;');
       return result;
     } catch (error) {
-      this.db.exec('ROLLBACK;');
+      if (began) this.db.exec('ROLLBACK;');
       throw error;
     } finally {
       this.inTransaction = false;
+      if(this.reviewExportsDirty && this.reviewExportReconciliationEnabled){
+        this.reviewExportsDirty=false;
+        this.reconcileReviewExports();
+      }
     }
+  }
+
+  reviewSourceState() {
+    return {sourceDigest:this.sourceRetractionDigest(),hasSourceFences:this.allSourceRetractions().length>0||this.hasRetiredKnowledgeSources(),
+      preferenceDigest:this.preferenceStateDigest(),hasPreferences:this.allConfirmedPreferences().length>0};
+  }
+
+  projectStoredReview(row,state=this.reviewSourceState()) {
+    const review=JSON.parse(row.review_json);
+    const reason=state.hasSourceFences && review.sourceRetractionDigest!==state.sourceDigest?'F_REVIEW_SOURCE_RETRACTED':
+      (review.preferenceStateDigest!==undefined||state.hasPreferences)&&review.preferenceStateDigest!==state.preferenceDigest?'F_REVIEW_PREFERENCE_CHANGED':null;
+    return reason?{reviewId:row.review_id,generatedAt:row.generated_at,status:'source_review_required',contentWithheld:true,reasonCode:reason}:review;
+  }
+
+  writeReviewExport(path,text) {
+    const temporary=path+'.'+randomBytes(8).toString('hex')+'.tmp';
+    try{writeFileSync(temporary,text,{encoding:'utf8',flag:'wx'});renameSync(temporary,path);}
+    finally{if(existsSync(temporary))unlinkSync(temporary);}
+  }
+
+  reconcileReviewExports() {
+    if(this.inTransaction||!this.reviewExportReconciliationEnabled)return this.reviewExportStatus??{status:'pending',pending:0};
+    let pending=0,rewritten=0,total=0;
+    try{
+      // Hold the SQLite writer lock through the bounded filesystem publication,
+      // so another connection cannot correct sources between check and rename.
+      this.db.exec('BEGIN IMMEDIATE');
+      const state=this.reviewSourceState(),base=realpathSync(this.reviewDir);
+      for(const row of this.db.prepare('SELECT * FROM growth_reviews').all()){
+        total++;
+        try{
+          if(!/^[\w.-]{1,200}$/.test(row.review_id)||row.review_id==='.'||row.review_id==='..'
+            ||resolve(row.file_path)!==resolve(this.reviewDir,row.review_id+'.json')
+            ||realpathSync(dirname(row.file_path))!==base)throw new Error('Unsafe export path.');
+          if(existsSync(row.file_path)){
+            const stat=lstatSync(row.file_path);
+            if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe export identity.');
+          }
+          const text=JSON.stringify(this.projectStoredReview(row,state),null,2);
+          if(!existsSync(row.file_path)||readFileSync(row.file_path,'utf8')!==text){this.writeReviewExport(row.file_path,text);rewritten++;}
+        }catch{pending++;}
+      }
+      this.db.exec('COMMIT');
+    }catch{try{this.db.exec('ROLLBACK');}catch{}pending=Math.max(1,pending);}
+    this.reviewExportStatus={status:pending?'requires_retry':'ready',total,pending,rewritten,
+      ...(pending?{reasonCode:'F_REVIEW_EXPORT_RECONCILIATION_REQUIRED'}:{})};
+    return this.reviewExportStatus;
   }
 
   migrations() {
@@ -436,6 +522,7 @@ export class SqliteMemoryStore {
         foreignKeys: Boolean(foreignKeysRow?.foreign_keys)
       },
       counts,
+      reviewExports:this.reviewExportStatus??{status:'not_checked',pending:null},
       integrity: this.integrityCheck()
     };
   }
@@ -448,8 +535,37 @@ export class SqliteMemoryStore {
     return Boolean(this.db.prepare('SELECT fingerprint FROM memory_events WHERE fingerprint = ?').get(fingerprint));
   }
 
-  saveEvent(event) {
+  assertRestoreGeneration(expectedGeneration) {
+    if (expectedGeneration === undefined) return;
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0)
+      throw Object.assign(new Error('Invalid restore generation.'), { code: 'F_MEMORY_GENERATION_INVALID' });
+    const currentGeneration = this.restoreGeneration();
+    if (expectedGeneration !== currentGeneration) throw Object.assign(new Error('Memory generation changed.'),
+      { code: 'F_MEMORY_GENERATION_CONFLICT', currentGeneration });
+  }
+
+  saveEvent(event, { expectedGeneration, expectedKnowledgeSource = null } = {}) {
     return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
+      if(event.payload?.knowledge?.supersedesEventId !== undefined && !expectedKnowledgeSource)
+        throw Object.assign(new Error('Knowledge corrections require an observed source revision.'), {code:'F_KNOWLEDGE_REVISION_REQUIRED'});
+      if(expectedKnowledgeSource){
+        const previous=this.db.prepare('SELECT * FROM memory_events WHERE event_id = ?').get(expectedKnowledgeSource.eventId);
+        const child=this.db.prepare("SELECT event_id FROM memory_events WHERE json_extract(payload_json,'$.knowledge.supersedesEventId') = ? LIMIT 1").get(expectedKnowledgeSource.eventId);
+        const retired=this.db.prepare('SELECT 1 FROM knowledge_retirements WHERE source_event_id=?').get(expectedKnowledgeSource.eventId);
+        if(!previous || previous.created_at!==expectedKnowledgeSource.observedAt || retired || JSON.parse(previous.payload_json).knowledgeRetiredBy || child || this.hasSourceRetraction(expectedKnowledgeSource.eventId))
+          throw Object.assign(new Error('Knowledge correction source changed.'),{code:'F_KNOWLEDGE_REVISION_CONFLICT'});
+        const parent={eventId:previous.event_id,createdAt:previous.created_at,source:JSON.parse(previous.source_json),payload:JSON.parse(previous.payload_json),
+          trustBoundary:JSON.parse(previous.trust_boundary_json),learningFlags:JSON.parse(previous.learning_flags_json)};
+        const parentKnowledge=parent.payload.knowledge??parsePersonalKnowledgeStatement(parent.payload.rawText),knowledge=event.payload?.knowledge;
+        const scope=normalizeMemoryScope(event.source?.memoryScope);
+        const shapes=[parent,event].flatMap(item=>projectPersonalKnowledge([{...item,payload:{knowledge:{...(item===parent?parentKnowledge:knowledge),supersedesEventId:undefined}}}],{now:this.clock()}));
+        if(!scope || !memoryScopeMatches(parent,scope) || !sourceRecallAllowed(parent) || !sourceRecallAllowed(event)
+          || !parentKnowledge || knowledge?.supersedesEventId!==expectedKnowledgeSource.eventId
+          || ['kind','subject','predicate'].some(key=>parentKnowledge[key]!==knowledge?.[key])
+          || Date.parse(event.createdAt)<=Date.parse(parent.createdAt) || shapes.length!==2 || shapes.some(item=>item.status!=='active'))
+          throw Object.assign(new Error('Knowledge correction contract is invalid.'),{code:'F_KNOWLEDGE_CORRECTION_INVALID'});
+      }
       this.db.prepare(`
         INSERT INTO memory_events (
           event_id,
@@ -479,12 +595,76 @@ export class SqliteMemoryStore {
         }),
         event.fingerprint
       );
+      if(expectedKnowledgeSource){
+        this.db.prepare('INSERT INTO knowledge_retirements(source_event_id,successor_event_id) VALUES(?,?)')
+          .run(expectedKnowledgeSource.eventId,event.eventId);
+        // Preserve only the revision edge on the old source. Withdrawing the
+        // correction must not silently reactivate a value it replaced.
+        this.db.prepare("UPDATE memory_events SET payload_json=json_set(payload_json,'$.knowledgeRetiredBy',?) WHERE event_id=?")
+          .run(event.eventId,expectedKnowledgeSource.eventId);
+        this.reviewExportsDirty=true;
+      }
       return event;
     });
   }
 
-  allEvents() {
-    return this.db.prepare('SELECT * FROM memory_events ORDER BY created_at ASC').all().map((row) => {
+  queueMemoryEvent(event) {
+    return this.transaction(() => {
+      if (Buffer.byteLength(JSON.stringify(event), 'utf8') > 131072) return { success: false, error: { code: 'F_MEMORY_PENDING_TOO_LARGE' } };
+      const hash = sha256Json(event), current = this.db.prepare('SELECT event_hash FROM pending_memory_events WHERE event_id = ?').get(event.eventId);
+      if (!current && this.pendingMemoryStatus().pendingCount >= 1000) return { success: false, error: { code: 'F_MEMORY_PENDING_FULL' } };
+      if (current && current.event_hash !== hash) return { success: false, error: { code: 'F_MEMORY_PENDING_ID_CONFLICT' } };
+      if (this.hasSourceRetraction(event.eventId)) return { success: false, error: { code: 'F_MEMORY_SOURCE_RETRACTED' } };
+      this.db.prepare('INSERT OR IGNORE INTO pending_memory_events(event_id,event_json,event_hash,queued_at) VALUES(?,?,?,?)')
+        .run(event.eventId, JSON.stringify(event), hash, this.clock().toISOString());
+      return { success: true, queued: true };
+    });
+  }
+
+  pendingMemoryStatus() {
+    const row = this.db.prepare('SELECT count(*) AS pendingCount, COALESCE(sum(attempts),0) AS replayAttempts FROM pending_memory_events').get();
+    return { ...row, executionAuthority: false };
+  }
+
+  drainPendingMemoryEvents(ingest, { limit = 10 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return { success: false, error: { code: 'F_MEMORY_PENDING_LIMIT_INVALID' } };
+    const ids = this.db.prepare('SELECT event_id FROM pending_memory_events ORDER BY queued_at,event_id LIMIT ?').all(limit);
+    const outcomes = { stored: 0, suppressed: 0, failed: 0 };
+    for (const { event_id: id } of ids) this.transaction(() => {
+      const row = this.db.prepare('SELECT event_json FROM pending_memory_events WHERE event_id = ?').get(id);
+      if (!row) return;
+      if (this.hasSourceRetraction(id)) { this.db.prepare('DELETE FROM pending_memory_events WHERE event_id = ?').run(id); outcomes.suppressed++; return; }
+      let result;
+      try { result = ingest(JSON.parse(row.event_json)); }
+      catch { result = { success: false, error: { code: 'F_MEMORY_PENDING_REPLAY_FAILED' } }; }
+      if (result?.success === true) { this.db.prepare('DELETE FROM pending_memory_events WHERE event_id = ?').run(id); outcomes.stored++; }
+      else { this.db.prepare('UPDATE pending_memory_events SET attempts=attempts+1,last_error=? WHERE event_id=?')
+        .run(result?.error?.code ?? 'F_MEMORY_PENDING_REPLAY_FAILED', id); outcomes.failed++; }
+    });
+    return { success: true, ...outcomes, ...this.pendingMemoryStatus() };
+  }
+
+  retiredKnowledgeSourceIds(){
+    return this.knowledgeRetirementEdges().map(row=>row.sourceEventId);
+  }
+
+  knowledgeRetirementEdges(){
+    return this.db.prepare('SELECT source_event_id AS sourceEventId,successor_event_id AS successorEventId FROM knowledge_retirements ORDER BY source_event_id').all();
+  }
+
+  knowledgeSnapshot({scope}={}){
+    return this.transaction(()=>({events:this.allEvents({scope}),retiredSourceIds:this.retiredKnowledgeSourceIds(),
+      retractedSourceIds:this.allSourceRetractions().map(item=>item.targetId),generation:this.restoreGeneration()}),{deferred:true});
+  }
+
+  allEvents({scope}={}) {
+    const normalized=scope===undefined?null:normalizeMemoryScope(scope);
+    if(scope!==undefined && !normalized)return [];
+    // Workspace paths remain checked by memoryScopeMatches after decoding:
+    // legacy relative paths must not be lost by a SQL equality prefilter.
+    const rows=normalized?this.db.prepare("SELECT * FROM memory_events WHERE json_extract(source_json,'$.memoryScope.userId')=? AND json_extract(source_json,'$.memoryScope.conversationId') IS ? ORDER BY created_at ASC").all(normalized.userId,normalized.conversationId)
+      :this.db.prepare('SELECT * FROM memory_events ORDER BY created_at ASC').all();
+    return rows.map((row) => {
       const schemaRecord = JSON.parse(row.schema_json ?? '{}');
       return {
         eventId: row.event_id,
@@ -500,11 +680,12 @@ export class SqliteMemoryStore {
         schema: schemaRecord.schema,
         schemaValidation: schemaRecord.schemaValidation
       };
-    });
+    }).filter(event=>!normalized || memoryScopeMatches(event,normalized));
   }
 
-  updateEvent(event) {
+  updateEvent(event, { expectedGeneration } = {}) {
     return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
       this.db.prepare(`
         UPDATE memory_events
         SET source_json = ?,
@@ -529,26 +710,59 @@ export class SqliteMemoryStore {
     });
   }
 
-  saveReview(review) {
+  saveReview(review, { expectedGeneration, expectedSourceRetractionDigest, expectedPreferenceStateDigest } = {}) {
+    if(typeof review.reviewId!=='string'||!/^[\w.-]{1,200}$/.test(review.reviewId)||['.','..'].includes(review.reviewId))
+      throw Object.assign(new Error('Invalid review identity.'),{code:'F_REVIEW_ID_INVALID'});
     const filePath = join(this.reviewDir, `${review.reviewId}.json`);
     this.transaction(() => {
-      writeFileSync(filePath, JSON.stringify(review, null, 2), 'utf8');
+      this.assertRestoreGeneration(expectedGeneration);
+      const sourceRetractionDigest = this.sourceRetractionDigest();
+      if (expectedSourceRetractionDigest !== undefined && sourceRetractionDigest !== expectedSourceRetractionDigest) {
+        throw Object.assign(new Error('Memory sources changed during report generation.'), { code: 'F_MEMORY_SOURCE_CHANGED' });
+      }
+      const preferenceStateDigest = this.preferenceStateDigest();
+      if (expectedPreferenceStateDigest !== undefined && preferenceStateDigest !== expectedPreferenceStateDigest) throw Object.assign(new Error("Memory preferences changed."), { code: "F_MEMORY_PREFERENCE_CHANGED" });
+      review = { ...review, sourceRetractionDigest, preferenceStateDigest };
       this.db.prepare(`
         INSERT OR REPLACE INTO growth_reviews (review_id, generated_at, period, review_json, file_path)
         VALUES (?, ?, ?, ?, ?)
       `).run(review.reviewId, review.generatedAt, review.period, JSON.stringify(review), filePath);
+      this.reviewExportsDirty=true;
     });
-    return { ...review, filePath };
+    return { ...review, ...(this.reviewExportStatus?.pending?{exportPending:true}: {filePath}),exportStatus:this.reviewExportStatus };
   }
 
   latestReview() {
+    this.reconcileReviewExports();
     const row = this.db.prepare('SELECT * FROM growth_reviews ORDER BY generated_at DESC LIMIT 1').get();
     if (!row) return null;
-    return { ...JSON.parse(row.review_json), filePath: row.file_path };
+    const review = JSON.parse(row.review_json);
+    if ((this.allSourceRetractions().length || this.hasRetiredKnowledgeSources()) && review.sourceRetractionDigest !== this.sourceRetractionDigest()) {
+      return { reviewId: row.review_id, generatedAt: row.generated_at, status: 'source_review_required',
+        contentWithheld: true, reasonCode: 'F_REVIEW_SOURCE_RETRACTED' };
+    }
+    if ((review.preferenceStateDigest !== undefined || this.allConfirmedPreferences().length) && review.preferenceStateDigest !== this.preferenceStateDigest()) return {
+      reviewId: row.review_id, generatedAt: row.generated_at, status: "preference_review_required",
+      contentWithheld: true, reasonCode: "F_REVIEW_PREFERENCE_CHANGED"
+    };
+    return { ...review, ...(this.reviewExportStatus?.pending?{exportPending:true}:{filePath:row.file_path}),exportStatus:this.reviewExportStatus };
   }
 
-  saveConfirmedPreference(preference) {
+  getConfirmedPreference(preferenceId) {
+    const row = this.db.prepare('SELECT preference_json FROM confirmed_preferences WHERE preference_id = ?').get(preferenceId);
+    return row ? JSON.parse(row.preference_json) : null;
+  }
+
+  saveConfirmedPreference(preference, { expectedRevision = null, expectedGeneration } = {}) {
     return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
+      if (expectedRevision !== null) {
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw Object.assign(new Error('Invalid memory revision.'), { code: 'F_MEMORY_REVISION_INVALID' });
+        const current = this.getConfirmedPreference(preference.preferenceId);
+        const currentRevision = current ? current.revision ?? 1 : 0;
+        if (currentRevision !== expectedRevision) throw Object.assign(new Error('Memory revision conflict.'), { code: 'F_MEMORY_REVISION_CONFLICT', currentRevision });
+        if (preference.revision !== expectedRevision + 1) throw Object.assign(new Error('Invalid next memory revision.'), { code: 'F_MEMORY_REVISION_INVALID' });
+      }
       this.db.prepare(`
         INSERT OR REPLACE INTO confirmed_preferences (
           preference_id,
@@ -564,6 +778,7 @@ export class SqliteMemoryStore {
         preference.confirmedAt,
         JSON.stringify(preference)
       );
+      this.reviewExportsDirty=true;
       return preference;
     });
   }
@@ -573,8 +788,9 @@ export class SqliteMemoryStore {
       .map((row) => JSON.parse(row.preference_json));
   }
 
-  saveHygieneDecision(decision) {
+  saveHygieneDecision(decision, { expectedGeneration } = {}) {
     return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
       this.db.prepare(`
         INSERT OR REPLACE INTO hygiene_decisions (
           decision_id,
@@ -592,7 +808,28 @@ export class SqliteMemoryStore {
         decision.decidedAt,
         JSON.stringify(decision)
       );
+      if(decision.targetType==='memory_event'&&['delete','redact'].includes(decision.action))this.reviewExportsDirty=true;
       return decision;
+    });
+  }
+
+  applyHygieneDecision(decision, event, { expectedGeneration } = {}) {
+    return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
+      if (event && (!this.hasEvent(event.eventId) || event.eventId !== decision.targetId)) {
+        throw Object.assign(new Error('Hygiene target is unavailable.'), { code: 'F_MEMORY_EVENT_NOT_FOUND' });
+      }
+      if (decision.targetType === 'memory_event' && ['keep', 'defer'].includes(decision.action)
+        && this.hasSourceRetraction(decision.targetId)) {
+        throw Object.assign(new Error('Source was withdrawn.'), { code: 'F_MEMORY_SOURCE_RETRACTED' });
+      }
+      if (decision.targetType === 'memory_event' && decision.action === 'redact'
+        && this.db.prepare("SELECT 1 FROM hygiene_decisions WHERE target_type = 'memory_event' AND target_id = ? AND action = 'delete' LIMIT 1").get(decision.targetId)) {
+        throw Object.assign(new Error('Deleted source cannot be downgraded.'), { code: 'F_MEMORY_SOURCE_RETRACTED' });
+      }
+      this.saveHygieneDecision(decision, { expectedGeneration });
+      if (event) this.updateEvent(event, { expectedGeneration });
+      return { success: true };
     });
   }
 
@@ -601,10 +838,48 @@ export class SqliteMemoryStore {
       .map((row) => JSON.parse(row.decision_json));
   }
 
-  saveFailureGuardrailReview(review) {
+  allSourceRetractions() {
+    return this.allHygieneDecisions().filter(item => item.targetType === 'memory_event'
+      && ['delete', 'redact'].includes(item.action));
+  }
+
+  preferenceStateDigest() {
+    return sha256Json(this.allConfirmedPreferences().sort((a,b) => a.preferenceId.localeCompare(b.preferenceId)));
+  }
+
+  sourceRetractionDigest() {
+    const retractions=this.allSourceRetractions().map(item => ({ id: item.decisionId,
+      targetId: item.targetId, action: item.action })).sort((a, b) => a.id.localeCompare(b.id));
+    const retirements=this.knowledgeRetirementEdges();
+    // A corrected assertion is no longer eligible for current recall, but its
+    // task must not be marked deleted. Include the durable revision fence in
+    // derived publication checks; preserve legacy hashes until one exists.
+    return sha256Json(retirements.length?{retractions,knowledgeRetirements:retirements}:retractions);
+  }
+
+  hasRetiredKnowledgeSources() {
+    return Boolean(this.db.prepare('SELECT 1 FROM knowledge_retirements LIMIT 1').get());
+  }
+
+  hasSourceRetraction(eventId) {
+    return Boolean(this.db.prepare("SELECT 1 FROM hygiene_decisions WHERE target_type = 'memory_event' AND target_id = ? AND action IN ('delete', 'redact') LIMIT 1").get(eventId));
+  }
+
+  saveFailureGuardrailReview(review, { expectedGeneration, expectedSourceRetractionDigest } = {}) {
     return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
+      const sourceRetractionDigest = this.sourceRetractionDigest();
+      if (expectedSourceRetractionDigest !== undefined && sourceRetractionDigest !== expectedSourceRetractionDigest) throw Object.assign(new Error("Memory source changed."), { code: "F_MEMORY_SOURCE_CHANGED" });
+      if ((review.evidenceEventIds ?? []).some(id => this.hasSourceRetraction(id))) throw Object.assign(new Error("Memory source retracted."), { code: "F_MEMORY_SOURCE_RETRACTED" });
+      review = { ...review, sourceRetractionDigest };
+      const existing=this.db.prepare('SELECT review_json FROM failure_guardrail_reviews WHERE review_id=?').get(review.reviewId);
+      if(existing){
+        if(canonicalJson(JSON.parse(existing.review_json))!==canonicalJson(review))
+          throw Object.assign(new Error('Failure review revision is immutable.'),{code:'F_FAILURE_REVIEW_REVISION_CONFLICT'});
+        return JSON.parse(existing.review_json);
+      }
       this.db.prepare(`
-        INSERT OR REPLACE INTO failure_guardrail_reviews (
+        INSERT INTO failure_guardrail_reviews (
           review_id,
           failure_id,
           decision,
@@ -623,15 +898,32 @@ export class SqliteMemoryStore {
   }
 
   allFailureGuardrailReviews() {
-    return this.db.prepare('SELECT review_json FROM failure_guardrail_reviews ORDER BY reviewed_at ASC').all()
-      .map((row) => JSON.parse(row.review_json));
+    const withdrawn = this.allSourceRetractions().length > 0 || this.hasRetiredKnowledgeSources();
+    const digest = this.sourceRetractionDigest();
+    return this.db.prepare('SELECT review_json FROM failure_guardrail_reviews ORDER BY rowid ASC').all()
+      .map((row) => {
+        const review = JSON.parse(row.review_json);
+        if (withdrawn && review.sourceRetractionDigest !== digest) return {
+          reviewId: review.reviewId, failureId: review.failureId, reviewedAt: review.reviewedAt,
+          contentWithheld: true, status: 'source_review_required', reasonCode: 'F_FAILURE_REVIEW_SOURCE_RETRACTED'
+        };
+        return review;
+      });
   }
 
-  saveTrendSnapshot({ trendType, snapshotId, generatedAt, snapshot, metadata = {} } = {}) {
+  saveTrendSnapshot({ trendType, snapshotId, generatedAt, snapshot, metadata = {} } = {}, { expectedGeneration, expectedSourceRetractionDigest, expectedPreferenceStateDigest } = {}) {
     if (!trendType || !snapshotId || !snapshot) {
       return { success: false, error: { code: 'F_TREND_SNAPSHOT_INVALID' } };
     }
     return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
+      const sourceRetractionDigest = this.sourceRetractionDigest();
+      if (expectedSourceRetractionDigest !== undefined && sourceRetractionDigest !== expectedSourceRetractionDigest) {
+        throw Object.assign(new Error("Memory source changed."), { code: "F_MEMORY_SOURCE_CHANGED" });
+      }
+      const preferenceStateDigest = this.preferenceStateDigest();
+      if (expectedPreferenceStateDigest !== undefined && preferenceStateDigest !== expectedPreferenceStateDigest) throw Object.assign(new Error("Memory preferences changed."), { code: "F_MEMORY_PREFERENCE_CHANGED" });
+      snapshot = { ...snapshot, sourceRetractionDigest, preferenceStateDigest };
       this.db.prepare(`
         INSERT OR REPLACE INTO growth_trend_snapshots (
           snapshot_id,
@@ -651,7 +943,32 @@ export class SqliteMemoryStore {
     });
   }
 
-  allTrendSnapshots({ trendType = null, limit = 200 } = {}) {
+  trendSourceState() {
+    const preferences = this.allConfirmedPreferences();
+    return { withdrawn: this.allSourceRetractions().length > 0 || this.hasRetiredKnowledgeSources(), digest: this.sourceRetractionDigest(),
+      hasPreferences: preferences.length > 0, hasCorrections: preferences.some(item => (item.revision ?? 1) > 1),
+      preferenceDigest: sha256Json(preferences.sort((a,b) => a.preferenceId.localeCompare(b.preferenceId))) };
+  }
+
+  projectTrendSnapshot(row, { includeRetractedContent = false, sourceState = null } = {}) {
+    const snapshot = JSON.parse(row.snapshot_json);
+    sourceState ??= this.trendSourceState();
+    const withdrawn = sourceState.withdrawn;
+    const stale = withdrawn && snapshot.sourceRetractionDigest !== sourceState.digest;
+    // Skill snapshots intentionally retain private revision history for safe
+    // rehydration. A fresh digest does not make that history public again.
+    const preferenceChanged = (snapshot.preferenceStateDigest !== undefined || sourceState.hasPreferences) && snapshot.preferenceStateDigest !== sourceState.preferenceDigest;
+    const privateSkillHistory = (withdrawn || sourceState.hasCorrections) && row.trend_type === 'skill_registry';
+    if (!includeRetractedContent && (stale || privateSkillHistory || preferenceChanged)) return {
+      snapshotId: row.snapshot_id, trendType: row.trend_type, generatedAt: row.generated_at,
+      snapshot: null, metadata: {}, contentWithheld: true, status: 'source_review_required',
+      reasonCode: privateSkillHistory ? 'F_SKILL_SNAPSHOT_PRIVATE_RETAINED' : preferenceChanged ? 'F_TREND_PREFERENCE_CHANGED' : 'F_TREND_SOURCE_RETRACTED'
+    };
+    return { snapshotId: row.snapshot_id, trendType: row.trend_type, generatedAt: row.generated_at,
+      snapshot, metadata: JSON.parse(row.metadata_json ?? '{}') };
+  }
+
+  allTrendSnapshots({ trendType = null, limit = 200, includeRetractedContent = false } = {}) {
     const normalizedLimit = Math.max(1, Math.min(1000, Number(limit) || 200));
     const rows = trendType
       ? this.db.prepare(`
@@ -667,16 +984,11 @@ export class SqliteMemoryStore {
         ORDER BY generated_at ASC
         LIMIT ?
       `).all(normalizedLimit);
-    return rows.map((row) => ({
-      snapshotId: row.snapshot_id,
-      trendType: row.trend_type,
-      generatedAt: row.generated_at,
-      snapshot: JSON.parse(row.snapshot_json),
-      metadata: JSON.parse(row.metadata_json ?? '{}')
-    }));
+    const sourceState = this.trendSourceState();
+    return rows.map(row => this.projectTrendSnapshot(row, { includeRetractedContent, sourceState }));
   }
 
-  latestTrendSnapshot({ trendType } = {}) {
+  latestTrendSnapshot({ trendType, includeRetractedContent = false } = {}) {
     const row = this.db.prepare(`
       SELECT snapshot_id, trend_type, generated_at, snapshot_json, metadata_json
       FROM growth_trend_snapshots
@@ -685,13 +997,7 @@ export class SqliteMemoryStore {
       LIMIT 1
     `).get(trendType);
     if (!row) return null;
-    return {
-      snapshotId: row.snapshot_id,
-      trendType: row.trend_type,
-      generatedAt: row.generated_at,
-      snapshot: JSON.parse(row.snapshot_json),
-      metadata: JSON.parse(row.metadata_json ?? '{}')
-    };
+    return this.projectTrendSnapshot(row, { includeRetractedContent });
   }
 
   backup({ backupId = `growth-backup-${this.clock().toISOString().replace(/[:.]/g, '-')}` } = {}) {
@@ -973,23 +1279,103 @@ export class SqliteMemoryStore {
     }
   }
 
+  sourceRetractionDelivery({ deliveryKey, receiverId, expectedGeneration } = {}) {
+    this.assertRestoreGeneration(expectedGeneration);
+    return this.db.prepare('SELECT state,attempts,observed_at AS observedAt FROM source_retraction_deliveries WHERE delivery_hash=? AND receiver_hash=? AND generation=?')
+      .get(sha256Json(deliveryKey), sha256Json(receiverId), expectedGeneration) ?? null;
+  }
+
+  recordSourceRetractionDelivery({ deliveryKey, receiverId, state, expectedGeneration } = {}) {
+    if (typeof deliveryKey !== 'string' || typeof receiverId !== 'string' || !receiverId
+      || !['attempted','acknowledged'].includes(state) || !Number.isSafeInteger(expectedGeneration)) throw new Error('F_RETRACTION_RECEIPT_INVALID');
+    return this.transaction(() => {
+      this.assertRestoreGeneration(expectedGeneration);
+      this.db.prepare(`INSERT INTO source_retraction_deliveries VALUES(?,?,?,?,?,?)
+        ON CONFLICT(delivery_hash,receiver_hash,generation) DO UPDATE SET state=excluded.state,
+        attempts=source_retraction_deliveries.attempts+excluded.attempts,observed_at=excluded.observed_at`)
+        .run(sha256Json(deliveryKey),sha256Json(receiverId),expectedGeneration,state,state === 'attempted' ? 1 : 0,this.clock().toISOString());
+      return { recorded: true };
+    });
+  }
+
+  restoreGeneration() {
+    return this.db.prepare('SELECT generation FROM memory_restore_generation WHERE singleton = 1').get().generation;
+  }
+
   restore({ backupPath, backupId } = {}) {
     const selectedPath = backupPath ?? this.db.prepare('SELECT file_path FROM storage_backups WHERE backup_id = ?').get(backupId)?.file_path;
-    if (!selectedPath || !existsSync(selectedPath)) {
-      return { success: false, error: { code: 'F_BACKUP_NOT_FOUND' } };
+    if (!selectedPath || !existsSync(selectedPath)) return { success: false, error: { code: 'F_BACKUP_NOT_FOUND' } };
+    // Construct and validate a complete replacement before touching the live DB.
+    // Copy rows in one SQLite transaction, retaining the original DB identity.
+    // Application workers still need maintenance/re-hydration of their caches.
+    const retractions = this.allSourceRetractions();
+    const stagedPath = join(dirname(this.dbPath), `.growth-restore-${randomBytes(12).toString('hex')}.sqlite`);
+    let staged = null, materialized = null, attached = false;
+    try {
+      materialized = this.materializeBackupForRead({ backupPath: selectedPath, label: 'restore' });
+      copyFileSync(materialized.path, stagedPath);
+      const probe = new DatabaseSync(stagedPath);
+      try {
+        if (probe.prepare('PRAGMA integrity_check').get()?.integrity_check !== 'ok') throw new Error('Invalid restore database.');
+        const version = probe.prepare('PRAGMA user_version').get()?.user_version;
+        const tables = new Set(probe.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => row.name));
+        if (!Number.isInteger(version) || version < 1 || version > this.schemaVersion
+          || ['memory_events', 'growth_reviews', 'confirmed_preferences', 'schema_migrations'].some(name => !tables.has(name)))
+          throw new Error('Unsupported restore schema.');
+      }
+      finally { probe.close(); }
+      staged = new SqliteMemoryStore({ dbPath: stagedPath, reviewDir: this.reviewDir, backupDir: this.backupDir, clock: this.clock, reconcileReviewExports:false });
+      staged.transaction(() => {
+        for (const decision of retractions) {
+          // A historical keep decision must never replace a current withdrawal.
+          staged.saveHygieneDecision(decision);
+        }
+      });
+      const integrity = staged.integrityCheck();
+      if (integrity.status !== 'ok') throw new Error('Invalid restore integrity.');
+      if (retractions.some(item => !staged.hasSourceRetraction(item.targetId))) throw new Error('Missing withdrawal.');
+      staged.db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      staged.close(); staged = null;
+      this.db.prepare('ATTACH DATABASE ? AS restore_snapshot').run(stagedPath); attached = true;
+      const tables = ['memory_events', 'growth_reviews', 'confirmed_preferences', 'storage_backups',
+        'hygiene_decisions', 'failure_guardrail_reviews', 'growth_trend_snapshots'];
+      for (const table of tables) {
+        const current = this.db.prepare(`PRAGMA main.table_info(${table})`).all().map(row => [row.name, row.type, row.pk]);
+        const restored = this.db.prepare(`PRAGMA restore_snapshot.table_info(${table})`).all().map(row => [row.name, row.type, row.pk]);
+        if (JSON.stringify(current) !== JSON.stringify(restored)) throw new Error('Restore table contract changed.');
+      }
+      const retainedCount = this.transaction(() => {
+        // Re-read after obtaining the writer lock: staging may take time, and
+        // another connection can withdraw sources during that preparation.
+        const latestRetractions = this.allSourceRetractions();
+        const latestKnowledgeRetirements=this.knowledgeRetirementEdges();
+        // Merge fences from the selected backup, never replace the current
+        // fence ledger. Staged opening upgrades older backups with this table.
+        this.db.exec('INSERT OR IGNORE INTO main.knowledge_retirements SELECT * FROM restore_snapshot.knowledge_retirements;');
+        for (const table of tables) {
+          this.db.exec(`DELETE FROM main.${table}; INSERT INTO main.${table} SELECT * FROM restore_snapshot.${table};`);
+        }
+        for (const decision of latestRetractions) this.saveHygieneDecision(decision);
+        // Restoration may roll back application rows, but must not silently
+        // reactivate assertions already replaced by a later owner correction.
+        // Read under the writer lock so a correction during staging is retained.
+        const retire=this.db.prepare("UPDATE memory_events SET payload_json=json_set(payload_json,'$.knowledgeRetiredBy',?) WHERE event_id=?");
+        for(const edge of latestKnowledgeRetirements)retire.run(edge.successorEventId,edge.sourceEventId);
+        if (latestRetractions.some(item => !this.hasSourceRetraction(item.targetId))) throw new Error('Restore lost withdrawal.');
+        this.db.exec('UPDATE memory_restore_generation SET generation = generation + 1 WHERE singleton = 1');
+        this.reviewExportsDirty=true;
+        return latestRetractions.length;
+      });
+      return { success: true, restoredFrom: selectedPath, encrypted: materialized.encrypted,
+        retainedSourceRetractionCount: retainedCount, restoreMode: 'transactional_rows_preserve_database_identity', status: this.storageStatus() };
+    } catch {
+      return { success: false, error: { code: 'F_STORAGE_RESTORE_FAILED' } };
+    } finally {
+      if (attached) this.db.exec('DETACH DATABASE restore_snapshot;');
+      staged?.close();
+      materialized?.cleanup();
+      for (const file of [stagedPath, `${stagedPath}-wal`, `${stagedPath}-shm`]) if (existsSync(file)) unlinkSync(file);
     }
-    const materialized = this.materializeBackupForRead({ backupPath: selectedPath, label: 'restore' });
-    this.close();
-    copyFileSync(materialized.path, this.dbPath);
-    materialized.cleanup();
-    this.db = new DatabaseSync(this.dbPath);
-    this.initialize();
-    return {
-      success: true,
-      restoredFrom: selectedPath,
-      encrypted: materialized.encrypted,
-      status: this.storageStatus()
-    };
   }
 
   largeMigrationFixture({

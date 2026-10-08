@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "runtime": "Python 3 with Pillow and fontTools",
+  "bundledPythonRuntime": false,
+  "bundledPythonDependencies": false,
+  "observedVersions": { "python": "3.13", "Pillow": "11.2.1", "fontTools": "4.63.0" },
+  "literalPixelVerifierPlatform": "Windows",
+  "fontCandidates": ["malgunbd.ttf", "segoeuib.ttf", "arialbd.ttf"],
+  "missingRequirementsBehavior": "fail without publishing output; no automatic installation",
+  "scope": "fixed-template literal glyph pixels and bounds, not semantic image understanding"
+}

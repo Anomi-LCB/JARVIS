@@ -5,8 +5,12 @@ export class CoreWorkerDaemon {
     enabled = true,
     intervalMs = 1_000,
     drainLimit = 5,
+    sourceRetractionIntervalMs = 5_000,
     recoverLeases = true,
     maxConsecutiveFailures = 3,
+    routineScheduler = null,
+    sourceRevisionScheduler = null,
+    personalOperationsScheduler = null,
     clock = () => new Date(),
     setTimer = setInterval,
     clearTimer = clearInterval
@@ -14,6 +18,12 @@ export class CoreWorkerDaemon {
     if (!worker) {
       throw new Error('CoreWorkerDaemon requires worker.');
     }
+    if (!Number.isSafeInteger(sourceRetractionIntervalMs) || sourceRetractionIntervalMs < 100 || sourceRetractionIntervalMs > 60_000) {
+      throw new RangeError("Invalid source retraction interval.");
+    }
+    this.sourceRetractionIntervalMs = sourceRetractionIntervalMs;
+    this.lastSourceRetractionAttemptMs = null;
+    this.lastSourceRetractionSync = null;
     this.worker = worker;
     this.daemonId = daemonId;
     this.enabled = enabled;
@@ -21,6 +31,9 @@ export class CoreWorkerDaemon {
     this.drainLimit = Number(drainLimit);
     this.recoverLeases = recoverLeases;
     this.maxConsecutiveFailures = Number(maxConsecutiveFailures);
+    this.routineScheduler = routineScheduler;
+    this.sourceRevisionScheduler = sourceRevisionScheduler;
+    this.personalOperationsScheduler = personalOperationsScheduler;
     this.clock = clock;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
@@ -35,6 +48,7 @@ export class CoreWorkerDaemon {
     this.lastTickAt = null;
     this.lastDrain = null;
     this.lastRecovery = null;
+    this.lastMemoryReplay = null;
     this.lastError = null;
     this.lastWatchdog = null;
   }
@@ -96,9 +110,36 @@ export class CoreWorkerDaemon {
       const recovery = recoverLeases && this.worker.recoverExpiredLeases
         ? this.worker.recoverExpiredLeases({ now: this.lastTickAt })
         : null;
+      // Replay retained learning even when there is no new Core task. A memory
+      // outage must remain visible without preventing unrelated task execution.
+      const memoryReplay = await this.replayPendingMemory();
+      const sourceRetractions = await this.retrySourceRetractions();
       const drain = this.worker.drain && Number(drainLimit) > 0
         ? await this.worker.drain({ limit: Number(drainLimit), now: this.lastTickAt })
         : null;
+      const routines = this.routineScheduler?.tick ? await this.routineScheduler.tick() : null;
+      if (routines?.success === false) {
+        const error = Object.assign(new Error(routines.error?.message ?? 'Durable routine scheduler tick failed.'), {
+          code: routines.error?.code ?? 'A_ROUTINE_TICK_FAILED'
+        });
+        throw error;
+      }
+      const sourceRevisions = this.sourceRevisionScheduler?.tick ? await this.sourceRevisionScheduler.tick() : null;
+      if (sourceRevisions?.success === false) {
+        const error = Object.assign(new Error(sourceRevisions.error?.message ?? 'Source revision scheduler tick failed.'), {
+          code: sourceRevisions.error?.code ?? 'A_SOURCE_REVISION_TICK_FAILED'
+        });
+        throw error;
+      }
+      const personalOperations = this.personalOperationsScheduler?.tickAsync
+        ? await this.personalOperationsScheduler.tickAsync()
+        : this.personalOperationsScheduler?.tick ? await this.personalOperationsScheduler.tick() : null;
+      if (personalOperations?.success === false) {
+        const error = Object.assign(new Error(personalOperations.error?.message ?? 'Personal operations reminder tick failed.'), {
+          code: personalOperations.error?.code ?? 'A_PERSONAL_REMINDER_TICK_FAILED'
+        });
+        throw error;
+      }
       const after = this.worker.queueStatus();
       this.processedTotal += drain?.processed ?? 0;
       this.recoveredLeaseTotal += recovery?.recoveredCount ?? 0;
@@ -111,6 +152,11 @@ export class CoreWorkerDaemon {
         before,
         after,
         processed: drain?.processed ?? 0,
+        routines,
+        sourceRevisions,
+        personalOperations,
+        memoryReplay,
+        sourceRetractions,
         recoveredLeaseCount: recovery?.recoveredCount ?? 0
       };
       this.publish('core.worker.daemon.tick.succeeded', this.lastDrain);
@@ -129,6 +175,63 @@ export class CoreWorkerDaemon {
     } finally {
       this.draining = false;
     }
+  }
+
+  async replayPendingMemory() {
+    const growth = this.worker.growthRuntime;
+    if (!growth?.drainPendingMemory) return null;
+    const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    try {
+      const result = await growth.drainPendingMemory({ limit: 10 });
+      this.lastMemoryReplay = {
+        at: this.lastTickAt,
+        success: result?.success === true,
+        stored: count(result?.stored),
+        suppressed: count(result?.suppressed),
+        failed: count(result?.failed),
+        pendingCount: count(result?.pendingCount),
+        // Provider messages and event payloads must not enter daemon telemetry.
+        error: result?.success === true ? null : 'A_MEMORY_REPLAY_FAILED',
+        executionAuthority: false
+      };
+    } catch {
+      this.lastMemoryReplay = {
+        at: this.lastTickAt, success: false, stored: null, suppressed: null,
+        failed: null, pendingCount: null, error: 'A_MEMORY_REPLAY_FAILED',
+        executionAuthority: false
+      };
+    }
+    return this.lastMemoryReplay;
+  }
+
+  async retrySourceRetractions() {
+    const growth = this.worker.growthRuntime;
+    if (!growth?.synchronizeSourceRetractions) return null;
+    const now = this.clock().getTime();
+    if (this.lastSourceRetractionAttemptMs !== null && now >= this.lastSourceRetractionAttemptMs
+      && now - this.lastSourceRetractionAttemptMs < this.sourceRetractionIntervalMs) return this.lastSourceRetractionSync;
+    this.lastSourceRetractionAttemptMs = now;
+    try {
+      if (growth.ensureMemoryGeneration && !growth.ensureMemoryGeneration()) throw new Error('Memory unavailable');
+      const result = await growth.synchronizeSourceRetractions({ deliveryLimit: 10 });
+      if (!Array.isArray(result?.deliveries) || !Number.isSafeInteger(result.deferredDeliveryCount)
+        || !Number.isSafeInteger(result.dispatchedCount) || result.dispatchedCount < 0
+        || result.deferredDeliveryCount < 0 || !Number.isSafeInteger(result.preferenceUpdateFailedCount)
+        || result.preferenceUpdateFailedCount < 0) throw new Error('Invalid synchronization result');
+      this.lastSourceRetractionSync = {
+        at: this.lastTickAt, success: true,
+        preferenceUpdateFailedCount: result.preferenceUpdateFailedCount,
+        projectionConfigured: result.projectionConfigured === true,
+        dispatchedCount: result.dispatchedCount,
+        pendingCount: result.deliveries.filter(item => item.propagated !== true).length + result.deferredDeliveryCount,
+        deferredCount: result.deferredDeliveryCount, error: null, executionAuthority: false
+      };
+    } catch {
+      this.lastSourceRetractionSync = { at: this.lastTickAt, success: false,
+        preferenceUpdateFailedCount: null, projectionConfigured: null, dispatchedCount: null, pendingCount: null, deferredCount: null,
+        error: 'A_SOURCE_RETRACTION_SYNC_FAILED', executionAuthority: false };
+    }
+    return this.lastSourceRetractionSync;
   }
 
   recordFailure(error, { reason = 'manual' } = {}) {
@@ -179,6 +282,20 @@ export class CoreWorkerDaemon {
         detail: { draining: this.draining }
       }
     ];
+    if (this.lastMemoryReplay) {
+      checks.push({
+        id: 'pending-memory-replay',
+        status: !this.lastMemoryReplay.success || this.lastMemoryReplay.failed > 0
+          || this.lastMemoryReplay.pendingCount > 0 ? 'warning' : 'pass',
+        detail: this.lastMemoryReplay
+      });
+    }
+    if (this.lastSourceRetractionSync) checks.push({
+      id: "source-retraction-retry",
+      status: !this.lastSourceRetractionSync.success || this.lastSourceRetractionSync.pendingCount > 0
+        || this.lastSourceRetractionSync.preferenceUpdateFailedCount > 0 ? "warning" : "pass",
+      detail: this.lastSourceRetractionSync
+    });
     const failed = checks.filter((check) => check.status === 'fail');
     const warnings = checks.filter((check) => check.status === 'warning');
     const heartbeat = {
@@ -224,7 +341,12 @@ export class CoreWorkerDaemon {
       consecutiveFailures: this.consecutiveFailures,
       lastTickAt: this.lastTickAt,
       lastDrain: this.lastDrain,
+      routineScheduler: this.routineScheduler?.status?.() ?? null,
+      sourceRevisionScheduler: this.sourceRevisionScheduler?.status?.() ?? null,
+      personalOperationsScheduler: this.personalOperationsScheduler?.status?.() ?? null,
       lastRecovery: this.lastRecovery,
+      lastMemoryReplay: this.lastMemoryReplay,
+      lastSourceRetractionSync: this.lastSourceRetractionSync,
       lastError: this.lastError
     };
     if (!includeWatchdog) return base;

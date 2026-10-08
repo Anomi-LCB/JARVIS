@@ -1,0 +1,391 @@
+{
+  "schemaVersion": 1,
+  "adapters": [
+    {
+      "id": "s09-local-weekly-timezone-revision",
+      "scenarioIds": [
+        "S09"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s09-weekly-revision-adapter.mjs",
+      "executionMode": "sqlite-two-store-weekly-scheduler-plus-isolated-core-ui-browser-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "합성 반복 작업에서 시간대 revision, 이전 발생 폐기, DST 정책, 중복 dispatch 차단 및 격리 UI/API 흐름을 검증한다. Windows 제품 서비스·사용자 상태·실계정 캘린더·절전 복귀는 미검증이다."
+    },
+    {
+      "id": "s08-local-dual-browser-account-binding",
+      "scenarioIds": [
+        "S08"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s08-dual-browser-adapter.mjs",
+      "executionMode": "synthetic-context-isolation-environment-account-binding-and-human-handoff",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "두 synthetic driver의 컨텍스트 식별자·계정 binding hash·환경 분리·인계 계약을 확인한다. 실제 브라우저 storage partition, 계정 로그인 상태, product runtime 연결은 미검증이다."
+    },
+    {
+      "id": "s04-local-travel-quote-sandbox",
+      "scenarioIds": [
+        "S04"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s04-travel-sandbox-adapter.mjs",
+      "executionMode": "synthetic-travel-offer-revision-with-separate-process-independent-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "합성 항공 견적·수수료·환불 조건·현지 시간과 가격 변동만 시험한다. 실제 항공사·철도·숙박 제공자 요금 API, 예약, 결제는 미연동·미검증이다."
+    },
+    {
+      "id": "s05-local-logical-node-pc-partition",
+      "scenarioIds": [
+        "S05"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s05-node-partition-adapter.mjs",
+      "executionMode": "real-local-jarvis-mission-in-separate-node-processes-with-synthetic-capability-probes",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "상시 노드와 PC 작업을 논리 capability로 분리해 같은 Mission을 별도 제품 Node 프로세스에서 이어간다. 두 프로세스는 동일 OS 호스트·파일시스템을 공유한다. 실제 원격 PC, 서비스 identity, 네트워크 transport, 절전·복귀 운영은 미검증이다."
+    },
+    {
+      "id": "s03-local-source-revision-publication",
+      "scenarioIds": [
+        "S03"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s03-source-revision-adapter.mjs",
+      "executionMode": "durable-sqlite-source-revision-inbox-with-local-workflow-compensation-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "주입된 합성 파일 이벤트와 로컬 SQLite/workflow에서만 검증한다. OS watcher 및 Core 서비스 실제 이벤트 연결, watcher overflow·파일시스템 다양성은 미검증."
+    },
+    {
+      "id": "m01-local-long-goal-revision",
+      "scenarioIds": [
+        "M01"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m01-long-goal-adapter.mjs",
+      "executionMode": "local-sqlite-mission-goal-revision-with-priority-change-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "SQLite Mission의 합성 2단계 로컬 파일 업무만 실행한다. 자동 milestone 추론·critical path 최적화·프로세스 강제 종료 후 재시작·장기 프로젝트 운영 품질은 검증하지 않는다."
+    },
+    {
+      "id": "g05-local-skill-cross-material-evaluation",
+      "scenarioIds": [
+        "G05"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g05-skill-evaluation-adapter.mjs",
+      "executionMode": "local-skill-registry-synthetic-demonstration-and-renamed-header-holdout-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정된 표 데이터의 deterministic procedure만 교차 자료로 시험한다. 일반 문서 의미 이해·자연어 시범 추출·업무 품질·실제 계정과 UI는 검증하지 않는다."
+    },
+    {
+      "id": "m09-typed-shared-source-artifact-facts",
+      "scenarioIds": [
+        "M09"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m09-artifact-consistency-adapter.mjs",
+      "executionMode": "isolated-mission-inline-workflow-and-separate-process-oracles",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "격리 Mission inline workflow가 합성 source JSON에서 G-bound source/report/table/card를 파생하고 다시 연다. 실제 뉴스 의미·문서/Excel 렌더링·이미지 픽셀 의미와 외부 provider 연결은 검증하지 않는다."
+    },
+    {
+      "id": "m08-local-browser-human-handoff-generation-gate",
+      "scenarioIds": [
+        "M08"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m08-browser-handoff-adapter.mjs",
+      "executionMode": "synthetic-browser-driver-human-handoff-generation-and-origin-gate",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "합성 driver로 지연 클릭을 차단하는 manager contract를 실행한다. 제품 브라우저 UI/지속 세션에 연결된 일반 조작 도구가 아니며, 이미 driver 안에서 시작된 입력의 취소는 보장하지 않는다."
+    },
+    {
+      "id": "m06-local-container-execution-isolation",
+      "scenarioIds": [
+        "M06"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m06-container-sandbox-adapter.mjs",
+      "executionMode": "actual-docker-container-with-pinned-image-network-disabled-read-only-rootfs-and-bounded-stdout-egress",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "Docker Desktop Linux 컨테이너에서 합성 침입 probe를 실행하고 출력은 크기 제한 stdout으로 회수한다. daemon은 rootless가 아니며 VM/커널 escape, 상시 운영 hardening, 임의 사용자 프로젝트 코드는 별도 보안 검증이 필요하다."
+    },
+    {
+      "id": "m05-local-deadline-blocker-proactivity",
+      "scenarioIds": [
+        "M05"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m05-proactivity-adapter.mjs",
+      "executionMode": "local-personal-operations-core-worker-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "합성 기한·Mission 상태만 로컬 event bus로 검증한다. 실계정·모바일 푸시·OS 알림은 미검증이며 소비자는 at-least-once 이벤트를 eventId로 중복 제거해야 한다."
+    },
+    {
+      "id": "m11-local-model-transport-bounded-retry",
+      "scenarioIds": [
+        "M11"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m11-transport-adapter.mjs",
+      "executionMode": "local-mission-planner-mocked-provider-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "Mocked 429 후 usage 없는 Meta 호환 응답을 격리 검사한다. 실제 API rate limit·지연·비용·provider 내부 retry는 측정하지 않는다."
+    },
+    {
+      "id": "m04-local-preference-revision-memory",
+      "scenarioIds": [
+        "M04"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m04-preference-revision-adapter.mjs",
+      "executionMode": "local-growth-memory-sqlite-reopen-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "합성 사용자 선호 하나를 정정·재시작해 검증한다. 실사용자 기억 삭제, 장기 동기화, 타 사용자·다른 기기 운영 통합은 별도 검증이다."
+    },
+    {
+      "id": "m03-local-memory-source-retraction",
+      "scenarioIds": [
+        "M03"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m03-memory-retraction-adapter.mjs",
+      "executionMode": "local-growth-memory-source-retraction-sqlite-reopen-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "출처 삭제 후 파생 선호의 active recall 차단을 검증한다. SQLite 원문 물리 삭제, 백업·WAL 제거, 암호화 키 폐기는 이 검증에 포함하지 않는다."
+    },
+    {
+      "id": "g06-local-skill-revision-rollback",
+      "scenarioIds": [
+        "G06"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g06-skill-rollback-adapter.mjs",
+      "executionMode": "local-growth-skill-registry-rollback-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정 합성 revision 상태 전이만 시험한다. 다른 자료에서의 절차 품질 회귀 탐지나 실제 업무 산출물의 의미 평가는 검증하지 않았다."
+    },
+    {
+      "id": "g01-live-public-source-local-mission",
+      "scenarioIds": [
+        "G01"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g01-live-adapter.mjs",
+      "executionMode": "local-jarvis-mission-with-allowlisted-live-public-http-sources",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [
+        "www.w3.org"
+      ],
+      "limitation": "실제 JARVIS 로컬 Mission·역할 권한·문서 검증을 실행하되 외부 Grok 제공자 호출은 하지 않는다. 별도 프로세스 오라클은 같은 저장소 코드이며 독립 인간 저자가 아니다."
+    },
+    {
+      "id": "g12-local-role-handoff-mission",
+      "scenarioIds": [
+        "G12"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g12-handoff-adapter.mjs",
+      "executionMode": "local-jarvis-mission-test-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정 합성 입력의 로컬 JARVIS Mission 역할 인계를 실행한다. 실제 외부 provider·다른 프로세스 worker·사용자 앱 재시작은 검증하지 않으며 oracle은 같은 프로젝트에서 작성됐다."
+    },
+    {
+      "id": "g02-local-artifact-conflict-adapter",
+      "scenarioIds": [
+        "G02"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g02-conflict-adapter.mjs",
+      "executionMode": "local-pc-agent-revision-compare-and-swap-test-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정된 합성 파일에 대한 로컬 동시 편집 충돌만 평가한다. 별도 기기·분산 파일시스템·제품 UI와 독립 인간 평가는 검증하지 않았다."
+    },
+    {
+      "id": "g03-local-durable-routine-adapter",
+      "scenarioIds": [
+        "G03"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g03-routine-adapter.mjs",
+      "executionMode": "local-product-routine-mission-sqlite-restart-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "로컬 제품 routine scheduler, 합성 Mission, SQLite 재시작을 평가한다. 실제 서비스 운영·실계정 캘린더·기기 절전/복귀는 검증하지 않았다."
+    },
+    {
+      "id": "g08-local-cancellation-mission",
+      "scenarioIds": [
+        "G08"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g08-g09-control-adapter.mjs",
+      "executionMode": "local-real-mission-cancellation-test-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정 합성 Mission에서 취소와 늦은 planner 결과 fence를 검증한다. 외부 streaming/provider와 제품 UI/voice는 미검증."
+    },
+    {
+      "id": "g09-local-grant-revocation-mission",
+      "scenarioIds": [
+        "G09"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g08-g09-control-adapter.mjs",
+      "executionMode": "local-real-mission-grant-revocation-test-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정 합성 Mission에서 권한 축소 revision과 실행 경계 차단을 검증한다. OAuth/service identity 철회 전파는 미검증."
+    },
+    {
+      "id": "g10-local-web-injection-egress-mission",
+      "scenarioIds": [
+        "G10"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g10-injection-adapter.mjs",
+      "executionMode": "local-synthetic-untrusted-web-mission-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "고정 합성 웹 공격 문구 격리와 Mission dispatch 차단을 검증한다. 실제 웹/provider 및 OS 전체 네트워크 egress는 미검증."
+    },
+    {
+      "id": "m02-separate-product-process-recovery",
+      "scenarioIds": [
+        "M02"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m02-process-recovery-adapter.mjs",
+      "executionMode": "two-separate-local-product-runtime-processes-sharing-only-durable-files",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "별도 제품 runtime Node 프로세스 두 개가 durable Mission/receipt를 공유해 복구하는 로컬 테스트다. GUI 앱 종료·강제 OS kill·다른 PC 및 provider 연결은 미검증."
+    },
+    {
+      "id": "s10-local-capability-direction-catalog",
+      "scenarioIds": [
+        "S10"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s10-capability-adapter.mjs",
+      "executionMode": "local-readonly-core-capability-catalog-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "지역·언어 조건과 API 호출 방향, 로컬 대안의 부분성을 고정 catalog에서 검사한다. 이번 실행은 공식 사이트 재조회·실 Gemini 계정 또는 외부 API 연결을 수행하지 않는다."
+    },
+    {
+      "id": "m10-local-minimized-egress-payload",
+      "scenarioIds": [
+        "M10"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m10-egress-adapter.mjs",
+      "executionMode": "local-managed-agent-dispatcher-with-mocked-provider-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "제품 dispatcher가 실제로 전달하는 tool payload를 mock provider에서 관측하고 고위험 내용을 사전 차단한다. 외부 API 송신·다국어 분류기 전수 성능은 검증하지 않았다."
+    },
+    {
+      "id": "m12-local-capability-promotion",
+      "scenarioIds": [
+        "M12"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m12-capability-promotion-adapter.mjs",
+      "executionMode": "restricted-docker-container-evaluation-stage-review-promote-rollback-and-negative-contract-check",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "Docker Desktop Linux 컨테이너와 합성 adapter로 제한·평가·명시 검토·승격·복원 경로를 시험한다. 별도 관리 VM·host daemon 탈출 불가·실제 운영 tool 설치는 입증하지 않는다."
+    },
+    {
+      "id": "s11-local-synthetic-health-record-summary",
+      "scenarioIds": [
+        "S11"
+      ],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s11-health-adapter.mjs",
+      "executionMode": "synthetic-health-summary-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "합성 건강 기록의 누락·단위·시각·신선도 표시와 비진단 요약만 검사한다. Health Connect·실계정·센서 정확성·의료적 유효성은 검증하지 않는다."
+    },
+    {
+      "id": "s12-local-isolated-device-reconciliation",
+      "scenarioIds": ["S12"],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-s12-device-adapter.mjs",
+      "executionMode": "in-memory-isolated-device-simulator-with-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "조명 한 대에 한정한 메모리 내 시뮬레이터다. 실제 스마트홈 API·계정·기기·허브와 물리적 안전성은 검증하지 않는다."
+    },
+    {
+      "id": "m07-local-managed-environment-loss-recovery",
+      "scenarioIds": ["M07"],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-m07-environment-recovery-adapter.mjs",
+      "executionMode": "simulated-remote-404-local-snapshot-restore-and-separate-process-oracle",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": [],
+      "limitation": "공급자 404와 로컬 snapshot 복원을 합성 시험한다. 실제 관리형 환경 삭제·운영 artifact store 복원은 검증하지 않는다."
+    },
+    {
+      "id": "g11-local-desktop-settings-layout-fixture",
+      "scenarioIds": ["G11"],
+      "state": "implemented",
+      "entrypoint": "scripts/agent-platform-g11-desktop-fixture-adapter.mjs",
+      "executionMode": "headless-loopback-chromium-accessible-locators-layout-shift-and-state-readback",
+      "repetitionsPerConfiguration": 3,
+      "externalProviderCalls": 0,
+      "allowlistedHosts": ["127.0.0.1"],
+      "limitation": "headless Chromium fixture의 접근성 locator와 localStorage만 평가한다. 실제 native Windows UIA·화면 인식·사용자 앱은 검증하지 않는다."
+    }
+  ]
+}

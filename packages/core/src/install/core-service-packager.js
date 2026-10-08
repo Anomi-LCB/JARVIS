@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { createCoreServiceLifecyclePlan, coreServiceRecoveryCommands } from './core-service-planner.js';
+import { createCoreServiceLifecyclePlan, coreServiceCommandsFor, coreServiceAccountCommands, coreServiceRecoveryCommands } from './core-service-planner.js';
+import {validateCoreInstalledRuntimeBinding,assertCoreWritablePathOutsidePackage,installedBindingPreflightLines,installedBindingCsharp} from './core-installed-runtime-binding.js';
+import {renderTransactionalServiceUpdateScript} from '../../../../apps/pc-agent/src/install/transactional-update.js';
 
 const CORE_SERVICE_PACKAGE_FILES = [
   'service-host.cs',
@@ -32,19 +34,29 @@ export function createCoreServicePackagePlan({
   displayName = 'JARVIS Core Runtime',
   description = 'Local-first JARVIS A Common Core runtime and orchestration API.',
   startType = 'Automatic',
+  serviceAccount = 'virtual',
+  updateServiceAccount = 'preserve',
   port = 4071,
   host = '127.0.0.1',
   logs = {},
   recovery = {},
+  installedRuntime = null,
+  serviceAuthority = null,
   signed = false,
   generatedAt = new Date().toISOString()
 } = {}) {
+  const binding=installedRuntime?validateCoreInstalledRuntimeBinding(installedRuntime):null;
+  const resolvedOutputDir = resolve(cwd, outputDir);
+  if(binding&&updateServiceAccount!=='preserve')throw new Error('CORE_INSTALLED_UPDATE_IDENTITY_MUST_PRESERVE');
   const common = {
-    cwd,
+    cwd:binding?.stateRoot??cwd,
+    ...(binding?{entryScript:binding.launcherPath}:{}),
+    updatePackageRoot:binding?resolvedOutputDir:null,
     serviceName,
     displayName,
     description,
     startType,
+    serviceAccount,
     port,
     host,
     logs,
@@ -52,16 +64,32 @@ export function createCoreServicePackagePlan({
     execute: false
   };
   const installPlan = createCoreServiceLifecyclePlan({ ...common, action: 'install' });
-  const updatePlan = createCoreServiceLifecyclePlan({ ...common, action: 'update' });
+  const updatePlan = createCoreServiceLifecyclePlan({ ...common, action: 'update', serviceAccount: updateServiceAccount });
   const startPlan = createCoreServiceLifecyclePlan({ ...common, action: 'start' });
   const stopPlan = createCoreServiceLifecyclePlan({ ...common, action: 'stop' });
   const restartPlan = createCoreServiceLifecyclePlan({ ...common, action: 'restart' });
   const statusPlan = createCoreServiceLifecyclePlan({ ...common, action: 'status' });
   const uninstallPlan = createCoreServiceLifecyclePlan({ ...common, action: 'uninstall' });
-  const resolvedOutputDir = resolve(cwd, outputDir);
+  if(serviceAuthority!==null){
+    if(!binding||!serviceAuthority||Object.keys(serviceAuthority).sort().join(',')!=='id,initialExpectedToken,ttlMs'
+      ||!/^service:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(serviceAuthority.id??'')
+      ||!Number.isSafeInteger(serviceAuthority.initialExpectedToken)||serviceAuthority.initialExpectedToken<0
+      ||!Number.isSafeInteger(serviceAuthority.ttlMs)||serviceAuthority.ttlMs<1000||serviceAuthority.ttlMs>3600000)throw Error('CORE_SERVICE_AUTHORITY_CONFIGURATION_INVALID');
+    for(const plan of [installPlan,updatePlan,startPlan,stopPlan,restartPlan,statusPlan,uninstallPlan])Object.assign(plan.environment,{
+      JARVIS_CORE_MISSION_STORE_BACKEND:'sqlite',JARVIS_CORE_MISSION_AUTHORITY_ENABLED:'1',
+      JARVIS_CORE_MISSION_AUTHORITY_SERVICE_ID:serviceAuthority.id,JARVIS_CORE_MISSION_AUTHORITY_EXPECTED_TOKEN:String(serviceAuthority.initialExpectedToken),
+      JARVIS_CORE_MISSION_AUTHORITY_TTL_MS:String(serviceAuthority.ttlMs),JARVIS_PERSONAL_OPERATIONS_DB:resolve(binding.stateRoot,'operations.sqlite')});
+  }
+  if(binding)for(const plan of [installPlan,updatePlan,startPlan,stopPlan,restartPlan,statusPlan,uninstallPlan]){
+    plan.installedRuntime=binding;
+    plan.environment.JARVIS_CORE_STATE_ROOT=binding.stateRoot;
+    plan.environment.JARVIS_CORE_ROOT=binding.stateRoot;
+    for(const key of ['JARVIS_CORE_AUDIT_ROOT','JARVIS_CORE_ALLOWED_ROOTS','JARVIS_CORE_EVENT_LOG','JARVIS_CORE_ORCHESTRATION_JOURNAL','JARVIS_CORE_WORKER_LEASE_STORE','JARVIS_CORE_WORKER_QUEUE_STORE'])assertCoreWritablePathOutsidePackage(binding,plan.environment[key]);
+    plan.commands=coreServiceCommandsFor({...plan,nodeCommand:`"${binding.nodePath}" "${plan.entryPath}"`});
+  }
   const serviceHostExe = 'JarvisCoreRuntimeHost.exe';
   const baseFiles = {
-    'service-host.cs': renderCoreServiceHostSource({ installPlan, serviceHostExe, nodeExecutable: process.execPath, cwd }),
+    'service-host.cs': renderCoreServiceHostSource({ installPlan, serviceHostExe, nodeExecutable: binding?.nodePath??process.execPath, cwd:binding?.stateRoot??cwd }),
     'build-service-host.ps1': renderBuildServiceHostScript({ serviceHostExe }),
     'install-service.ps1': renderInstallServiceScript({ installPlan, serviceHostExe }),
     'update-service.ps1': renderUpdateServiceScript({ updatePlan, statusPlan, serviceHostExe }),
@@ -99,12 +127,17 @@ export function createCoreServicePackagePlan({
     'collect-core-logs.ps1': renderCollectCoreLogsScript({ installPlan, outputDir: resolvedOutputDir }),
     'install-all.ps1': renderInstallAllScript()
   };
+  // Windows PowerShell reads UTF-8 without a BOM as the local code page.
+  // Include the encoding marker before calculating the actual file hashes.
+  for(const name of Object.keys(baseFiles))if(name.endsWith('.ps1')&&!baseFiles[name].startsWith('\uFEFF'))baseFiles[name]='\uFEFF'+baseFiles[name];
   const fileIntegrity = createFileIntegrityManifest(baseFiles);
   const manifest = {
     packageVersion: 'a-core-service-package-v1',
     packageId: 'jarvis-core-service-windows',
     serviceName,
     displayName,
+    serviceAccount,
+    updateServiceAccount,
     version: '1.0.0',
     platform: 'win32',
     signed,
@@ -114,9 +147,11 @@ export function createCoreServicePackagePlan({
     localOnly: installPlan.localOnly,
     outputDir: resolvedOutputDir,
     entryPath: installPlan.entryPath,
-    runtimeEntry: 'scripts/core-service-runtime.mjs',
+    runtimeEntry: binding?'pc-agent-runtime/core-launch.mjs':'scripts/core-service-runtime.mjs',
     serviceHostExecutable: serviceHostExe,
-    nodeExecutable: process.execPath,
+    nodeExecutable: binding?.nodePath??process.execPath,
+    installedRuntime:binding,
+    serviceAuthority,
     environment: installPlan.environment,
     files: CORE_SERVICE_PACKAGE_FILES,
     fileIntegrity,
@@ -126,14 +161,17 @@ export function createCoreServicePackagePlan({
       actualServiceInstallRequiresAdministrator: true,
       bindsTo: host,
       adminTokenHashRequired: true,
-      fullAgRuntimeEntry: true
+      fullAgRuntimeEntry: true,
+      defaultServiceAccount: 'per-service-virtual-account',
+      updatePreservesExistingServiceAccount: updateServiceAccount === 'preserve',
+      dataAclScope: ['workspace-read-execute', 'audit-root-modify', 'allowed-root-modify', 'ProgramData-service-root-modify']
     },
     generatedAt
   };
   const files = {
     ...baseFiles,
     'package-manifest.json': `${JSON.stringify(manifest, null, 2)}\n`,
-    'README-install.md': renderInstallReadme({ manifest, installPlan })
+    'README-install.md': renderInstallReadme({ manifest, installPlan })+(binding?'\n\nInstalled runtime binding: the service executes the explicitly pinned PC package Core launcher and Node binary, with state outside installed code. Updates require a different versioned service folder, unchanged storage and credential paths, and a preserved Windows identity. Candidate verification and compilation finish before stopping. service-update-transaction.json retains recovery checkpoints; use update-service.ps1 -RollbackOnly for interrupted recovery. Existing stopped/disabled state and delayed auto start are preserved. Neither state nor credentials are copied or overwritten. Do not run two Core authorities against the same state. Package generation and host preflight do not prove SCM installation, update rollback or Authenticode signing.\n':'\n\nLegacy update is blocked before any service change. Prepare a reviewed installed-runtime binding and versioned Core service package to use the transactional update path.\n')
   };
   return {
     manifest,
@@ -194,14 +232,12 @@ function renderInstallServiceScript({ installPlan, serviceHostExe }) {
     `$serviceHost = Join-Path $root "${serviceHostExe}"`,
     '$binaryPathName = "\`"" + $serviceHost + "\`""',
     '$existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue',
-    'if ($null -ne $existingService) { Stop-ServiceIfRunning $serviceName }',
+    'if ($null -ne $existingService) { throw "Core service already exists. Use update-service.ps1 to preserve its Windows identity and existing DPAPI data path." }',
+    ...installedBindingPreflightLines(installPlan.installedRuntime),
     '& (Join-Path $root "build-service-host.ps1")',
-    'if ($null -eq $existingService) {',
-    '  New-Service -Name $serviceName -DisplayName $displayName -Description $description -StartupType $startType -BinaryPathName $binaryPathName',
-    '} else {',
-    '  Invoke-ScConfig $serviceName $binaryPathName $startType',
-    '  Invoke-ScDescription $serviceName $description',
-    '}',
+    '  New-Service -Name $serviceName -DisplayName $displayName -Description $description -StartupType Manual -BinaryPathName $binaryPathName',
+    ...renderServiceAccountSetupLines(installPlan),
+    ...renderServiceAccessGrantLines(installPlan),
     'Set-Service -Name $serviceName -StartupType $startType',
     ...coreServiceRecoveryCommands({ serviceName: installPlan.serviceName, recovery: installPlan.recovery }),
     'Start-Service -Name $serviceName',
@@ -209,27 +245,68 @@ function renderInstallServiceScript({ installPlan, serviceHostExe }) {
   ].join('\n');
 }
 
+function renderServiceAccountSetupLines(plan) {
+  if (plan.serviceAccount === 'preserve') return [];
+  const account = plan.serviceAccount === 'virtual' ? `NT SERVICE\\${plan.serviceName}` : 'LocalSystem';
+  const setup = [
+    `$serviceAccountName = ${powershellString(account)}`,
+    '$accountOutput = & sc.exe config $serviceName obj= $serviceAccountName password= "" 2>&1',
+    'if ($LASTEXITCODE -ne 0) { throw "Could not configure Core service account ($LASTEXITCODE): $accountOutput" }',
+    ...(plan.serviceAccount === 'virtual' ? [
+      '$sidOutput = & sc.exe sidtype $serviceName unrestricted 2>&1',
+      'if ($LASTEXITCODE -ne 0) { throw "Could not enable the Core service SID ($LASTEXITCODE): $sidOutput" }'
+    ] : [])
+  ];
+  return setup;
+}
+
+function renderServiceAccessGrantLines(plan) {
+  const workspaceRoot = plan.workspaceRoot;
+  const auditRoot = plan.environment.JARVIS_CORE_AUDIT_ROOT;
+  const allowedRoot = plan.environment.JARVIS_CORE_ALLOWED_ROOTS;
+  const dataRoot = `Join-Path $env:ProgramData (Join-Path 'JARVIS\\CoreRuntime' $serviceName)`;
+  return [
+    `$serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"`,
+    'if ($null -eq $serviceInfo) { throw "Core service disappeared before access permissions were configured." }',
+    '$serviceIdentity = [string]$serviceInfo.StartName',
+    'if ($serviceIdentity -eq "LocalSystem") { $serviceIdentity = "SYSTEM" }',
+    `$workspaceRoot = ${powershellString(workspaceRoot)}`,
+    `$auditRoot = ${powershellString(auditRoot)}`,
+    `$allowedRoot = ${powershellString(allowedRoot)}`,
+    `$serviceDataRoot = ${dataRoot}`,
+    'New-Item -ItemType Directory -Force -Path $auditRoot, $allowedRoot, $serviceDataRoot | Out-Null',
+    'function Grant-CoreRuntimePath([string]$Path, [string]$Rights) {',
+    '  $ace = "{0}:(OI)(CI){1}" -f $serviceIdentity, $Rights',
+    '  $aclOutput = & icacls.exe $Path /grant $ace /C 2>&1',
+    '  if ($LASTEXITCODE -ne 0) { throw "Could not grant Core service access to $Path ($LASTEXITCODE): $aclOutput" }',
+    '}',
+    'Grant-CoreRuntimePath $workspaceRoot "RX"',
+    ...(plan.installedRuntime?[
+      `Grant-CoreRuntimePath ${powershellString(plan.installedRuntime.packageRoot)} "RX"`,
+      'Grant-CoreRuntimePath $workspaceRoot "M"'
+    ]:[]),
+    'Grant-CoreRuntimePath $auditRoot "M"',
+    'Grant-CoreRuntimePath $allowedRoot "M"',
+    'Grant-CoreRuntimePath $serviceDataRoot "M"'
+  ];
+}
+
 function renderUpdateServiceScript({ updatePlan, statusPlan, serviceHostExe }) {
+  if(updatePlan.installedRuntime)return renderTransactionalServiceUpdateScript({serviceName:updatePlan.serviceName,helpers:scConfigHelperLines(),kind:'core',
+    preflight:[...installedBindingPreflightLines(updatePlan.installedRuntime),
+      '& (Join-Path $root "build-service-host.ps1")',
+      '$checkInfo=New-Object Diagnostics.ProcessStartInfo',
+      '$checkInfo.FileName=$newExe; $checkInfo.Arguments="--check-runtime"; $checkInfo.UseShellExecute=$false; $checkInfo.CreateNoWindow=$true',
+      '$checkProcess=[Diagnostics.Process]::Start($checkInfo)',
+      'try { if (-not $checkProcess.WaitForExit(30000)) {$checkProcess.Kill(); throw "CORE_UPDATE_RUNTIME_PREFLIGHT_TIMEOUT"}; if ($checkProcess.ExitCode -ne 0) {throw ("CORE_UPDATE_RUNTIME_PREFLIGHT_FAILED: "+$checkProcess.ExitCode)} } finally {$checkProcess.Dispose()}'
+    ]});
   return [
     '# Generated by JARVIS Core service packager.',
     '$ErrorActionPreference = "Stop"',
     'Write-Host "Update JARVIS Core Runtime service"',
-    ...administratorGuardLines(),
-    '$root = Split-Path -Parent $MyInvocation.MyCommand.Path',
     `$serviceName = "${updatePlan.serviceName}"`,
-    `$description = "${updatePlan.description}"`,
-    `$startType = "${updatePlan.startType ?? 'Automatic'}"`,
-    ...scConfigHelperLines(),
-    `$serviceHost = Join-Path $root "${serviceHostExe}"`,
-    '$binaryPathName = "\`"" + $serviceHost + "\`""',
-    'Stop-ServiceIfRunning $serviceName',
-    '& (Join-Path $root "build-service-host.ps1")',
-    'Invoke-ScConfig $serviceName $binaryPathName $startType',
-    'Invoke-ScDescription $serviceName $description',
-    'Set-Service -Name $serviceName -StartupType $startType',
-    ...coreServiceRecoveryCommands({ serviceName: updatePlan.serviceName, recovery: updatePlan.recovery }),
-    'Start-Service -Name $serviceName',
-    ...statusPlan.commands
+    'Get-CimInstance Win32_Service -Filter ("Name="+"\'"+$serviceName+"\'") | Select-Object Name, State, StartName, PathName',
+    'throw "CORE_UPDATE_INSTALLED_RUNTIME_REQUIRED: prepare a reviewed versioned installed-runtime package. The legacy update path will not stop or overwrite this service."'
   ].join('\n');
 }
 
@@ -259,6 +336,7 @@ function scConfigHelperLines() {
     '  switch ($Value.ToLowerInvariant()) {',
     '    "automatic" { return "auto" }',
     '    "auto" { return "auto" }',
+    '    "delayed-auto" { return "delayed-auto" }',
     '    "manual" { return "demand" }',
     '    "demand" { return "demand" }',
     '    "disabled" { return "disabled" }',
@@ -313,7 +391,9 @@ function renderCoreServiceHostSource({ installPlan, nodeExecutable, cwd }) {
     '  }',
     '',
     '  protected override void OnStart(string[] args) {',
-    '    var packageRoot = AppDomain.CurrentDomain.BaseDirectory;',
+    '    VerifyRuntimeBinding();',
+    '    var serviceDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "JARVIS", "CoreRuntime", serviceNameValue);',
+    '    Directory.CreateDirectory(serviceDataRoot);',
     '    Directory.CreateDirectory(Path.Combine(workspaceRoot, "logs"));',
     '    var psi = new ProcessStartInfo();',
     '    psi.FileName = nodeExecutable;',
@@ -322,17 +402,20 @@ function renderCoreServiceHostSource({ installPlan, nodeExecutable, cwd }) {
     '    psi.UseShellExecute = false;',
     '    psi.RedirectStandardOutput = true;',
     '    psi.RedirectStandardError = true;',
+    '    psi.RedirectStandardInput = true;',
     '    psi.CreateNoWindow = true;',
     ...envLines,
+    '    SetEnv(psi, "JARVIS_WINDOWS_SERVICE", "1");',
+    '    SetEnv(psi, "JARVIS_CORE_SERVICE_STDIN_SHUTDOWN", "1");',
     '    child = new Process();',
     '    child.StartInfo = psi;',
     '    child.EnableRaisingEvents = true;',
-    '    child.OutputDataReceived += (sender, eventArgs) => WriteLog(packageRoot, eventArgs.Data);',
-    '    child.ErrorDataReceived += (sender, eventArgs) => WriteLog(packageRoot, eventArgs.Data);',
+    '    child.OutputDataReceived += (sender, eventArgs) => WriteLog(serviceDataRoot, eventArgs.Data);',
+    '    child.ErrorDataReceived += (sender, eventArgs) => WriteLog(serviceDataRoot, eventArgs.Data);',
     '    child.Exited += (sender, eventArgs) => {',
     '      if (stopping) return;',
     '      var exitCode = child.ExitCode == 0 ? 1 : child.ExitCode;',
-    '      WriteLog(packageRoot, "JARVIS Core runtime child exited unexpectedly with code " + child.ExitCode + ". Terminating service host so SCM recovery can restart it.");',
+    '      WriteLog(serviceDataRoot, "JARVIS Core runtime child exited unexpectedly with code " + child.ExitCode + ". Terminating service host so SCM recovery can restart it.");',
     '      Environment.Exit(exitCode);',
     '    };',
     '    child.Start();',
@@ -340,7 +423,7 @@ function renderCoreServiceHostSource({ installPlan, nodeExecutable, cwd }) {
     '    child.BeginErrorReadLine();',
     '    Thread.Sleep(1500);',
     '    if (child.HasExited) {',
-    '      throw new Exception("JARVIS Core runtime exited during service startup with code " + child.ExitCode + ". See core-service-host.log.");',
+    '      throw new Exception("JARVIS Core runtime exited during service startup with code " + child.ExitCode + ". See the service data directory under ProgramData.");',
     '    }',
     '  }',
     '',
@@ -349,11 +432,11 @@ function renderCoreServiceHostSource({ installPlan, nodeExecutable, cwd }) {
     '    if (child == null) return;',
     '    try {',
     '      if (!child.HasExited) {',
-    '        child.Kill();',
-    '        child.WaitForExit(10000);',
+    '        try { child.StandardInput.WriteLine("JARVIS_CORE_SERVICE_STOP_V1"); child.StandardInput.Flush(); child.StandardInput.Close(); } catch (IOException) {} catch (InvalidOperationException) {}',
+    '        if (!child.WaitForExit(10000)) { child.Kill(); child.WaitForExit(10000); }',
     '      }',
     '    } catch (Exception error) {',
-    '      WriteLog(AppDomain.CurrentDomain.BaseDirectory, "Stop failed: " + error.Message);',
+    '      WriteLog(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "JARVIS", "CoreRuntime", serviceNameValue), "Stop failed: " + error.Message);',
     '    }',
     '  }',
     '',
@@ -372,7 +455,9 @@ function renderCoreServiceHostSource({ installPlan, nodeExecutable, cwd }) {
     '    }',
     '  }',
     '',
-    '  public static void Main() {',
+    ...installedBindingCsharp(installPlan.installedRuntime,csharpString),
+    '  public static void Main(string[] args) {',
+    '    if(args.Length==1&&args[0]=="--check-runtime") { VerifyRuntimeBinding(); Console.WriteLine("CoreRuntimeBindingVerified"); return; }',
     '    ServiceBase.Run(new JarvisCoreRuntimeHost());',
     '  }',
     '}',
@@ -381,7 +466,7 @@ function renderCoreServiceHostSource({ installPlan, nodeExecutable, cwd }) {
 }
 
 function shouldEmbedCoreServiceEnv(key, value) {
-  if (key === 'JARVIS_CORE_ADMIN_TOKEN_SHA256') {
+  if (key === 'JARVIS_CORE_ADMIN_TOKEN_SHA256' || key === 'JARVIS_CORE_INTEGRATION_HANDOFF_TOKEN_SHA256') {
     return /^[a-f0-9]{64}$/i.test(String(value ?? ''));
   }
   return true;
@@ -523,6 +608,18 @@ function renderVerifyInstalledCoreServiceScript({ installPlan }) {
     '  if ($service.Status -eq "Running") { $serviceStatus = "pass" }',
     '  Add-Check "windows-service-running" $serviceStatus @{ serviceName = $serviceName; serviceStatus = [string]$service.Status }',
     '}',
+    `$serviceInfo = Get-CimInstance Win32_Service -Filter "Name='${installPlan.serviceName}'"`,
+    `$expectedServiceAccount = ${powershellString(serviceAccountNameForPlan(installPlan))}`,
+    '$actualServiceAccount = [string]$serviceInfo.StartName',
+    '$accountStatus = "pass"',
+    'if ($actualServiceAccount -ine $expectedServiceAccount) { $accountStatus = "fail" }',
+    'Add-Check "service-logon-account" $accountStatus @{ expected = $expectedServiceAccount; actual = $actualServiceAccount }',
+    'if ($actualServiceAccount -match "^NT SERVICE\\\\") {',
+    '  $sidOutput = & sc.exe qsidtype $serviceName 2>&1 | Out-String',
+    '  $sidStatus = "fail"',
+    '  if ($sidOutput -match "UNRESTRICTED") { $sidStatus = "pass" }',
+    '  Add-Check "service-sid-type" $sidStatus @{ actual = $sidOutput.Trim() }',
+    '}',
     'try {',
     '  $health = Invoke-RestMethod -Uri "$endpoint/health" -Method Get -TimeoutSec 5',
     '  $healthStatus = "fail"',
@@ -602,7 +699,7 @@ function renderInstalledServiceSmokeScript({ installPlan }) {
     '$completed = $false',
     'for ($i = 0; $i -lt ($TimeoutSec * 2); $i++) {',
     '  Start-Sleep -Milliseconds 500',
-    '  $detail = Invoke-RestMethod -Uri "$endpoint/tasks/$($created.taskId)" -Method Get -TimeoutSec 5',
+    '  $detail = Invoke-RestMethod -Uri "$endpoint/tasks/$($created.taskId)" -Method Get -Headers $headers -TimeoutSec 5',
     '  if ($detail.status -eq "COMPLETED") { $completed = $true; break }',
     '}',
     'if ($completed) { Add-Check "task-completed" "pass" @{ status = $detail.status } } else { Add-Check "task-completed" "fail" @{ status = $detail.status } }',
@@ -663,7 +760,7 @@ function renderInstalledServiceSoakScript({ installPlan }) {
     '  }',
     '  $completed = 0',
     '  foreach ($taskId in $createdTasks) {',
-    '    $detail = Invoke-RestMethod -Uri "$endpoint/tasks/$taskId" -Method Get -TimeoutSec 5',
+    '    $detail = Invoke-RestMethod -Uri "$endpoint/tasks/$taskId" -Method Get -Headers $headers -TimeoutSec 5',
     '    $details[$taskId] = $detail',
     '    if ($detail.status -eq "COMPLETED") { $completed += 1 }',
     '  }',
@@ -706,9 +803,13 @@ function renderCollectCoreLogsScript({ installPlan, outputDir }) {
     '$ErrorActionPreference = "Stop"',
     'Write-Host "Collect JARVIS Core Runtime logs"',
     `$source = "${installPlan.environment.JARVIS_CORE_AUDIT_ROOT}"`,
+    `$serviceHostLog = Join-Path $env:ProgramData "JARVIS\\CoreRuntime\\${installPlan.serviceName}\\core-service-host.log"`,
     `$target = Join-Path "${outputDir}" ("core-service-logs-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".zip")`,
-    'if (-not (Test-Path $source)) { throw "Log directory not found: $source" }',
-    'Compress-Archive -Path (Join-Path $source "*") -DestinationPath $target -Force',
+    '$logPaths = @()',
+    'if (Test-Path $source) { $logPaths += (Join-Path $source "*") }',
+    'if (Test-Path $serviceHostLog) { $logPaths += $serviceHostLog }',
+    'if ($logPaths.Count -eq 0) { throw "No Core runtime logs were found in $source or $serviceHostLog" }',
+    'Compress-Archive -Path $logPaths -DestinationPath $target -Force',
     'Write-Host "Wrote $target"'
   ].join('\n');
 }
@@ -764,6 +865,9 @@ function renderInstallReadme({ manifest, installPlan }) {
     '',
     `The service installs \`${installPlan.entryPath}\`, which starts the full A-G Core runtime through \`scripts/core-service-runtime.mjs\`. The generated service environment includes persistent event, orchestration journal, worker queue, worker lease, admin auth, and CoreWorkerDaemon autostart settings.`,
     '',
+    `A new installation runs as \`${serviceAccountNameForPlan(installPlan)}\`. The installer grants that identity read/execute access to the runtime workspace, modify access only to the configured audit and allowed-workspace roots, and modify access to its ProgramData log directory. Updates preserve the existing service identity by default because DPAPI-protected data is tied to its Windows identity; changing it requires an explicit migration and re-verification.`,
+    'The install script refuses to run when the service already exists. Use the update script to avoid silently moving DPAPI-protected credentials between storage paths. Account migration is currently blocked until a verified decrypt/re-encrypt procedure exists.',
+    '',
     '`configure-core-admin-token.ps1` seals the raw admin token with Windows DPAPI for the current user and writes only `JARVIS_CORE_ADMIN_TOKEN_SHA256` to the Machine environment for the service. The raw token is not written to reports.',
     '',
     'Installation, update, start, stop, restart, uninstall, and install-all scripts require Administrator PowerShell. The package itself is generated in dry-run mode; it does not install or modify a Windows service until one of those scripts is executed.'
@@ -800,4 +904,12 @@ function signPackageManifest(payload) {
 
 function csharpString(value) {
   return `@"${String(value ?? '').replaceAll('"', '""')}"`;
+}
+
+function serviceAccountNameForPlan(plan) {
+  return plan.serviceAccount === 'virtual' ? `NT SERVICE\\${plan.serviceName}` : 'LocalSystem';
+}
+
+function powershellString(value) {
+  return `'${String(value ?? '').replaceAll("'", "''")}'`;
 }

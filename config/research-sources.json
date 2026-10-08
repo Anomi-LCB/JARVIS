@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "allowedHosts": ["developers.openai.com", "research.google", "github.com"],
+  "sources": [
+    {"id": "openai-agents-api", "url": "https://developers.openai.com/api/docs/guides/agents-api/overview", "area": "durable-agents"},
+    {"id": "openai-agents-sdk", "url": "https://developers.openai.com/api/docs/guides/agents/sdk", "area": "agent-orchestration"},
+    {"id": "openai-changelog", "url": "https://developers.openai.com/api/docs/changelog", "area": "api-releases"},
+    {"id": "google-research", "url": "https://research.google/blog/rss/", "area": "research-discovery"},
+    {"id": "google-artemis", "url": "https://github.com/google/artemis/commits/main.atom", "area": "android-automation"},
+    {"id": "microsoft-agent-lightning", "url": "https://github.com/microsoft/agent-lightning/releases.atom", "area": "agent-learning"}
+  ]
+}

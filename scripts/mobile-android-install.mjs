@@ -300,12 +300,41 @@ async function installApk({ adbResolution, serial, apkPath }) {
 
 function statusFor({ build, apk, install, packageProbe, readyDevices, nativeProject }) {
   if (build.attempted && (build.exitCode !== 0 || build.timedOut || build.kotlinDslTimeoutDetected)) return 'build-blocked';
-  if (install.attempted && install.success === false) return 'install-blocked';
+  if (install.requested && install.success === false) return 'install-blocked';
   if (packageProbe.installed) return 'installed';
   if (apk.exists) return readyDevices.length > 0 ? 'apk-ready' : 'apk-ready-no-device';
   if (nativeProject.exists && readyDevices.length > 0) return 'ready-to-build';
   if (nativeProject.exists) return 'ready-to-build-no-device';
   return 'blocked';
+}
+
+export function selectAndroidInstallTarget({ readyDevices = [], requestedDevice = null } = {}) {
+  const requested = String(requestedDevice ?? '').trim();
+  if (requested) {
+    const match = readyDevices.find((item) => item.serial === requested);
+    return match
+      ? { serial: match.serial, reason: null }
+      : { serial: null, reason: `requested-device-not-ready:${requested}` };
+  }
+  if (readyDevices.length === 1) return { serial: readyDevices[0].serial, reason: null };
+  if (readyDevices.length > 1) return { serial: null, reason: 'multiple-ready-devices-require-explicit-target' };
+  return { serial: null, reason: 'no-ready-device' };
+}
+
+export function evaluateAndroidInstallEligibility({
+  installRequested,
+  buildRequested,
+  buildResult,
+  apkExists,
+  selectedDevice
+} = {}) {
+  if (!installRequested) return { allowed: false, reason: 'not-requested' };
+  if (!selectedDevice) return { allowed: false, reason: 'explicit-ready-device-required' };
+  if (buildRequested && (buildResult?.attempted !== true || buildResult.exitCode !== 0 || buildResult.timedOut)) {
+    return { allowed: false, reason: 'current-build-not-successful-stale-apk-blocked' };
+  }
+  if (!apkExists) return { allowed: false, reason: 'apk-not-found' };
+  return { allowed: true, reason: null };
 }
 
 function nextActions(report) {
@@ -355,7 +384,8 @@ export async function runAndroidInstallVerification({
   const adbResolution = await resolveAdbCommand({ env: resolutionEnv });
   const devices = await listDevices(adbResolution);
   const readyDevices = devices.devices.filter((item) => item.state === 'device');
-  const selectedDevice = device ?? readyDevices[0]?.serial ?? 'emulator-5554';
+  const deviceSelection = selectAndroidInstallTarget({ readyDevices, requestedDevice: device });
+  const selectedDevice = deviceSelection.serial;
   const androidDir = join(appDir, 'android');
   const nativeProject = {
     exists: await exists(androidDir),
@@ -402,9 +432,21 @@ export async function runAndroidInstallVerification({
     });
   }
   const apk = await apkInfo(apkPath);
-  const installResult = install
-    ? await installApk({ adbResolution, serial: selectedDevice, apkPath })
-    : { attempted: false, success: false, error: null };
+  const installEligibility = evaluateAndroidInstallEligibility({
+    installRequested: install,
+    buildRequested: build,
+    buildResult,
+    apkExists: apk.exists,
+    selectedDevice
+  });
+  const installResult = installEligibility.allowed
+    ? { requested: true, ...await installApk({ adbResolution, serial: selectedDevice, apkPath }) }
+    : {
+        requested: install,
+        attempted: false,
+        success: false,
+        error: installEligibility.reason
+      };
   const packageProbe = await packageStatus(adbResolution, selectedDevice);
   const reportDraft = {
     generatedAt: new Date().toISOString(),
@@ -413,7 +455,8 @@ export async function runAndroidInstallVerification({
     packageName,
     variant: selectedVariant,
     selectedDevice,
-    plan: createInstallPlan({ appDir, selectedDevice, variant: selectedVariant }),
+    deviceSelection,
+    plan: createInstallPlan({ appDir, selectedDevice: selectedDevice ?? 'EXPLICIT_DEVICE_REQUIRED', variant: selectedVariant }),
     sdkRoot: sdkRoot(env),
     adb: {
       command: adbResolution.command,

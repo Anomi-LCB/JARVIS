@@ -1,7 +1,7 @@
 {
   "serviceName": "JarvisPcAgent",
-  "displayName": "JARVIS Local PC Agent",
-  "description": "Local-only JARVIS B module for approved PC execution packets.",
+  "displayName": "JARVIS 로컬 PC 에이전트",
+  "description": "승인된 PC 작업을 처리하는 JARVIS 로컬 전용 실행 모듈입니다.",
   "entry": "apps/pc-agent/src/main.mjs",
   "host": "127.0.0.1",
   "port": 17776,

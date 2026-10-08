@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {renderNsisFileLayout} from '../apps/pc-agent/src/install/nsis-file-layout.js';
+import {createInstallerPackagePlan} from '../apps/pc-agent/src/install/installer-packager.js';
+import {loadPcAgentInstallConfig} from '../apps/pc-agent/src/install/service-planner.js';
+const run=promisify(execFile);
+test('exact distribution paths reject traversal, wildcard and NSIS variable injection',async()=>{
+ for(const name of ['../private.json','/private.json','folder/../key','folder//key','folder/./key','*.json','$TEMP/key','file".txt'])assert.throws(()=>renderNsisFileLayout({files:[name]}),/UNSAFE_PAYLOAD_PATH/);
+ assert.throws(()=>renderNsisFileLayout({files:['same'],optionalFiles:['same']}),/DUPLICATE_PAYLOAD_PATH/);
+ const plan=createInstallerPackagePlan(await loadPcAgentInstallConfig()),script=String(plan.files['installer.nsi']);
+ assert.equal(plan.manifest.distribution.unlistedFilesIncluded,false);assert.ok(!script.includes('File /r'));
+ assert.ok(!plan.manifest.distribution.requiredFiles.includes('service-update-transaction.json'));assert.ok(!plan.manifest.distribution.requiredFiles.includes('.install-reservation'));
+ for(const file of Object.keys(plan.files))assert.ok(plan.manifest.distribution.requiredFiles.includes(file));
+});
+test('real NSIS compiler includes approved bytes and omits adjacent synthetic secrets and recovery records',{skip:process.platform!=='win32',timeout:15000},async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'jarvis-nsis-payload-list-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ await mkdir(join(dir,'nested'));
+ const publicBytes='PUBLIC-APPROVED-PAYLOAD-c61d9f674f6f',privateBytes='SYNTHETIC-NOT-ACTUAL-CREDENTIAL-836a879d4c64';
+ await writeFile(join(dir,'nested/public.txt'),publicBytes);await writeFile(join(dir,'unlisted-private.txt'),privateBytes);await writeFile(join(dir,'service-update-transaction.json'),privateBytes);await writeFile(join(dir,'.install-reservation'),privateBytes);
+ const script=['Unicode true','Name "Isolated archive compilation only"','OutFile "candidate.exe"','RequestExecutionLevel user','SetCompress off','Section',...renderNsisFileLayout({files:['nested/public.txt']}),'SectionEnd'].join('\n');
+ await writeFile(join(dir,'candidate.nsi'),'\uFEFF'+script);
+ const result=await run('C:/Program Files (x86)/NSIS/makensis.exe',['/V4',join(dir,'candidate.nsi')],{cwd:dir,windowsHide:true});
+ const executable=await readFile(join(dir,'candidate.exe'));assert.ok(executable.includes(Buffer.from(publicBytes)));assert.equal(executable.includes(Buffer.from(privateBytes)),false);
+ assert.ok(result.stdout.includes('public.txt'));assert.equal(result.stdout.includes('unlisted-private.txt'),false);
+ console.log(JSON.stringify({nsisPayloadEvidence:{realCompiler:true,uncompressedApprovedBytesPresent:true,adjacentSyntheticPrivateBytesAbsent:true,recoveryBytesAbsent:true,installerNotExecuted:true}}));
+});

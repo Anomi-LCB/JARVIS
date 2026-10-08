@@ -1,0 +1,7 @@
+{
+  "fixtureId": "m04-preference-revision-synthetic-v1",
+  "sourceStatement": "회의 자료는 문장형으로 정리해줘",
+  "originalStatement": "회의 자료는 문장형으로 정리해줘",
+  "updatedStatement": "회의 자료를 표로 정리해줘",
+  "updateReason": "current preference correction"
+}

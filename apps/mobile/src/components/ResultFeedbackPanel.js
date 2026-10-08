@@ -151,7 +151,7 @@ export function createRollbackConfirmationState({
     pending: pending === true || confirmation?.pending === true,
     title: '되돌리기 확인',
     body: rollbackAvailable
-      ? 'B의 rollback 증거를 확인하고 산출물 변경을 되돌립니다.'
+      ? 'PC 에이전트의 되돌리기 근거를 확인하고 산출물 변경을 복구합니다.'
       : '이 결과는 모바일에서 되돌릴 수 없습니다.',
     affectedItemCount: changedItems.length,
     outputPathCount: outputPaths.length,

@@ -1,26 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, resolve, dirname, basename } from 'node:path';
 import { createAgRuntime } from '../apps/runtime-compose/src/create-runtime.js';
 import { MobileAppRuntime } from '../apps/mobile/src/mobile-runtime.js';
 import { ApprovalDecision, TaskStatus } from '../packages/shared/src/types.js';
 
 test('mobile approve + handoff confirm executes the real plan through the worker', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-handoff-'));
-  const createdOutputs = [];
+  let runtime;
   try {
-    // 플래너의 산출물 경로는 './workspace' 고정이므로 실서비스와 동일한 allowedRoots를 쓴다.
-    const runtime = createAgRuntime({
-      allowedRoots: ['./workspace'],
+    await mkdir(join(dir,'workspace'));
+    runtime = createAgRuntime({
+      env:{JARVIS_TEST_MODE:'1',JARVIS_LLM_INTENT:'0',JARVIS_LLM_PLANNER:'0',JARVIS_LLM_CONTENT:'0'},
+      allowedRoots: [relative(process.cwd(),join(dir,'workspace'))],
       auditRoot: dir,
       bridgeRealExecution: true,
       workerQueueStorePath: null,
       workerLeaseStorePath: null
     });
     assert.ok(runtime.bridgeRuntime.orchestrationWorker, 'bridge runtime exposes the orchestration worker');
+    const failures=[];runtime.coreFacade.eventBus.subscribe('task.failed',event=>failures.push({reason:event.payload.reason,evidence:event.payload.evidence}));
 
     const mobile = new MobileAppRuntime({ bridgeRuntime: runtime.bridgeRuntime });
     const pairing = runtime.bridgeRuntime.pairing.start();
@@ -40,7 +42,8 @@ test('mobile approve + handoff confirm executes the real plan through the worker
     assert.equal(approved.requiresUserConfirmation, true);
 
     const executed = await mobile.confirmExecution(approved.handoffId);
-    assert.equal(executed.status, TaskStatus.COMPLETED);
+    const observed=runtime.coreFacade.getTask(sent.taskId);
+    assert.equal(executed.status, TaskStatus.COMPLETED, JSON.stringify({error:executed.error,taskStatus:observed?.status,failures}));
 
     const result = mobile.result(sent.taskId);
     const outputPaths = result.executionResult?.outputPaths ?? [];
@@ -50,9 +53,9 @@ test('mobile approve + handoff confirm executes the real plan through the worker
       `xlsx plan executed through the worker, got: ${outputPaths.join(', ')}`
     );
     assert.ok(outputPaths.every((path) => existsSync(path)), 'output files actually exist on disk');
-    createdOutputs.push(...outputPaths);
   } finally {
+    runtime?.coreFacade.cognition?.close?.();
+    assert.equal(dirname(resolve(dir)),resolve(tmpdir()));assert.ok(basename(dir).startsWith('jarvis-handoff-'));
     await rm(dir, { recursive: true, force: true });
-    await Promise.all(createdOutputs.map((path) => rm(path, { force: true }).catch(() => undefined)));
   }
 });

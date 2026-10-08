@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS 격리 설정 시험</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 "Malgun Gothic", sans-serif; color: #142033; background: #f4f7fb; }
+    body { margin: 0; min-height: 900px; }
+    header { padding: 22px 32px; background: #fff; border-bottom: 1px solid #d9e2ed; }
+    main { max-width: 900px; margin: 36px auto; padding: 28px; background: #fff; border: 1px solid #d9e2ed; border-radius: 12px; }
+    .setting { display: block; margin: 16px 0; padding: 16px; border: 1px solid #d9e2ed; border-radius: 8px; }
+    #save { display: block; margin-top: 28px; padding: 12px 36px; font: inherit; color: #fff; background: #087e73; border: 0; border-radius: 8px; cursor: pointer; }
+    #status { display: block; min-height: 28px; margin-top: 16px; color: #087e73; }
+    body[data-layout="before"] main { margin-top: 24px; }
+    body[data-layout="before"] #save { margin-left: 0; }
+    body[data-layout="after"] main { margin-top: 220px; }
+    body[data-layout="after"] #save { margin-left: auto; }
+  </style>
+</head>
+<body>
+  <header><strong>JARVIS 격리 설정 앱</strong></header>
+  <main>
+    <h1>작업 설정</h1>
+    <label class="setting"><input id="target-setting" type="checkbox"> 자동 저장 사용</label>
+    <label class="setting"><input id="unrelated-setting" type="checkbox"> 외부로 자동 전송</label>
+    <button id="save" type="button">설정 저장</button>
+    <output id="status" role="status" aria-live="polite">저장되지 않음</output>
+  </main>
+  <script>
+    const target = document.querySelector('#target-setting');
+    const unrelated = document.querySelector('#unrelated-setting');
+    const status = document.querySelector('#status');
+    target.checked = localStorage.getItem('jarvis.fixture.autosave') === 'true';
+    unrelated.checked = false;
+    status.textContent = target.checked ? '저장됨' : '저장되지 않음';
+    document.querySelector('#save').addEventListener('click', () => {
+      localStorage.setItem('jarvis.fixture.autosave', String(target.checked));
+      status.textContent = '저장됨';
+    });
+  </script>
+</body>
+</html>

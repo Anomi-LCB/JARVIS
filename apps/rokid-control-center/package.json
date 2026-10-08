@@ -1,0 +1,14 @@
+{
+  "name": "@jarvis/rokid-control-center",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "description": "Backup-first Windows control center for authorized Rokid glasses",
+  "scripts": {
+    "dev": "node src/server.mjs",
+    "backup:logical": "node scripts/backup-now.mjs --mode logical",
+    "backup:full": "node scripts/backup-now.mjs --mode full",
+    "test": "node --test tests/*.test.js",
+    "build:windows": "node scripts/build-windows.mjs"
+  }
+}

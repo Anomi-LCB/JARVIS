@@ -6,7 +6,7 @@ export function ConnectionStatusBar({ connected, bridgeUrl }: { connected: boole
   return (
     <View style={{ padding: 10, backgroundColor: colors.surface }}>
       <Text style={{ color: connected ? colors.accent : colors.warning }}>
-        {connected ? `연결됨 ${bridgeUrl ?? ''}` : 'PC Bridge 연결 필요'}
+        {connected ? `연결됨 ${bridgeUrl ?? ''}` : 'PC 브리지 연결 필요'}
       </Text>
     </View>
   );

@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-29",
+  "integrationMode": "jarvis-owned-hybrid",
+  "productParityMeasured": false,
+  "sources": {
+    "grok": "https://docs.x.ai/grok-bot/overview",
+    "grok-skills": "https://docs.x.ai/grok-bot/skills-routines-and-automations",
+    "grok-security": "https://docs.x.ai/grok-bot/approvals-security-and-privacy",
+    "xai-api": "https://docs.x.ai/developers/tools/overview",
+    "muse": "https://introducing.muse.ai/",
+    "muse-security": "https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse",
+    "meta-api": "https://dev.meta.ai/docs/models",
+    "meta-pricing": "https://dev.meta.ai/docs/pricing-rate-limits",
+    "glimmer": "https://huggingface.co/meta-models/Muse-Glimmer-30B",
+    "spark": "https://support.google.com/gemini/answer/17094507",
+    "gemini-api": "https://ai.google.dev/api/generate-content",
+    "gemini-agents": "https://ai.google.dev/gemini-api/docs/agents",
+    "gemini-mcp": "https://support.google.com/gemini/answer/17209137"
+  },
+  "providerContracts": [
+    {
+      "provider": "xai",
+      "surface": "xAI Inference API; not the Grok Bot consumer product API",
+      "checkedAt": "2026-09-29",
+      "protocol": "responses",
+      "apiVersion": "v1",
+      "modelVersion": "operator-pinned-required",
+      "source": "https://docs.x.ai/developers/rest-api-reference/inference/responses",
+      "accessConditions": [
+        "API account and key",
+        "model access and billing confirmed by owner",
+        "public-data pilot before personal data"
+      ],
+      "dataConditions": "Requests explicitly set store:false; no live request occurred and account data terms still require review",
+      "scope": "JARVIS Mission text planning only; provider-side web search and custom tool execution are not enabled in this adapter",
+      "productAgentApiStatus": "not-integrated",
+      "liveVerified": false
+    },
+    {
+      "provider": "meta",
+      "surface": "Meta Model API / Muse Spark model; not the Muse personal-agent product API",
+      "checkedAt": "2026-09-29",
+      "protocol": "chat-completions",
+      "apiVersion": "v1",
+      "modelVersion": "operator-pinned-required; muse-spark-1.3 Standard is a candidate",
+      "source": "https://dev.meta.ai/docs/protocols",
+      "reasoningEffort": {
+        "supported": ["minimal", "low", "medium", "high", "xhigh"],
+        "environmentVariable": "JARVIS_META_REASONING_EFFORT",
+        "default": "provider-default",
+        "verified": "mock-contract-only"
+      },
+      "accessConditions": [
+        "API account and key",
+        "Standard tier only",
+        "model access and billing confirmed by owner"
+      ],
+      "dataConditions": "Chat Completions sends caller-managed messages and has no cross-request conversation state; request does not set store because the endpoint docs do not list it; this is not a retention guarantee. Contributor model IDs rejected; Standard tier is a no-training candidate described by official model docs, but actual account terms and retention still require review",
+      "scope": "JARVIS Mission text planning only; optional documented reasoning_effort; no Meta web-search tool, Muse product app access, media API or provider-managed agent loop is connected",
+      "productAgentApiStatus": "not-integrated",
+      "liveVerified": false
+    },
+    {
+      "provider": "gemini",
+      "surface": "Gemini Developer API; separate from the Gemini Spark consumer agent product",
+      "checkedAt": "2026-09-29",
+      "protocol": "native-generateContent",
+      "apiVersion": "v1beta",
+      "modelVersion": "operator-pinned-required",
+      "source": "https://ai.google.dev/api/generate-content",
+      "accessConditions": [
+        "Google API project and key",
+        "model access, regional availability and data tier checked for account",
+        "Spark product access is not API access"
+      ],
+      "dataConditions": "Personal data pilot remains blocked until project data-use terms and egress scope are confirmed",
+      "scope": "JARVIS Mission text planning only; Gemini managed Agents API, Spark Tasks/Skills/Schedules and Google Workspace app authorization are not connected",
+      "productAgentApiStatus": "not-integrated",
+      "liveVerified": false
+    }
+  ],
+  "features": [
+    {
+      "id": "model-planning",
+      "title": "교체 가능한 모델 계획기",
+      "sources": [
+        "xai-api",
+        "meta-api",
+        "gemini-api"
+      ],
+      "implementation": "packages/core/src/mission/model-provider.js",
+      "stage": "isolated-tested",
+      "gateRange": [
+        13,
+        24
+      ],
+      "nextAction": "DPAPI 보관 키를 통한 승인된 공개자료 계획 호출과 모델별 품질·시간·비용 비교",
+      "liveVerified": false
+    },
+    {
+      "id": "model-credential-vault",
+      "title": "범위가 제한된 DPAPI 제공자 키 전달",
+      "sources": [
+        "muse-security"
+      ],
+      "implementation": "packages/core/src/mission/model-provider-vault.js; scripts/configure-integration-handoff-token.ps1; scripts/personal-model-provider-connect.ps1",
+      "stage": "isolated-tested",
+      "gateRange": [
+        25,
+        35
+      ],
+      "nextAction": "모델 키와 Agents API create/read/provider.verify 키의 CurrentUser DPAPI 인계 및 read-only 모델 카탈로그 확인은 fixture로 격리 검증됨. 실계정 key 접근·서비스 계정 DPAPI 왕복을 확인",
+      "liveVerified": false
+    },
+    {
+      "id": "role-collaboration",
+      "title": "역할별 협업과 범위 제한",
+      "sources": [
+        "grok"
+      ],
+      "implementation": "packages/core/src/mission/mission-runtime.js; packages/core/src/mission/mission-role-scope.js; packages/core/src/mission/mission-role-agent-session-pool.js; packages/core/src/mission/managed-agent-session-broker.js; packages/core/src/mission/managed-agent-mission-tool-dispatcher.js; packages/core/src/core-facade.js",
+      "stage": "partial",
+      "gateRange": [
+        13,
+        24
+      ],
+      "nextAction": "빈 세션 준비·복구 API와 Agents 키의 create/read/provider.verify DPAPI 인계는 fixture로 격리 검증됨. 실제 provider/broker 기본 구성·Mission별 원격 자원 승인·요청별 외부 전송 승인·실계정 worker/action 동일성과 공개 G01/G12 평가는 미검증이다.",
+      "liveVerified": false
+    },
+    {
+      "id": "long-goals",
+      "title": "장기 목표와 정정",
+      "sources": [
+        "muse",
+        "spark"
+      ],
+      "implementation": "packages/core/src/mission/mission-goal-revision.js",
+      "stage": "partial",
+      "gateRange": [
+        13,
+        24
+      ],
+      "nextAction": "여러 실제 업무에서 정정 후 재계획과 결과 보존 검증",
+      "liveVerified": false
+    },
+    {
+      "id": "durable-execution",
+      "title": "지속 실행과 복구",
+      "sources": [
+        "grok",
+        "gemini-agents"
+      ],
+      "implementation": "packages/core/src/mission/sqlite-mission-store.js",
+      "stage": "partial",
+      "gateRange": [
+        36,
+        47
+      ],
+      "nextAction": "원격·외부효과로 복구 범위 확장",
+      "liveVerified": false
+    },
+    {
+      "id": "routines",
+      "title": "예약·사건 기반 실행",
+      "sources": [
+        "grok-skills",
+        "spark"
+      ],
+      "implementation": "packages/core/src/personal-operations/operations-store.js",
+      "stage": "partial",
+      "gateRange": [
+        48,
+        58
+      ],
+      "nextAction": "Core 영속 일회성 예약과 웹 패널은 로컬 검증됨; 대화·음성 진입, 실제 Core 관리자 세션과 재부팅 후 제품 서비스 경로, OS 알림 UX를 확인",
+      "liveVerified": false
+    },
+    {
+      "id": "personal-memory",
+      "title": "출처·정정·삭제 가능한 개인 기억",
+      "sources": [
+        "muse",
+        "grok"
+      ],
+      "implementation": "packages/core/src/cognition/cognitive-runtime.js",
+      "stage": "partial",
+      "gateRange": [
+        48,
+        58
+      ],
+      "nextAction": "새 세션에서 기억 사용 전후의 실제 품질 비교",
+      "liveVerified": false
+    },
+    {
+      "id": "proactivity",
+      "title": "근거 있는 선제 지원",
+      "sources": [
+        "muse"
+      ],
+      "implementation": "packages/core/src/personal-operations/source-inbox.js",
+      "stage": "planned",
+      "gateRange": [
+        48,
+        58
+      ],
+      "nextAction": "새 자료·기한·충돌 기반 알림과 소음 억제",
+      "liveVerified": false
+    },
+    {
+      "id": "skill-learning",
+      "title": "시범·경험 기반 절차 학습",
+      "sources": [
+        "grok-skills"
+      ],
+      "implementation": "apps/growth-memory/src/growth-runtime.js",
+      "stage": "planned",
+      "gateRange": [
+        91,
+        100
+      ],
+      "nextAction": "절차 revision·독립 평가·승격·복원 구현",
+      "liveVerified": false
+    },
+    {
+      "id": "connections",
+      "title": "능력별 연결 준비도",
+      "sources": [
+        "spark",
+        "muse-security"
+      ],
+      "implementation": "packages/core/src/capabilities/capability-availability.js",
+      "stage": "partial",
+      "gateRange": [
+        25,
+        35
+      ],
+      "nextAction": "실제 OAuth 권한·토큰 갱신·철회 증거 연결",
+      "liveVerified": false
+    },
+    {
+      "id": "computer-browser",
+      "title": "PC·브라우저 제어",
+      "sources": [
+        "grok",
+        "spark"
+      ],
+      "implementation": "apps/pc-agent/src/windows-desktop-control.js",
+      "stage": "partial",
+      "gateRange": [
+        59,
+        69
+      ],
+      "nextAction": "변경된 화면·로그인·상태 충돌에서 실제 복구 검증",
+      "liveVerified": false
+    },
+    {
+      "id": "secure-handoff",
+      "title": "자격증명·사용자 인계",
+      "sources": [
+        "grok-security",
+        "muse-security"
+      ],
+      "implementation": "packages/core/src/personal-operations/integration-credential-handoffs.js",
+      "stage": "partial",
+      "gateRange": [
+        25,
+        35
+      ],
+      "nextAction": "Windows 서비스와 로그인 사용자 중개·인계 중 동작 정지",
+      "liveVerified": false
+    },
+    {
+      "id": "artifacts",
+      "title": "문서·표·카드 산출물",
+      "sources": [
+        "muse",
+        "spark"
+      ],
+      "implementation": "apps/pc-agent/src/adapters/visual",
+      "stage": "partial",
+      "gateRange": [
+        59,
+        69
+      ],
+      "nextAction": "실제 연구 자료의 내용·출처·레이아웃 품질 검증",
+      "liveVerified": false
+    },
+    {
+      "id": "multimodal",
+      "title": "음성·이미지·영상",
+      "sources": [
+        "meta-api",
+        "glimmer"
+      ],
+      "implementation": "apps/mobile/src/voice",
+      "stage": "partial",
+      "gateRange": [
+        59,
+        69
+      ],
+      "nextAction": "한국어 전사·말 끊기·시각 대상·기기 지연 비교",
+      "liveVerified": false
+    },
+    {
+      "id": "transactions",
+      "title": "예약·구매·거래",
+      "sources": [
+        "spark",
+        "muse-security"
+      ],
+      "implementation": "packages/core/src/personal-operations/mandate-budget.js",
+      "stage": "planned",
+      "gateRange": [
+        70,
+        80
+      ],
+      "nextAction": "공급자 sandbox·정확한 견적·영수증·중복 방지",
+      "liveVerified": false
+    },
+    {
+      "id": "devices",
+      "title": "모바일·웨어러블·주변 기기",
+      "sources": [
+        "grok",
+        "muse-security"
+      ],
+      "implementation": "apps/pc-agent/src/adapters/android-artemis",
+      "stage": "partial",
+      "gateRange": [
+        81,
+        90
+      ],
+      "nextAction": "연결된 실기기별 저위험 동작 검증",
+      "liveVerified": false
+    },
+    {
+      "id": "optimization",
+      "title": "측정에 따른 시간·비용 선택",
+      "sources": [
+        "meta-pricing",
+        "gemini-agents"
+      ],
+      "implementation": "packages/core/src/mission/planner-attempt-accounting.js",
+      "stage": "partial",
+      "gateRange": [
+        91,
+        100
+      ],
+      "nextAction": "추정치와 관측치 분리 후 모델별 실제 품질 비교",
+      "liveVerified": false
+    },
+    {
+      "id": "tool-building",
+      "title": "격리된 도구 자체 제작",
+      "sources": [
+        "muse-security"
+      ],
+      "implementation": "packages/core/src/capabilities/capability-package-registry.js",
+      "stage": "planned",
+      "gateRange": [
+        91,
+        100
+      ],
+      "nextAction": "신뢰 경계 안의 코드 생성·계약 검사·승격",
+      "liveVerified": false
+    },
+    {
+      "id": "workspace-ui",
+      "title": "대화·목표·결과 통합 화면",
+      "sources": [
+        "muse",
+        "grok",
+        "spark"
+      ],
+      "implementation": "src/ui/integration-readiness.js",
+      "stage": "partial",
+      "gateRange": [
+        59,
+        69
+      ],
+      "nextAction": "Mission 생성·취소·인계·복구 UI 구현; 전체 페이지는 Core·PC Agent·bridge가 함께 실행되는 상태에서 재검증",
+      "liveVerified": false
+    }
+  ],
+  "limitations": [
+    "Feature stages describe this expansion, not the entire historical product.",
+    "No full-product Grok Bot, Muse or Spark delegation API is asserted.",
+    "Isolated transport tests do not measure model intelligence, live API access or product parity.",
+    "Glimmer, media providers and managed execution environments are research candidates, not installed capabilities.",
+    "Existing 100 acceptance gates are unchanged; this inventory does not award completion."
+  ]
+}

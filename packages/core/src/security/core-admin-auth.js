@@ -1,8 +1,15 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { normalizeStrictIsoInstant } from '../../../shared/src/strict-iso-instant.js';
 
 export const CoreAdminScope = Object.freeze({
   READ_DIAGNOSTICS: 'core:diagnostics:read',
+  READ_SELECTED_SOURCE: 'core:selected-source:read',
   CONTROL_WORKER_DAEMON: 'core:worker-daemon:control',
+  MANAGE_RUNTIME_TRUST: 'core:runtime-trust:manage',
+  MANAGE_INTEGRATION_HANDOFFS: 'core:integrations:handoff',
+  AUTHORIZE_GROWTH_SKILL_REVIEW: 'core:growth-skills:review-authorize',
+  AUTHORIZE_CAPABILITY_PACKAGE_REVIEW: 'core:capability-packages:review-authorize',
+  MANAGE_CAPABILITY_PACKAGES: 'core:capability-packages:manage',
   ADMIN: 'core:admin'
 });
 
@@ -22,6 +29,7 @@ export class CoreAdminAuthProvider {
 
   verifyBearer(token, {
     requiredScope = CoreAdminScope.ADMIN,
+    requiredSource,
     route = 'unknown',
     method = 'UNKNOWN'
   } = {}) {
@@ -63,6 +71,22 @@ export class CoreAdminAuthProvider {
         role: matched.role,
         tokenHashPreview: previewHash(tokenHash),
         checkedAt
+      });
+    }
+    // A dedicated worker credential is both time- and resource-bounded. The
+    // route first authenticates transport, then binds the parsed request before
+    // and after SQL observation. Existing explicit administrators retain access.
+    if (requiredScope === CoreAdminScope.READ_SELECTED_SOURCE
+      && !matched.scopes.includes('*') && !matched.scopes.includes(CoreAdminScope.ADMIN)) {
+      const bindings = matched.selectedSourceBindings;
+      const valid = matched.expiresAt && Date.parse(checkedAt) < Date.parse(matched.expiresAt)
+        && bindings?.length > 0
+        && (requiredSource === undefined || bindings.some(binding =>
+          binding.provider === requiredSource?.provider && binding.streamRef === requiredSource?.streamRef));
+      if (!valid) return this.recordAudit({
+        allowed: false, reason: 'selected-source-boundary-denied',
+        error: { code: 'A_ADMIN_SOURCE_SCOPE_DENIED', message: 'Selected source credential is expired or outside its resource boundary.' },
+        requiredScope, route, method, tokenId: matched.tokenId, role: matched.role, checkedAt
       });
     }
     return this.recordAudit({
@@ -131,17 +155,30 @@ export class CoreAdminAuthProvider {
       tokenId: record.tokenId ?? `core_admin_${String(tokenHash).slice(0, 12)}`,
       role: record.role ?? 'admin',
       scopes: normalizeScopes(record.scopes),
+      selectedSourceBindings: normalizeSourceBindings(record.selectedSourceBindings),
+      expiresAt: normalizeStrictIsoInstant(record.expiresAt),
       tokenHash: String(tokenHash).replace(/^sha256:/, '')
     };
   }
 }
 
+function normalizeSourceBindings(bindings) {
+  if (!Array.isArray(bindings) || bindings.length < 1 || bindings.length > 256) return null;
+  if (bindings.some(binding => !binding || typeof binding !== 'object' || Array.isArray(binding)
+    || Object.keys(binding).length !== 2 || !Object.hasOwn(binding, 'provider') || !Object.hasOwn(binding, 'streamRef')
+    || !['gmail', 'google-calendar', 'outlook', 'teams-chat'].includes(binding.provider)
+    || typeof binding.streamRef !== 'string' || !/^[a-f0-9]{64}$/u.test(binding.streamRef))) return null;
+  return bindings.map(({ provider, streamRef }) => ({ provider, streamRef }));
+}
+
 export function createCoreAdminAuthProvider(options = {}) {
   const envTokenHash = normalizeSha256Hash(process.env.JARVIS_CORE_ADMIN_TOKEN_SHA256);
   const {
-    adminToken = process.env.JARVIS_CORE_ADMIN_TOKEN ?? (envTokenHash ? null : 'local-core-admin'),
+    adminToken = process.env.JARVIS_CORE_ADMIN_TOKEN
+      ?? (envTokenHash ? null : process.env.JARVIS_TEST_MODE === '1' ? 'local-core-admin' : null),
     adminTokenHash = envTokenHash,
     adminTokens = [],
+    adminTokenHashes = [],
     clock = () => new Date()
   } = options;
   const normalizedAdminTokenHash = normalizeSha256Hash(adminTokenHash);
@@ -154,18 +191,22 @@ export function createCoreAdminAuthProvider(options = {}) {
     } : null,
     ...adminTokens
   ].filter(Boolean);
-  const tokenHashes = normalizedAdminTokenHash ? [{
+  const tokenHashes = [normalizedAdminTokenHash ? {
     tokenHash: normalizedAdminTokenHash,
     tokenId: 'env-core-admin-hash',
     role: 'admin',
     scopes: ['*']
-  }] : [];
+  } : null, ...adminTokenHashes].filter(Boolean);
   return new CoreAdminAuthProvider({ tokens, tokenHashes, clock });
 }
 
-function normalizeScopes(scopes = ['*']) {
-  if (!Array.isArray(scopes) || scopes.length === 0) return ['*'];
-  return [...new Set(scopes)].sort();
+function normalizeScopes(scopes) {
+  if (!Array.isArray(scopes) || scopes.length === 0) return [];
+  return [...new Set(scopes.filter((scope) => (
+    typeof scope === 'string'
+    && scope.length > 0
+    && scope === scope.trim()
+  )))].sort();
 }
 
 function normalizeSha256Hash(value) {

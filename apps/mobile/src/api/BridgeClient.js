@@ -9,8 +9,11 @@ export class BridgeClient {
     timeoutMs = defaultBridgeClientTimeoutMs,
     retries = 1,
     retryDelayMs = 250,
+    maxRetryDelayMs = 60000,
     tokenRefresher = null,
-    onTokenRefresh = null
+    onTokenRefresh = null,
+    sleepFn = defaultSleep,
+    nowFn = Date.now
   } = {}) {
     this.bridgeUrl = bridgeUrl?.replace(/\/$/, '') ?? 'http://127.0.0.1:17777';
     this.tokenProvider = tokenProvider;
@@ -18,9 +21,15 @@ export class BridgeClient {
     this.timeoutMs = timeoutMs;
     this.retries = retries;
     this.retryDelayMs = retryDelayMs;
+    this.maxRetryDelayMs = maxRetryDelayMs;
     this.tokenRefresher = tokenRefresher;
     this.onTokenRefresh = onTokenRefresh;
+    this.sleepFn = sleepFn;
+    this.nowFn = nowFn;
     this.lastAuthRefresh = null;
+    this.authRefreshPromise = null;
+    this.authRefreshGeneration = 0;
+    this.lastRefreshedToken = null;
   }
 
   async request(path, {
@@ -30,19 +39,58 @@ export class BridgeClient {
     timeoutMs = this.timeoutMs,
     retries = null,
     retryDelayMs = this.retryDelayMs,
+    maxRetryDelayMs = this.maxRetryDelayMs,
     retryUnsafe = false,
-    signal = null
+    signal = null,
+    headers = null,
+    idempotencyKey = null
   } = {}) {
     const normalizedMethod = method.toUpperCase();
-    const maxRetries = retries ?? (isSafeRetryMethod(normalizedMethod) || retryUnsafe ? this.retries : 0);
+    const stableHeaders = normalizeRequestHeaders(headers);
+    const providedIdempotencyKey = getHeaderValue(stableHeaders, 'idempotency-key');
+    if (idempotencyKey !== null && idempotencyKey !== undefined && providedIdempotencyKey === null) {
+      setHeaderValue(stableHeaders, 'Idempotency-Key', String(idempotencyKey));
+    }
+    const effectiveIdempotencyKey = getHeaderValue(stableHeaders, 'idempotency-key');
+    const safeRetryMethod = isSafeRetryMethod(normalizedMethod);
     const url = `${this.bridgeUrl}${path}`;
-    const startedAt = Date.now();
-    let lastFailure = null;
+    const startedAt = this.nowFn();
+    if (!safeRetryMethod && retryUnsafe === true && !isValidIdempotencyKey(effectiveIdempotencyKey)) {
+      return normalizeClientFailure(new Error('Unsafe retries require a valid Idempotency-Key header.'), {
+        bridgeUrl: this.bridgeUrl,
+        path,
+        method: normalizedMethod,
+        attempts: 0,
+        startedAt,
+        timeoutMs,
+        code: 'C_BRIDGE_IDEMPOTENCY_KEY_REQUIRED',
+        message: 'Unsafe retries require a valid Idempotency-Key header.',
+        nowFn: this.nowFn
+      });
+    }
+    const retryEligible = safeRetryMethod || retryUnsafe === true;
+    const maxRetries = retryEligible ? normalizeRetryCount(retries ?? this.retries) : 0;
     let authRefreshes = 0;
     let retryAttempts = 0;
+    let attempts = 0;
+    let refreshedToken = null;
 
-    for (let attempt = 0; attempt <= maxRetries + 1; attempt += 1) {
-      const token = await this.currentToken();
+    while (true) {
+      if (signal?.aborted) {
+        return normalizeClientFailure(createAbortError(signal.reason), {
+          bridgeUrl: this.bridgeUrl,
+          path,
+          method: normalizedMethod,
+          attempts,
+          startedAt,
+          timeoutMs,
+          cancelled: true,
+          nowFn: this.nowFn
+        });
+      }
+      const authGeneration = this.authRefreshGeneration;
+      const token = auth ? (refreshedToken ?? await this.currentToken()) : null;
+      attempts += 1;
       const controller = typeof AbortController !== 'undefined' && (timeoutMs > 0 || signal)
         ? new AbortController()
         : null;
@@ -61,12 +109,16 @@ export class BridgeClient {
         else signal.addEventListener('abort', externalAbort, { once: true });
       }
       try {
+        const attemptHeaders = { ...stableHeaders };
+        if (body && getHeaderValue(attemptHeaders, 'content-type') === null) {
+          setHeaderValue(attemptHeaders, 'content-type', 'application/json');
+        }
+        if (auth && token) {
+          setHeaderValue(attemptHeaders, 'authorization', `Bearer ${token}`);
+        }
         const response = await this.fetchImpl(url, {
           method: normalizedMethod,
-          headers: {
-            ...(body ? { 'content-type': 'application/json' } : {}),
-            ...(auth && token ? { authorization: `Bearer ${token}` } : {})
-          },
+          headers: attemptHeaders,
           body: body ? JSON.stringify(body) : undefined,
           ...(controller ? { signal: controller.signal } : {})
         });
@@ -76,7 +128,10 @@ export class BridgeClient {
           bridgeUrl: this.bridgeUrl,
           path,
           method: normalizedMethod,
-          attempt,
+          attempt: attempts - 1,
+          attempts,
+          startedAt,
+          nowFn: this.nowFn,
           timeoutMs
         });
         const status = response?.status ?? 200;
@@ -87,29 +142,45 @@ export class BridgeClient {
             path,
             method: normalizedMethod,
             status,
-            attempts: attempt + 1,
+            attempts,
             startedAt,
-            timeoutMs
+            timeoutMs,
+            nowFn: this.nowFn
           });
-          if (status >= 500 && attempt < maxRetries) {
-            lastFailure = failure;
-            retryAttempts += 1;
-            await delay(retryDelayMs * (attempt + 1));
-            continue;
-          }
           if (auth && shouldRefreshAuthFailure(failure, status) && authRefreshes < 1) {
             const refreshed = await this.refreshAuthToken({
               failure,
               path,
               method: normalizedMethod,
               status,
-              attempt: attempt + 1
+              attempt: attempts,
+              authGeneration
             });
             if (refreshed.success) {
               authRefreshes += 1;
-              lastFailure = failure;
+              refreshedToken = refreshed.token ?? this.lastRefreshedToken;
               continue;
             }
+          }
+          if (isRetryableHttpStatus(status) && retryAttempts < maxRetries) {
+            retryAttempts += 1;
+            const retryWaitFailure = await this.waitForRetry({
+              delayMs: computeRetryDelayMs({
+                response,
+                retryDelayMs,
+                retryAttempt: retryAttempts,
+                maxRetryDelayMs,
+                nowMs: this.nowFn()
+              }),
+              signal,
+              path,
+              method: normalizedMethod,
+              attempts,
+              startedAt,
+              timeoutMs
+            });
+            if (retryWaitFailure) return retryWaitFailure;
+            continue;
           }
           return failure;
         }
@@ -124,28 +195,35 @@ export class BridgeClient {
           bridgeUrl: this.bridgeUrl,
           path,
           method: normalizedMethod,
-          attempts: attempt + 1,
+          attempts,
           startedAt,
           timeoutMs,
-          cancelled: signal?.aborted === true && timeoutFired !== true
+          cancelled: signal?.aborted === true && timeoutFired !== true,
+          nowFn: this.nowFn
         });
-        lastFailure = failure;
-        if (attempt < maxRetries) {
+        if (failure.error.code === 'C_BRIDGE_REQUEST_CANCELLED') return failure;
+        if (retryAttempts < maxRetries) {
           retryAttempts += 1;
-          await delay(retryDelayMs * (attempt + 1));
+          const retryWaitFailure = await this.waitForRetry({
+            delayMs: computeRetryDelayMs({
+              retryDelayMs,
+              retryAttempt: retryAttempts,
+              maxRetryDelayMs,
+              nowMs: this.nowFn()
+            }),
+            signal,
+            path,
+            method: normalizedMethod,
+            attempts,
+            startedAt,
+            timeoutMs
+          });
+          if (retryWaitFailure) return retryWaitFailure;
           continue;
         }
         return failure;
       }
     }
-    return lastFailure ?? normalizeClientFailure(new Error('Bridge request failed.'), {
-      bridgeUrl: this.bridgeUrl,
-      path,
-      method: normalizedMethod,
-      attempts: maxRetries + 1,
-      startedAt,
-      timeoutMs
-    });
   }
 
   async currentToken() {
@@ -153,7 +231,16 @@ export class BridgeClient {
   }
 
   async refreshAuthToken(context = {}) {
-    const startedAt = Date.now();
+    if (Number.isInteger(context.authGeneration)
+      && context.authGeneration < this.authRefreshGeneration
+      && this.lastAuthRefresh) {
+      return {
+        ...this.lastAuthRefresh,
+        token: this.lastAuthRefresh.success === true ? this.lastRefreshedToken : null,
+        shared: true
+      };
+    }
+    if (this.authRefreshPromise) return this.authRefreshPromise;
     if (typeof this.tokenRefresher !== 'function') {
       this.lastAuthRefresh = {
         refreshVersion: 'c-bridge-client-auth-refresh-v1',
@@ -163,6 +250,17 @@ export class BridgeClient {
       };
       return this.lastAuthRefresh;
     }
+    const refreshPromise = this.runAuthTokenRefresh(context);
+    this.authRefreshPromise = refreshPromise;
+    try {
+      return await refreshPromise;
+    } finally {
+      if (this.authRefreshPromise === refreshPromise) this.authRefreshPromise = null;
+    }
+  }
+
+  async runAuthTokenRefresh(context = {}) {
+    const startedAt = this.nowFn();
     try {
       const refreshed = await this.tokenRefresher(context);
       const nextToken = typeof refreshed === 'string'
@@ -176,8 +274,12 @@ export class BridgeClient {
         success: Boolean(nextToken),
         tokenUpdated: Boolean(nextToken),
         reason: context.failure?.error?.code ?? null,
-        durationMs: Date.now() - startedAt
+        durationMs: this.nowFn() - startedAt
       };
+      this.authRefreshGeneration += 1;
+      if (nextToken) {
+        this.lastRefreshedToken = nextToken;
+      }
       return {
         ...this.lastAuthRefresh,
         token: nextToken
@@ -188,9 +290,28 @@ export class BridgeClient {
         success: false,
         tokenUpdated: false,
         reason: error?.message ?? 'token-refresh-failed',
-        durationMs: Date.now() - startedAt
+        durationMs: this.nowFn() - startedAt
       };
+      this.authRefreshGeneration += 1;
       return this.lastAuthRefresh;
+    }
+  }
+
+  async waitForRetry({ delayMs, signal, path, method, attempts, startedAt, timeoutMs }) {
+    try {
+      await sleepWithAbort(this.sleepFn, delayMs, signal);
+      return null;
+    } catch (error) {
+      return normalizeClientFailure(error, {
+        bridgeUrl: this.bridgeUrl,
+        path,
+        method,
+        attempts,
+        startedAt,
+        timeoutMs,
+        cancelled: signal?.aborted === true,
+        nowFn: this.nowFn
+      });
     }
   }
 
@@ -560,6 +681,41 @@ export class BridgeClient {
     });
   }
 
+  createGrowthSkillRevision(skillId, payload) {
+    return this.request(`/growth/skills/${encodeURIComponent(skillId)}/revisions`, {
+      method: 'POST',
+      body: payload
+    });
+  }
+
+  evaluateGrowthSkillRevision(skillId, revisionId, payload = {}) {
+    return this.request(`/growth/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/evaluate`, {
+      method: 'POST',
+      body: payload
+    });
+  }
+
+  reviewGrowthSkillRevision(skillId, revisionId, payload) {
+    return this.request(`/growth/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/review`, {
+      method: 'POST',
+      body: payload
+    });
+  }
+
+  promoteGrowthSkillRevision(skillId, revisionId, payload) {
+    return this.request(`/growth/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/promote`, {
+      method: 'POST',
+      body: payload
+    });
+  }
+
+  rollbackGrowthSkillRevision(skillId, revisionId, payload) {
+    return this.request(`/growth/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/rollback`, {
+      method: 'POST',
+      body: payload
+    });
+  }
+
   getCacheSnapshot() {
     return this.request('/cache/snapshot');
   }
@@ -742,28 +898,149 @@ export class BridgeClient {
 
   eventStreamUrl({ sinceEventId, eventType } = {}) {
     const params = new URLSearchParams();
-    const token = this.tokenProvider();
-    if (token) params.set('token', token);
     if (sinceEventId) params.set('sinceEventId', sinceEventId);
     if (eventType) params.set('eventType', eventType);
-    return `${this.bridgeUrl}/events/stream?${params.toString()}`;
+    const query = params.toString();
+    return `${this.bridgeUrl}/events/stream${query ? `?${query}` : ''}`;
+  }
+
+  async eventStreamConnection({ sinceEventId, eventType } = {}) {
+    return {
+      transportVersion: 'd-event-stream-auth-header-transport-v1',
+      url: this.eventStreamUrl({ sinceEventId, eventType }),
+      headers: await this.streamAuthorizationHeaders(),
+      credentialsInUrl: false
+    };
   }
 
   eventWebSocketUrl({ sinceEventId, eventType } = {}) {
-    const token = this.tokenProvider();
     const params = new URLSearchParams();
-    if (token) params.set('token', token);
     if (sinceEventId) params.set('sinceEventId', sinceEventId);
     if (eventType) params.set('eventType', eventType);
     const webSocketBaseUrl = this.bridgeUrl
       .replace(/^https:/i, 'wss:')
       .replace(/^http:/i, 'ws:');
-    return `${webSocketBaseUrl}/events/ws?${params.toString()}`;
+    const query = params.toString();
+    return `${webSocketBaseUrl}/events/ws${query ? `?${query}` : ''}`;
+  }
+
+  async eventWebSocketConnection({ sinceEventId, eventType } = {}) {
+    return {
+      transportVersion: 'd-event-websocket-auth-header-transport-v1',
+      url: this.eventWebSocketUrl({ sinceEventId, eventType }),
+      headers: await this.streamAuthorizationHeaders(),
+      credentialsInUrl: false
+    };
+  }
+
+  async streamAuthorizationHeaders() {
+    const token = await this.currentToken();
+    if (token === null || token === undefined || token === '') return {};
+    if (typeof token !== 'string' || token.trim() === '' || /[\r\n]/.test(token)) {
+      const error = new TypeError('Bridge tokenProvider must resolve to a non-empty header-safe string or null.');
+      error.code = 'C_BRIDGE_TOKEN_PROVIDER_INVALID';
+      throw error;
+    }
+    return { authorization: `Bearer ${token.trim()}` };
   }
 }
 
 function isSafeRetryMethod(method) {
   return method === 'GET' || method === 'HEAD';
+}
+
+function isRetryableHttpStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function normalizeRetryCount(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0;
+}
+
+function normalizeRequestHeaders(headers) {
+  if (!headers) return {};
+  if (typeof headers.forEach === 'function') {
+    const normalized = {};
+    headers.forEach((value, name) => {
+      normalized[name] = value;
+    });
+    return normalized;
+  }
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return { ...headers };
+}
+
+function findHeaderName(headers, targetName) {
+  const normalizedTarget = targetName.toLowerCase();
+  return Object.keys(headers).find((name) => name.toLowerCase() === normalizedTarget) ?? null;
+}
+
+function getHeaderValue(headers, name) {
+  const existingName = findHeaderName(headers, name);
+  if (existingName === null) return null;
+  const value = headers[existingName];
+  return value === undefined || value === null ? null : String(value);
+}
+
+function setHeaderValue(headers, name, value) {
+  const existingName = findHeaderName(headers, name);
+  if (existingName !== null && existingName !== name) delete headers[existingName];
+  headers[name] = value;
+}
+
+function isValidIdempotencyKey(value) {
+  return typeof value === 'string'
+    && value.length >= 1
+    && value.length <= 255
+    && [...value].every((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 0x21 && code <= 0x7e;
+    });
+}
+
+function computeRetryDelayMs({ response = null, retryDelayMs, retryAttempt, maxRetryDelayMs, nowMs }) {
+  const fallbackDelay = Math.max(0, finiteNumber(retryDelayMs, 0)) * Math.max(1, retryAttempt);
+  const retryAfterDelay = response ? readRetryAfterMs(response, nowMs) : null;
+  const requestedDelay = retryAfterDelay === null
+    ? fallbackDelay
+    : Math.max(fallbackDelay, retryAfterDelay);
+  const cap = Math.max(0, finiteNumber(maxRetryDelayMs, 60000));
+  return Math.min(requestedDelay, cap);
+}
+
+function readRetryAfterMs(response, nowMs) {
+  const rateLimitDelay = parseNonNegativeNumber(readResponseHeader(response, 'x-ratelimit-retry-after-ms'));
+  const retryAfterValue = readResponseHeader(response, 'retry-after');
+  let retryAfterDelay = null;
+  const retryAfterSeconds = parseNonNegativeNumber(retryAfterValue);
+  if (retryAfterSeconds !== null) {
+    retryAfterDelay = retryAfterSeconds * 1000;
+  } else if (retryAfterValue) {
+    const retryAt = Date.parse(retryAfterValue);
+    if (Number.isFinite(retryAt)) retryAfterDelay = Math.max(0, retryAt - finiteNumber(nowMs, Date.now()));
+  }
+  const delays = [rateLimitDelay, retryAfterDelay].filter((value) => value !== null);
+  return delays.length > 0 ? Math.max(...delays) : null;
+}
+
+function readResponseHeader(response, name) {
+  if (typeof response?.headers?.get === 'function') return response.headers.get(name);
+  const headers = response?.headers;
+  if (!headers || typeof headers !== 'object') return null;
+  const headerName = Object.keys(headers).find((entry) => entry.toLowerCase() === name.toLowerCase());
+  return headerName ? headers[headerName] : null;
+}
+
+function parseNonNegativeNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function finiteNumber(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
 }
 
 async function parseJsonResponse(response, context) {
@@ -821,7 +1098,7 @@ function normalizeClientFailure(error, context) {
   };
 }
 
-function clientMeta({ bridgeUrl, path, method, status = null, attempts = 1, startedAt, timeoutMs }) {
+function clientMeta({ bridgeUrl, path, method, status = null, attempts = 1, startedAt, timeoutMs, nowFn = Date.now }) {
   return {
     bridgeUrl,
     path,
@@ -830,12 +1107,56 @@ function clientMeta({ bridgeUrl, path, method, status = null, attempts = 1, star
     attempts,
     retried: attempts > 1,
     timeoutMs,
-    durationMs: startedAt ? Date.now() - startedAt : null
+    durationMs: startedAt === null || startedAt === undefined ? null : nowFn() - startedAt
   };
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function defaultSleep(ms, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError(signal.reason));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(createAbortError(signal.reason));
+    };
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function sleepWithAbort(sleepFn, ms, signal) {
+  if (signal?.aborted) return Promise.reject(createAbortError(signal.reason));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, createAbortError(signal.reason));
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve()
+      .then(() => {
+        if (signal?.aborted) throw createAbortError(signal.reason);
+        return sleepFn(ms, { signal });
+      })
+      .then(
+        (value) => finish(resolve, value),
+        (error) => finish(reject, error)
+      );
+  });
+}
+
+function createAbortError(reason) {
+  const error = new Error(reason?.message ?? String(reason ?? 'Bridge request cancelled.'));
+  error.name = 'AbortError';
+  return error;
 }
 
 function shouldRefreshAuthFailure(failure, status) {
@@ -886,6 +1207,13 @@ export function createBridgeFriendlyError(envelope = {}) {
       severity: 'error',
       userMessage: '브릿지 응답 형식이 올바르지 않아요.',
       actionLabel: '다시 시도'
+    },
+    C_BRIDGE_IDEMPOTENCY_KEY_REQUIRED: {
+      category: 'invalid_request',
+      retryable: false,
+      severity: 'error',
+      userMessage: '안전하지 않은 요청을 재시도하려면 멱등성 키가 필요해요.',
+      actionLabel: '요청 확인'
     },
     D_AUTH_INVALID_TOKEN: {
       category: 'auth_expired',

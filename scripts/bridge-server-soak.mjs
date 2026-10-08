@@ -1,4 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAgRuntime } from '../apps/runtime-compose/src/create-runtime.js';
@@ -9,6 +12,7 @@ import {
   createBridgeServerProductGate
 } from '../apps/bridge/src/main.mjs';
 import { BridgeClient } from '../apps/mobile/src/api/BridgeClient.js';
+import { listenOnFetchSafePort } from '../packages/shared/src/http.js';
 
 const defaultArtifactDir = 'dist';
 const defaultCycles = 4;
@@ -18,13 +22,7 @@ function delay(ms) {
 }
 
 async function listen(server, { host = '127.0.0.1', port = 0 } = {}) {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, host, () => {
-      server.off('error', reject);
-      resolve(server.address());
-    });
-  });
+  return await listenOnFetchSafePort(server, { host, port });
 }
 
 async function close(server) {
@@ -42,11 +40,14 @@ function addCheck(report, id, passed, evidence = {}) {
   return check;
 }
 
-async function readSseOpenFrame(url, { timeoutMs = 2500 } = {}) {
+async function readSseOpenFrame(connection, { timeoutMs = 2500 } = {}) {
+  const { url, headers = {} } = typeof connection === 'string'
+    ? { url: connection, headers: {} }
+    : connection;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { headers, signal: controller.signal });
     const reader = response.body.getReader();
     const chunk = await reader.read();
     const text = new TextDecoder().decode(chunk.value ?? new Uint8Array());
@@ -119,15 +120,8 @@ async function waitForWebSocketMessage(socket, predicate, { timeoutMs = 2500 } =
   });
 }
 
-async function probeWebSocket(url) {
-  if (typeof WebSocket === 'undefined') {
-    return {
-      available: false,
-      opened: false,
-      reason: 'global-websocket-unavailable'
-    };
-  }
-  const socket = new WebSocket(url, 'jarvis-events.v1');
+async function probeWebSocket(connection) {
+  const socket = await openBridgeWebSocketConnection(connection);
   try {
     await waitForWebSocketOpen(socket);
     const opened = await waitForWebSocketMessage(socket, (message) => message.type === 'stream.opened');
@@ -143,6 +137,220 @@ async function probeWebSocket(url) {
   } finally {
     socket.close();
   }
+}
+
+export async function openBridgeWebSocketConnection(connection, {
+  protocol = 'jarvis-events.v1',
+  timeoutMs = 2500
+} = {}) {
+  const target = new URL(connection?.url ?? '');
+  if (!['ws:', 'wss:'].includes(target.protocol)) {
+    throw bridgeWebSocketClientError('D_WEBSOCKET_CLIENT_URL_INVALID', 'WebSocket URL must use ws: or wss:.');
+  }
+  if (target.searchParams.has('token') || connection?.credentialsInUrl === true) {
+    throw bridgeWebSocketClientError('D_WEBSOCKET_CLIENT_URL_CREDENTIAL_REJECTED', 'WebSocket credentials must be sent in headers.');
+  }
+  const key = randomBytes(16).toString('base64');
+  const expectedAccept = createHash('sha1')
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest('base64');
+  const requestImpl = target.protocol === 'wss:' ? httpsRequest : httpRequest;
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const request = requestImpl({
+      protocol: target.protocol === 'wss:' ? 'https:' : 'http:',
+      hostname: target.hostname,
+      port: target.port || undefined,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      headers: {
+        ...(connection?.headers ?? {}),
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': key,
+        'sec-websocket-protocol': protocol
+      }
+    });
+    const timeout = setTimeout(() => {
+      request.destroy(bridgeWebSocketClientError('D_WEBSOCKET_CLIENT_OPEN_TIMEOUT', 'WebSocket upgrade timed out.'));
+    }, timeoutMs);
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    };
+    request.once('error', fail);
+    request.once('response', (response) => {
+      response.resume();
+      fail(bridgeWebSocketClientError(
+        'D_WEBSOCKET_CLIENT_UPGRADE_REJECTED',
+        `WebSocket upgrade was rejected with HTTP ${response.statusCode}.`
+      ));
+    });
+    request.once('upgrade', (response, socket, head) => {
+      if (settled) {
+        socket.destroy();
+        return;
+      }
+      if (response.statusCode !== 101 || response.headers['sec-websocket-accept'] !== expectedAccept) {
+        socket.destroy();
+        fail(bridgeWebSocketClientError('D_WEBSOCKET_CLIENT_HANDSHAKE_INVALID', 'WebSocket upgrade response was invalid.'));
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      const client = new HeaderAuthenticatedWebSocketClient(socket);
+      resolve(client);
+      queueMicrotask(() => client.start(head));
+    });
+    request.end();
+  });
+}
+
+class HeaderAuthenticatedWebSocketClient {
+  constructor(socket) {
+    this.socket = socket;
+    this.readyState = 1;
+    this.buffer = Buffer.alloc(0);
+    this.listeners = new Map();
+    this.pendingMessages = [];
+    this.lastError = null;
+    this.started = false;
+  }
+
+  start(head = Buffer.alloc(0)) {
+    if (this.started) return;
+    this.started = true;
+    this.socket.on('data', (chunk) => this.consume(chunk));
+    this.socket.once('error', (error) => {
+      this.lastError = error;
+      this.dispatch('error', { message: error.message, error });
+    });
+    this.socket.once('close', () => {
+      this.readyState = 3;
+      this.dispatch('close', {});
+    });
+    if (head.length > 0) this.consume(head);
+    this.socket.resume();
+    this.dispatch('open', {});
+  }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(listener);
+    if (type === 'message' && this.pendingMessages.length > 0) {
+      queueMicrotask(() => this.flushPendingMessages());
+    }
+    if (type === 'error' && this.lastError) {
+      queueMicrotask(() => listener({ message: this.lastError.message, error: this.lastError }));
+    }
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type, event) {
+    const listeners = [...(this.listeners.get(type) ?? [])];
+    if (type === 'message' && listeners.length === 0) {
+      this.pendingMessages.push(event);
+      return;
+    }
+    for (const listener of listeners) listener(event);
+  }
+
+  flushPendingMessages() {
+    if ((this.listeners.get('message')?.size ?? 0) === 0) return;
+    const pending = this.pendingMessages.splice(0);
+    for (const event of pending) this.dispatch('message', event);
+  }
+
+  consume(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    while (this.buffer.length >= 2) {
+      const first = this.buffer[0];
+      const second = this.buffer[1];
+      const opcode = first & 0x0f;
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this.buffer.length < 4) return;
+        length = this.buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (length === 127) {
+        if (this.buffer.length < 10) return;
+        const largeLength = this.buffer.readBigUInt64BE(2);
+        if (largeLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+          this.socket.destroy(bridgeWebSocketClientError('D_WEBSOCKET_CLIENT_FRAME_INVALID', 'WebSocket frame is too large.'));
+          return;
+        }
+        length = Number(largeLength);
+        offset = 10;
+      }
+      const masked = (second & 0x80) === 0x80;
+      const maskLength = masked ? 4 : 0;
+      if (this.buffer.length < offset + maskLength + length) return;
+      const mask = masked ? this.buffer.subarray(offset, offset + 4) : null;
+      const payloadStart = offset + maskLength;
+      const payload = Buffer.from(this.buffer.subarray(payloadStart, payloadStart + length));
+      if (mask) {
+        for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
+      }
+      this.buffer = this.buffer.subarray(payloadStart + length);
+      if (opcode === 0x1) this.dispatch('message', { data: payload.toString('utf8') });
+      else if (opcode === 0x8) {
+        this.readyState = 3;
+        this.socket.end();
+        this.dispatch('close', {});
+        return;
+      } else if (opcode === 0x9) {
+        this.socket.write(encodeMaskedWebSocketFrame(payload, 0xA));
+      }
+    }
+  }
+
+  send(value) {
+    if (this.readyState !== 1) throw bridgeWebSocketClientError('D_WEBSOCKET_CLIENT_NOT_OPEN', 'WebSocket is not open.');
+    this.socket.write(encodeMaskedWebSocketFrame(Buffer.from(String(value)), 0x1));
+  }
+
+  close() {
+    if (this.readyState >= 2) return;
+    this.readyState = 2;
+    this.socket.write(encodeMaskedWebSocketFrame(Buffer.alloc(0), 0x8));
+    this.socket.end();
+  }
+}
+
+function encodeMaskedWebSocketFrame(value, opcode) {
+  const payload = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  const mask = randomBytes(4);
+  let header;
+  if (payload.length < 126) {
+    header = Buffer.from([0x80 | opcode, 0x80 | payload.length]);
+  } else if (payload.length <= 0xffff) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(payload.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 0x80 | 127;
+    header.writeBigUInt64BE(BigInt(payload.length), 2);
+  }
+  const maskedPayload = Buffer.alloc(payload.length);
+  for (let index = 0; index < payload.length; index += 1) maskedPayload[index] = payload[index] ^ mask[index % 4];
+  return Buffer.concat([header, mask, maskedPayload]);
+}
+
+function bridgeWebSocketClientError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 export async function runBridgeServerSoak({
@@ -257,13 +465,13 @@ export async function runBridgeServerSoak({
       const cursor = events.cursor?.eventId ?? events.items.at(-1)?.eventId ?? null;
       const ack = cursor ? await client.acknowledgeEvent(cursor, { streamId: `bridge-soak-${cycle}` }) : { success: false };
       iteration.checks.httpEventAck = ack.success === true;
-      const sse = await readSseOpenFrame(client.eventStreamUrl({ sinceEventId: cursor }));
+      const sse = await readSseOpenFrame(await client.eventStreamConnection({ sinceEventId: cursor }));
       iteration.sse = {
         status: sse.status,
         opened: sse.opened
       };
       iteration.checks.sseOpened = sse.opened === true;
-      const ws = await probeWebSocket(client.eventWebSocketUrl({ sinceEventId: cursor }));
+      const ws = await probeWebSocket(await client.eventWebSocketConnection({ sinceEventId: cursor }));
       iteration.websocket = {
         available: ws.available,
         opened: ws.opened,

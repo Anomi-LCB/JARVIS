@@ -24,4 +24,4 @@ Launch it for glasses or a mirrored display:
 node dist/wearable-hud-field-kit/field-server.mjs --host 0.0.0.0 --port 4176
 ```
 
-The field client uses the browser Fetch API and Web Speech API when available. Korean-first labels are the default HUD mode. Tokens are held only in memory, HUD text is redacted and compacted, and Tier 3+ approvals trigger PC confirmation instead of direct wearable approval.
+The field client uses the browser Fetch API and Web Speech API when available. Korean-first labels are the default HUD mode. Tokens are held only in memory, HUD text is redacted and compacted, and high-risk Tier 1-3 approvals trigger PC confirmation instead of direct wearable approval.

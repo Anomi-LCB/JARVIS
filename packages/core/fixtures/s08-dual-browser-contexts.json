@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "s08-dual-browser-account-contexts-v1",
+  "origin": "https://mail.example.test",
+  "contexts": [
+    { "sessionId": "personal-session-01", "contextId": "personal-context-01", "environmentId": "personal", "accountLabel": "account-a" },
+    { "sessionId": "remote-session-01", "contextId": "remote-context-01", "environmentId": "remote", "accountLabel": "account-b" }
+  ],
+  "sensitiveMaterial": false,
+  "expected": { "contextsDistinct": true, "accountBindingsDistinct": true, "wrongBindingDispatches": 0, "credentialsExposed": false }
+}

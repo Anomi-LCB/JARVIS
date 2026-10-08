@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 
 export class CoreClient {
-  constructor({ baseUrl = 'http://127.0.0.1:17780', adminToken = null, fetchImpl = globalThis.fetch, timeoutMs = 30_000 } = {}) {
+  constructor({ baseUrl = 'http://127.0.0.1:17780', adminToken = null, integrationHandoffToken = null, fetchImpl = globalThis.fetch, timeoutMs = 30_000 } = {}) {
     if (typeof fetchImpl !== 'function') {
       throw new Error('CoreClient requires fetchImpl.');
     }
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.adminToken = adminToken;
+    this.integrationHandoffToken = integrationHandoffToken;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
   }
@@ -23,6 +24,123 @@ export class CoreClient {
     return await this.request('/admin/diagnostics', { admin: true });
   }
 
+  async integrationReadiness() {
+    return await this.request('/integrations', { admin: true });
+  }
+
+  /** Evaluates one provider offer and registered local alternatives without executing either. */
+  async evaluateExternalCapability(input) {
+    return await this.request('/capabilities/external/evaluate', { method: 'POST', body: input, admin: true });
+  }
+
+  /** Stores credentials only for a bundled connector; the response is explicitly unverified. */
+  async storeIntegrationCredentials(input) {
+    return await this.request('/integrations', { method: 'POST', body: input, admin: true });
+  }
+
+  /** Removes local vault credentials; it does not revoke the provider-side grant. */
+  async removeIntegrationCredentials(connectionId) {
+    return await this.request(`/integrations/connections/${encodeURIComponent(connectionId)}`, { method: 'DELETE', admin: true });
+  }
+
+  async createIntegrationCredentialHandoff(input) {
+    return await this.request('/integrations/handoffs', {
+      method: 'POST', body: input,
+      admin: !this.integrationHandoffToken,
+      authorizationToken: this.integrationHandoffToken
+    });
+  }
+
+  async completeIntegrationCredentialHandoff(handoffId, ticket, input) {
+    return await this.request(`/integrations/handoffs/${encodeURIComponent(handoffId)}/complete`, {
+      method: 'POST', body: input, authorizationToken: ticket
+    });
+  }
+
+  async cancelIntegrationCredentialHandoff(handoffId) {
+    return await this.request(`/integrations/handoffs/${encodeURIComponent(handoffId)}`, {
+      method: 'DELETE',
+      admin: !this.integrationHandoffToken,
+      authorizationToken: this.integrationHandoffToken
+    });
+  }
+
+  async createMission(input) {
+    return await this.request('/missions', {
+      method: 'POST',
+      body: input,
+      admin: true
+    });
+  }
+
+  async listMissions({ limit = 50, status = null } = {}) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (status) query.set('status', status);
+    return await this.request(`/missions?${query}`, { admin: true });
+  }
+
+  async getMission(missionId) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}`, { admin: true });
+  }
+
+  async runMission(missionId, options = {}) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/run`, {
+      method: 'POST',
+      body: options,
+      admin: true
+    });
+  }
+
+  /** Provision a blank remote session. The runtime's resource authorizer must approve it. */
+  async createManagedAgentSession(missionId, input) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/managed-agent/session`, {
+      method: 'POST', body: input, admin: true
+    });
+  }
+
+  /** Reconcile an ambiguous session create without submitting a duplicate create request. */
+  async reconcileManagedAgentSessionProvision(missionId, options = {}) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/managed-agent/session/reconcile`, {
+      method: 'POST', body: options, admin: true
+    });
+  }
+
+  async decideMissionGate(missionId, gateId, decision) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/gates/${encodeURIComponent(gateId)}/decision`, {
+      method: 'POST',
+      body: decision,
+      admin: true
+    });
+  }
+
+  async updateMission(missionId, settings) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/settings`, {
+      method: 'POST',
+      body: settings,
+      admin: true
+    });
+  }
+
+  async cancelMission(missionId, options = {}) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/cancel`, {
+      method: 'POST',
+      body: options,
+      admin: true
+    });
+  }
+
+  async reviseMissionGoal(missionId, revision) {
+    return await this.request(`/missions/${encodeURIComponent(missionId)}/goal-revisions`, {
+      method: 'POST', body: revision, admin: true
+    });
+  }
+
+  async createRoutineFromCommand(command, routineId = undefined) {
+    return await this.request('/routines/command', {
+      method: 'POST', body: { command, ...(routineId ? { routineId } : {}) }, admin: true
+    });
+  }
+
   async createTask(rawText, options = {}) {
     return await this.request('/tasks', {
       method: 'POST',
@@ -31,11 +149,11 @@ export class CoreClient {
   }
 
   async listTasks() {
-    return await this.request('/tasks');
+    return await this.request('/tasks', { admin: true });
   }
 
   async getTask(taskId) {
-    return await this.request(`/tasks/${encodeURIComponent(taskId)}`);
+    return await this.request(`/tasks/${encodeURIComponent(taskId)}`, { admin: true });
   }
 
   async approveTask(taskId, decision) {
@@ -131,7 +249,11 @@ export class CoreClient {
     });
   }
 
-  async request(path, { method = 'GET', body = null, admin = false } = {}) {
+  async previewCompensation(taskId) {
+    return await this.request(`/tasks/${encodeURIComponent(taskId)}/compensation/plan`, { admin: true });
+  }
+
+  async request(path, { method = 'GET', body = null, admin = false, authorizationToken = null } = {}) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -140,7 +262,7 @@ export class CoreClient {
         headers: {
           accept: 'application/json',
           ...(body ? { 'content-type': 'application/json' } : {}),
-          ...(admin && this.adminToken ? { authorization: `Bearer ${this.adminToken}` } : {})
+          ...((authorizationToken || admin && this.adminToken) ? { authorization: `Bearer ${authorizationToken || this.adminToken}` } : {})
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal

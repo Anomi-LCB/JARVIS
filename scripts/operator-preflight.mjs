@@ -83,6 +83,8 @@ export async function runOperatorPreflight({
 
   const productGatePassed = gate?.status === 'passed' && (gate?.nextExecutionQueue?.length ?? 1) === 0;
   const handoffReady = handoff?.status === 'ready-for-field-validation';
+  const wearableValidation = handoff?.externalValidation?.find((item) => item.id === 'wearable-physical-field-validation');
+  const wearablePhysicalVerified = !wearableValidation || wearableValidation.status === 'verified';
   const fieldKitReady = ['ready-for-field-validation', 'field-evidence-verified'].includes(fieldKit?.status);
   const adminEvidenceVerified = statusIsFieldVerified(fieldKit?.status);
   const wormReady = wormManifest?.status === 'ready-for-external-worm-promotion';
@@ -107,6 +109,10 @@ export async function runOperatorPreflight({
     check('operator_handoff_ready', handoffReady, {
       status: handoff?.status ?? 'missing',
       externalValidationPending: handoff?.summary?.externalValidationPending ?? null
+    }),
+    check('wearable_physical_field_verified', wearablePhysicalVerified, {
+      tracked: Boolean(wearableValidation),
+      status: wearableValidation?.status ?? 'not-tracked-in-legacy-handoff'
     }),
     check('field_validation_kit_ready', fieldKitReady, {
       status: fieldKit?.status ?? 'missing'
@@ -171,7 +177,8 @@ export async function runOperatorPreflight({
     wormSynced,
     wormTargetConfigured,
     handoffReady,
-    fieldKitReady
+    fieldKitReady,
+    wearablePhysicalVerified
   });
   const status = !criticalReady
     ? 'blocked'
@@ -200,6 +207,7 @@ export async function runOperatorPreflight({
       externalWormSyncStatus: wormProof?.status ?? 'missing',
       externalWormTargetConfigured: wormTargetConfigured,
       externalValidationPending: handoff?.summary?.externalValidationPending ?? null,
+      wearablePhysicalVerified,
       operatorActionCount: operatorActions.length
     },
     checks,
@@ -223,7 +231,8 @@ function buildOperatorActions({
   wormSynced,
   wormTargetConfigured,
   handoffReady,
-  fieldKitReady
+  fieldKitReady,
+  wearablePhysicalVerified
 }) {
   const actions = [];
   if (!fieldKitReady || !adminEvidenceVerified) {
@@ -271,6 +280,21 @@ function buildOperatorActions({
       ],
       closesValidationIds: [
         'ci-worm-promotion'
+      ]
+    });
+  }
+  if (!wearablePhysicalVerified) {
+    actions.push({
+      actionId: 'run-wearable-physical-field-validation',
+      title: 'Run the target AI glasses physical field lab',
+      command: 'npm run wearable:field-kit; node dist/wearable-hud-field-kit/field-server.mjs --host 0.0.0.0 --port 4176; npm run wearable:physical-gate',
+      expectedEvidence: [
+        'dist/wearable-hud-field-kit/field-evidence/latest-field-evidence.json',
+        'dist/wearable-physical-field-gate.json',
+        'dist/wearable-field-chaos-report.json'
+      ],
+      closesValidationIds: [
+        'wearable-physical-field-validation'
       ]
     });
   }

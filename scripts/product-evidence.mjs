@@ -23,6 +23,7 @@ const steps = [
   { id: 'pc-agent-daemon-smoke', args: ['run', 'pc-agent:daemon-smoke', '--', '--output', 'dist/pc-agent-daemon-smoke-report.json'] },
   { id: 'growth-quality', args: ['run', 'growth:quality'] },
   { id: 'security-redteam', args: ['run', 'security:redteam'] },
+  { id: 'runtime-trust-audit', args: ['run', 'security:trust-audit'] },
   { id: 'verification-dashboard', args: ['run', 'verification:dashboard'] },
   { id: 'mobile-verify', args: ['run', 'mobile:verify'] },
   { id: 'wearable-hud-verify', args: ['run', 'wearable:verify'] },

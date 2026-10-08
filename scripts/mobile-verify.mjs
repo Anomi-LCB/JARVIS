@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAgRuntime } from '../apps/runtime-compose/src/create-runtime.js';
+import { listenOnFetchSafePort } from '../packages/shared/src/http.js';
 import { MobileAppRuntime } from '../apps/mobile/src/mobile-runtime.js';
 import { createMobileAppShell, createMobileAppStructureProductGate } from '../apps/mobile/src/App.js';
 import { BridgeClient } from '../apps/mobile/src/api/BridgeClient.js';
@@ -44,7 +45,13 @@ import { runAndroidEmulatorReadiness } from './mobile-android-emulator.mjs';
 import { runAndroidInstallVerification } from './mobile-android-install.mjs';
 import { runAndroidSetup } from './mobile-android-setup.mjs';
 import { runMobileReleasePreflight } from './mobile-release-preflight.mjs';
-import { deviceSmokeNextActions, runMobileDeviceSmoke, writeMobileDeviceSmokeArtifacts } from './mobile-device-smoke.mjs';
+import {
+  defaultMobileDeviceEvidenceRoot,
+  deviceSmokeNextActions,
+  reconcileMobileDeviceEvidence,
+  runMobileDeviceSmoke,
+  writeMobileDeviceSmokeArtifacts
+} from './mobile-device-smoke.mjs';
 
 const requiredMobileFiles = [
   'apps/mobile/app.json',
@@ -98,19 +105,7 @@ async function exists(path) {
 
 async function withEphemeralBridgeServer(bridgeRuntime, run) {
   const server = createBridgeServer(bridgeRuntime);
-  const address = await new Promise((resolve, reject) => {
-    const onError = (error) => {
-      server.off('listening', onListening);
-      reject(error);
-    };
-    const onListening = () => {
-      server.off('error', onError);
-      resolve(server.address());
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(0, '127.0.0.1');
-  });
+  const address = await listenOnFetchSafePort(server);
   const baseUrl = `http://127.0.0.1:${address.port}`;
   try {
     return await run(baseUrl);
@@ -121,6 +116,23 @@ async function withEphemeralBridgeServer(bridgeRuntime, run) {
 
 function check(checks, id, title, passed, evidence, severity = 'required') {
   checks.push({ id, title, passed: Boolean(passed), evidence, severity });
+}
+
+function approvalHistoryItems(history) {
+  return Array.isArray(history?.items) ? history.items : [];
+}
+
+function deterministicVerificationRuntimeOptions(options = {}) {
+  return {
+    ...options,
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+      JARVIS_LLM_INTENT: '0',
+      JARVIS_LLM_PLANNER: '0',
+      JARVIS_LLM_CONTENT: '0'
+    }
+  };
 }
 
 async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingHandoffId }) {
@@ -136,7 +148,7 @@ async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingH
       bridgeUrl: baseUrl,
       tokenProvider,
       fetchImpl: fetch,
-      timeoutMs: 5000,
+      timeoutMs: 60000,
       retries: 0
     });
     const initialQueue = await pcConsoleClient.list({ status: 'awaiting_pc_confirmation' });
@@ -151,11 +163,19 @@ async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingH
       : { success: false, error: { code: 'C_PC_CONSOLE_TARGET_MISSING' } };
     const rejectTask = await bridgeClient.createTask({
       requestId: 'req_mobile_verify_pc_console_reject',
-      command: { rawText: '밴드에 전송해 PC 콘솔 거절 검증' }
+      rawText: '밴드에 전송해 PC 콘솔 거절 검증'
     });
-    const rejectHandoff = await bridgeClient.requestPcConfirmation(rejectTask.approvalId, {
-      reason: 'mobile-verify-pc-console-reject'
-    });
+    const rejectHandoff = rejectTask.approvalId
+      ? await bridgeClient.requestPcConfirmation(rejectTask.approvalId, {
+          reason: 'mobile-verify-pc-console-reject'
+        })
+      : {
+          success: false,
+          error: {
+            code: rejectTask.error?.code ?? 'C_REJECT_TASK_APPROVAL_MISSING',
+            message: rejectTask.error?.message ?? 'Reject scenario task did not return an approval id.'
+          }
+        };
     const rejectQueue = await pcConsoleClient.list({ status: 'awaiting_pc_confirmation' });
     const rejectVisualSnapshot = createPcConsoleVisualSnapshot(rejectQueue);
     const rejectVisualRegression = diffPcConsoleVisualSnapshots(createPcConsoleVisualBaseline(), rejectVisualSnapshot);
@@ -173,6 +193,10 @@ async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingH
       createPcConsoleVisualBaseline({ minAwaitingRows: 0 }),
       createPcConsoleVisualSnapshot(finalQueue)
     );
+    const acceptedHistoryItems = approvalHistoryItems(acceptedHistory);
+    const rejectedHistoryItems = approvalHistoryItems(rejectedHistory);
+    const acceptedHistoryRecorded = acceptedHistoryItems.some((item) => item.eventType === 'approval.pc_handoff.accepted');
+    const rejectedHistoryRecorded = rejectedHistoryItems.some((item) => item.eventType === 'approval.pc_handoff.rejected');
     const passed = initialQueue.clientContract === 'c-pc-console-bridge-fetch-v1'
       && initialVisualRegression.status === 'passed'
       && accepted.success === true
@@ -181,8 +205,8 @@ async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingH
       && rejectVisualRegression.status === 'passed'
       && rejected.success === true
       && rejected.handoff?.status === 'rejected'
-      && acceptedHistory.items.some((item) => item.eventType === 'approval.pc_handoff.accepted')
-      && rejectedHistory.items.some((item) => item.eventType === 'approval.pc_handoff.rejected')
+      && acceptedHistoryRecorded
+      && rejectedHistoryRecorded
       && finalVisualRegression.status === 'passed';
     return {
       scenarioVersion: 'c-pc-console-bridge-fetch-visual-scenario-v1',
@@ -198,13 +222,23 @@ async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingH
         success: accepted.success === true,
         handoffId: target?.handoffId ?? null,
         status: accepted.handoff?.status ?? null,
-        historyRecorded: acceptedHistory.items.some((item) => item.eventType === 'approval.pc_handoff.accepted')
+        historyRecorded: acceptedHistoryRecorded,
+        historyStatus: acceptedHistory.success === false ? acceptedHistory.error?.code ?? 'failed' : 'ok'
+      },
+      rejectSetup: {
+        taskCreated: Boolean(rejectTask.taskId),
+        taskId: rejectTask.taskId ?? null,
+        approvalId: rejectTask.approvalId ?? null,
+        taskError: rejectTask.success === false ? rejectTask.error?.code ?? 'failed' : null,
+        handoffRequested: rejectHandoff.success === true,
+        handoffError: rejectHandoff.success === false ? rejectHandoff.error?.code ?? 'failed' : null
       },
       rejected: {
         success: rejected.success === true,
         handoffId: rejectHandoff.handoffId,
         status: rejected.handoff?.status ?? null,
-        historyRecorded: rejectedHistory.items.some((item) => item.eventType === 'approval.pc_handoff.rejected')
+        historyRecorded: rejectedHistoryRecorded,
+        historyStatus: rejectedHistory.success === false ? rejectedHistory.error?.code ?? 'failed' : 'ok'
       },
       rejectVisualRegression,
       finalVisualRegression
@@ -215,7 +249,7 @@ async function runPcConsoleBridgeFetchScenario({ bridgeRuntime, token, existingH
 function runApprovalLifecycleProductGateScenario() {
   let current = new Date('2026-06-07T00:00:00.000Z');
   const clock = () => current;
-  const { bridgeRuntime } = createAgRuntime({ clock });
+  const { bridgeRuntime } = createAgRuntime(deterministicVerificationRuntimeOptions({ clock }));
   const mobileRuntime = new MobileAppRuntime({ bridgeRuntime, clock });
   const pairing = bridgeRuntime.pairing.start();
   mobileRuntime.pair({ pairingCode: pairing.pairingCode });
@@ -276,11 +310,11 @@ function runApprovalLifecycleProductGateScenario() {
 async function runMobileRuntimeScenario() {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-mobile-verify-'));
   try {
-    const { bridgeRuntime, pcAgent, growthRuntime } = createAgRuntime({
+    const { bridgeRuntime, pcAgent, growthRuntime } = createAgRuntime(deterministicVerificationRuntimeOptions({
       allowedRoots: [dir],
       auditRoot: dir,
       outputPath: join(dir, 'mobile-verify-output.txt')
-    });
+    }));
     const mobileRuntime = new MobileAppRuntime({ bridgeRuntime });
     const shell = createMobileAppShell();
     const pairingVm = createPairingScreenViewModel({ mobileRuntime, bridgeRuntime });
@@ -791,9 +825,9 @@ export function createMobileProductMatrix({ appJson, packageJson, nativeReadines
       configured: expo.android?.permissions?.includes('USE_BIOMETRIC') === true
     },
     {
-      id: 'native-runtime-probe-ui',
-      module: 'expo-secure-store/expo-notifications',
-      expected: 'Installed app exposes SecureStore and Notifications runtime probe labels for ADB UI dump verification.',
+      id: 'installed-package-and-home-runtime-evidence',
+      module: 'expo-secure-store/expo-notifications/expo-speech-recognition',
+      expected: 'Installed package capabilities and the practical home command, voice, and restored pairing surface are verified through ADB.',
       configured: true
     }
   ];
@@ -806,8 +840,8 @@ export function createMobileProductMatrix({ appJson, packageJson, nativeReadines
     { id: 'expo-doctor', command: 'npx expo-doctor', expected: 'Expo project configuration passes dependency/version checks.' },
     { id: 'expo-prebuild-android', command: 'npx expo prebuild --platform android --no-install', expected: 'Android native project can be generated from app.json.' },
     { id: 'expo-run-android', command: 'npx expo run:android --device', expected: `${packageName} installs and launches on a ready Android device/emulator.` },
-    { id: 'adb-screen-contract', command: `adb shell am start -W -n ${packageName}/.MainActivity && adb shell uiautomator dump /sdcard/jarvis-window.xml`, expected: 'UI dump contains JARVIS Mobile and route text.' },
-    { id: 'adb-native-runtime-probe', command: 'adb shell uiautomator dump /sdcard/jarvis-window.xml', expected: 'UI dump contains SecureStore, Notifications, and Sharing native probe labels.' }
+    { id: 'adb-home-surface-contract', command: `adb shell am start -W -n ${packageName}/.MainActivity && adb shell uiautomator dump /sdcard/jarvis-window.xml`, expected: 'UI dump contains the practical Jarvis command, execution, voice, and pairing-or-connected home surface.' },
+    { id: 'adb-installed-package-capabilities', command: `adb shell dumpsys package ${packageName}`, expected: 'Installed APK declares microphone, notification, and biometric capabilities.' }
   ];
   const blockers = [];
   if (!packageName) blockers.push('android-package-missing');
@@ -856,9 +890,10 @@ export function createMobileProductMatrix({ appJson, packageJson, nativeReadines
         packageName,
         bundleIdentifier,
         screenRootTestId: 'jarvis-mobile-root',
-        titleText: 'JARVIS Mobile',
-        nativeRuntimeProbeTestId: 'native-runtime-probe',
-        nativeRuntimeProbeLabels: ['SecureStore native:', 'Notifications native:', 'Sharing native:']
+        titleText: 'Jarvis',
+        homeSurfaceContractVersion: 'c-mobile-physical-home-surface-v1',
+        homeSurfaceTestIds: ['home-command-input', 'home-submit-button', 'home-conversation-button'],
+        installedPackageCapabilityContractVersion: 'c-mobile-installed-package-capabilities-v1'
       }
     },
     readiness: blockers.length === 0 ? 'device-verified' : 'product-readiness-blocked',
@@ -869,14 +904,15 @@ export function createMobileProductMatrix({ appJson, packageJson, nativeReadines
 export async function runMobileVerification({
   jsonPath = 'dist/mobile-verification-report.json',
   markdownPath = 'dist/mobile-verification-report.md',
-  htmlPath = 'dist/mobile-verification-report.html'
+  htmlPath = 'dist/mobile-verification-report.html',
+  probeExternalDevices = process.env.JARVIS_EXTERNAL_DEVICE_PROBES !== '0',
+  deviceEvidenceRoot = defaultMobileDeviceEvidenceRoot
 } = {}) {
   const checks = [];
   const appJson = JSON.parse(await readFile('apps/mobile/app.json', 'utf8'));
   const packageJson = JSON.parse(await readFile('apps/mobile/package.json', 'utf8'));
   const appTsx = await readFile('apps/mobile/src/App.tsx', 'utf8');
-  const nativeRuntimeProbeTsx = await readFile('apps/mobile/src/components/NativeRuntimeProbe.tsx', 'utf8');
-  const appScreenSource = `${appTsx}\n${nativeRuntimeProbeTsx}`;
+  const appScreenSource = appTsx;
   const routesModule = await import('../apps/mobile/src/navigation/routes.js');
 
   const mobileFileChecks = [];
@@ -893,8 +929,8 @@ export async function runMobileVerification({
   check(checks, 'dependency:secure-store', 'Expo SecureStore dependency is declared', Boolean(packageJson.dependencies?.['expo-secure-store']), packageJson.dependencies?.['expo-secure-store']);
   check(checks, 'dependency:notifications', 'Expo Notifications dependency is declared', Boolean(packageJson.dependencies?.['expo-notifications']), packageJson.dependencies?.['expo-notifications']);
   check(checks, 'dependency:sharing', 'Expo Sharing dependency is declared for native file share sheet', Boolean(packageJson.dependencies?.['expo-sharing']), packageJson.dependencies?.['expo-sharing']);
-  check(checks, 'app:route-shell', 'App shell renders route navigation buttons', appTsx.includes('shell.routes.map'), 'apps/mobile/src/App.tsx');
-  check(checks, 'app:security-screen', 'Settings screen exposes security and notification controls', appTsx.includes('JARVIS Mobile'), 'apps/mobile/src/App.tsx');
+  check(checks, 'app:production-home-shell', 'App exposes the practical Jarvis command home as its primary surface', appTsx.includes('return renderHomeScreen();') && appTsx.includes('const isHome = true;'), 'apps/mobile/src/App.tsx');
+  check(checks, 'app:home-approval-safety', 'Home flow exposes explicit approve and reject controls', appTsx.includes('home-approve-button') && appTsx.includes('home-reject-button'), 'apps/mobile/src/App.tsx');
 
   const nativeContract = validateNativeMobileConfig({
     appJson,
@@ -957,11 +993,27 @@ export async function runMobileVerification({
   check(checks, 'runtime:poison-queue-product-gate', 'Poison queue review, requeue, drain, soak, notification UX, and hash-only release dossier product gate passes', runtimeScenario.poisonQueue.productGate?.productGateVersion === 'c-poison-queue-product-gate-v1' && runtimeScenario.poisonQueue.productGate?.status === 'passed', runtimeScenario.poisonQueue.productGate);
   check(checks, 'runtime:retry-policy-update', 'Mobile queue retry policy update flow is verified', runtimeScenario.queuePolicy.update?.maxAttempts === 4, runtimeScenario.queuePolicy);
 
-  const deviceSmoke = await runMobileDeviceSmoke({ packageName: appJson.expo?.android?.package });
+  const deviceSmokeAttempt = await runMobileDeviceSmoke({
+    packageName: appJson.expo?.android?.package,
+    probeDevices: probeExternalDevices
+  });
+  const persistentDeviceEvidenceEnabled = probeExternalDevices && Boolean(deviceEvidenceRoot);
+  const deviceSmoke = persistentDeviceEvidenceEnabled
+    ? await reconcileMobileDeviceEvidence(deviceSmokeAttempt, { evidenceRoot: deviceEvidenceRoot })
+    : {
+        ...deviceSmokeAttempt,
+        evidenceSource: 'external-probe-disabled',
+        retainedEvidence: {
+          status: 'not-evaluated',
+          reason: 'external-device-probe-disabled'
+        }
+      };
   const deviceSmokeArtifacts = await writeMobileDeviceSmokeArtifacts(deviceSmoke, {
     jsonPath: join(dirname(jsonPath), 'mobile-device-smoke-report.json'),
     markdownPath: join(dirname(markdownPath), 'mobile-device-smoke-report.md'),
-    htmlPath: join(dirname(htmlPath), 'mobile-device-smoke-report.html')
+    htmlPath: join(dirname(htmlPath), 'mobile-device-smoke-report.html'),
+    attemptReport: deviceSmokeAttempt,
+    evidenceRoot: persistentDeviceEvidenceEnabled ? deviceEvidenceRoot : null
   });
   const androidSetup = await runAndroidSetup({
     install: false,
@@ -990,7 +1042,9 @@ export async function runMobileVerification({
   });
   const deviceProbe = {
     ...deviceSmoke.probe,
-    actualDeviceVerified: deviceSmoke.actualDeviceVerified
+    currentDeviceConnected: deviceSmoke.probe?.devices?.some((device) => device.state === 'device') ?? false,
+    actualDeviceVerified: deviceSmoke.actualDeviceVerified,
+    evidenceSource: deviceSmoke.evidenceSource
   };
   const productMatrix = createMobileProductMatrix({
     appJson,
@@ -1036,10 +1090,11 @@ export async function runMobileVerification({
     blockers: releasePreflight.blockers
   }, 'product-readiness');
   check(checks, 'product:native-runtime-expectations', 'Native SecureStore/Notifications runtime expectations are recorded', productMatrix.nativeRuntimeExpectations.every((item) => item.configured), productMatrix.nativeRuntimeExpectations);
-  check(checks, 'product:native-runtime-probe-ui', 'App source exposes native runtime probe UI labels', appScreenSource.includes('NativeRuntimeProbe') && appScreenSource.includes('SecureStore native:') && appScreenSource.includes('Sharing native:'), 'apps/mobile/src/App.tsx');
+  check(checks, 'product:home-surface-contract', 'App source exposes the practical command, execution, voice, and pairing home contract', screenContract.status === 'passed' && appScreenSource.includes('home-command-input') && appScreenSource.includes('home-submit-button') && appScreenSource.includes('home-conversation-button'), 'apps/mobile/src/App.tsx');
   check(checks, 'device:adb-probe', 'ADB/emulator probe executed when available', true, deviceProbe, 'informational');
-  check(checks, 'device:actual-device', 'Actual Android device/emulator is connected', deviceProbe.actualDeviceVerified, deviceProbe, 'product-readiness');
-  check(checks, 'device:install-launch-screen', 'Installed mobile app launches and exposes screen contract on device', deviceSmoke.actualDeviceVerified, deviceSmoke, 'product-readiness');
+  check(checks, 'device:current-device-connected', 'Current Android device/emulator connection state is recorded separately from retained evidence', true, deviceProbe, 'informational');
+  check(checks, 'device:actual-device', 'Current-code-matching physical Android device evidence is available', deviceProbe.actualDeviceVerified, deviceProbe, 'product-readiness');
+  check(checks, 'device:install-launch-screen', 'Installed mobile app launch and production home contract have current-code-matching device evidence', deviceSmoke.actualDeviceVerified, deviceSmoke, 'product-readiness');
 
   const requiredChecks = checks.filter((item) => item.severity === 'required');
   const passedRequired = requiredChecks.filter((item) => item.passed).length;

@@ -1,0 +1,96 @@
+{
+  "version": "local-summary-quality-v1",
+  "scope": "bounded-source-facts-not-arbitrary-prose",
+  "cases": [
+    {
+      "id": "correction",
+      "split": "fixed",
+      "source": "회의 준비 기록: 처음에는 10월 7일 오전 10시에 18명이 모이기로 했다. 최종 정정: 회의는 2026년 10월 8일 오후 2시이며 참석자는 12명이다. 장소는 본관 2층이다. 최초 계획은 폐기한다.",
+      "questions": {
+        "date": "최종 회의 날짜를 YYYY-MM-DD로",
+        "attendees": "최종 참석 인원을 숫자만",
+        "place": "최종 장소를 본문 표현 그대로"
+      },
+      "expected": {
+        "date": "2026-10-08",
+        "attendees": "12",
+        "place": "본관 2층"
+      }
+    },
+    {
+      "id": "uncertainty",
+      "split": "fixed",
+      "source": "장비 도입 기록: 견적 금액은 450000원이고 결제는 하지 않았다. 공급 업체는 다음 주 납품이 가능할 것으로 예상하지만 확정일은 제시하지 않았다. 승인 여부: 미승인. 실제 지출액은 0원이다.",
+      "questions": {
+        "paid": "실제 지출액을 원 단위 숫자만",
+        "approval": "승인 여부를 본문 표현 그대로",
+        "delivery": "확정 납품일을 YYYY-MM-DD로; 없으면 미정"
+      },
+      "expected": {
+        "paid": "0",
+        "approval": "미승인",
+        "delivery": "미정"
+      }
+    },
+    {
+      "id": "subset",
+      "split": "fixed",
+      "source": "등록자는 모두 40명이다. 등록자 중 참석한 사람은 25명이고, 참석자 중 설문 응답자는 20명이다. 설문 응답자 중 만족한 사람은 16명이다. 만족률을 논할 때 분모는 설문 응답자이며 전체 등록자는 아니다.",
+      "questions": {
+        "registered": "전체 등록자 수를 숫자만",
+        "responded": "설문 응답자 수를 숫자만",
+        "satisfied": "만족한 응답자 수를 숫자만"
+      },
+      "expected": {
+        "registered": "40",
+        "responded": "20",
+        "satisfied": "16"
+      }
+    },
+    {
+      "id": "attribution",
+      "split": "holdout",
+      "source": "시범 운영 평가: 업체는 처리 속도가 30% 빨라졌다고 주장했다. 독립 시험팀은 해당 주장을 검증하지 못했다. 시험팀이 실제로 측정한 평균 시간은 기존 8초, 변경 후 9초다. 업체 주장은 시험팀의 결론이 아니다.",
+      "questions": {
+        "before": "독립 시험팀이 실제 측정한 기존 평균 시간 숫자만(초)",
+        "after": "독립 시험팀이 실제 측정한 변경 후 평균 시간 숫자만(초)",
+        "claim": "업체의 30% 개선 주장이 독립 검증되었는가? 검증됨 또는 미검증"
+      },
+      "expected": {
+        "before": "8",
+        "after": "9",
+        "claim": "미검증"
+      }
+    },
+    {
+      "id": "units",
+      "split": "holdout",
+      "source": "물품 기록: A세트는 3박스이며 한 박스당 4개다. B세트는 5개 낱개다. 이미 배송한 것은 B세트의 2개뿐이다. A세트 12개는 아직 창고에 있다. 현 재고는 A세트 12개와 B세트 3개다.",
+      "questions": {
+        "a": "A세트 현재 재고를 개 단위 숫자만",
+        "b": "B세트 현재 재고를 개 단위 숫자만",
+        "sent": "이미 배송한 총량을 개 단위 숫자만"
+      },
+      "expected": {
+        "a": "12",
+        "b": "3",
+        "sent": "2"
+      }
+    },
+    {
+      "id": "correction-status",
+      "split": "holdout",
+      "source": "행사 예약 이력: 첫 기록에는 2026년 11월 3일 예약 확정이라고 적혔다. 10월 2일 수정 기록: 예약은 취소됐으며 환불은 신청만 하고 아직 입금되지 않았다. 환불 예정액은 70000원이다. 현재 예약 상태: 취소. 실제 환불 입금액: 0원.",
+      "questions": {
+        "status": "현재 예약 상태를 본문 표현 그대로",
+        "received": "실제 환불 입금액을 원 단위 숫자만",
+        "planned": "환불 예정액을 원 단위 숫자만"
+      },
+      "expected": {
+        "status": "취소",
+        "received": "0",
+        "planned": "70000"
+      }
+    }
+  ]
+}

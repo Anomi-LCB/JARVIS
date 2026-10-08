@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const prefix='artifacts/mcp-verifier-policy-20261007',observedAt=new Date().toISOString();
+const read=p=>readFileSync(p,'utf8').replace(/^\uFEFF/u,''),hash=x=>createHash('sha256').update(x).digest('hex');
+const log=read(`${prefix}-recheck-final.txt`),count=key=>Number(log.match(new RegExp(`(?:ℹ |# )${key} (\\d+)`))?.[1]);
+assert.equal(count('tests'),83);assert.equal(count('pass'),83);assert.equal(count('fail'),0);assert.equal(count('skipped'),0);
+assert.match(read(`${prefix}-before.txt`),/fail 5/u);assert.match(read(`${prefix}-build.txt`),/Built static JARVIS/u);assert.match(read(`${prefix}-contract.txt`),/gatePassed: true/u);
+const files=['packages/core/src/personal-operations/mcp-connections.js','packages/core/src/main.mjs','tests/mcp-verifier-policy-currentness.test.js','tests/mcp-reviewed-document.test.js','docs/mcp-verified-results.md'];
+writeFileSync(`${prefix}-source.json`,JSON.stringify({observedAt,files:files.map(path=>({path,sha256:hash(readFileSync(path)),content:read(path)}))},null,2),{flag:'wx'});
+writeFileSync(`${prefix}-verification.json`,JSON.stringify({observedAt,tests:83,passed:83,failed:0,skipped:0,testFiles:10,durationMs:Number(log.match(/duration_ms ([\d.]+)/u)[1]),actualCoreHttp:true,actualMcpLoopbackHttp:true,actualSqlite:true,syntheticDocument:true,realAccount:false,externalServiceCalls:0,actualCost:null,latencyPercentiles:null,verified:51},null,2),{flag:'wx'});
+writeFileSync(`${prefix}-report.md`,`# MCP 검증 이후와 보관된 결과의 정책 재검사\n\n관측 ${observedAt}. 공식 인수 **51/100 유지**.\n\n앞선 응답 전달 수정 이후에도 비동기 독립 검증기가 기다리는 동안 신뢰 정책이 바뀌면 검증 완료 응답과 결과 보관함에 자료가 들어갔다. 보관된 자료를 읽을 때 도구 grant는 검사했지만 현재 정책은 검사하지 않았다. 새6개 시험에서 정상 대조1개는 통과하고5반례가 실패했다.\n\n검증기 이후의 정책 검사를 영수증/임시 결과 저장 전에 넣었다. hook 뒤 grant revision을 다시 검사하므로 정책 hook 자체가 철회/재허용해도 이전 권한을 재사용하지 않는다. 정책 오류 문구는 안전한 코드로 치환한다. 임시 정책 요청은 원래 입력을 불변 snapshot으로 보존하고 결과 읽기 때 현재 정책과 최종 grant를 검사한다. Core 결과 API에는 실제 RuntimeTrustKernel을 연결해야 하며 미연결503/거부409로 원문을 숨긴다. 공급자 호출 없이 다시 검사한다.\n\n최종 실제10시험파일 **83/83, 실패0·미실행0**. 실제 Core HTTP 관리자/진단 scope 및 긴급잠금 반례·독립 파일 원문 검증·MCP Mission·재시작/다중프로세스 예약·package 회귀 포함. build/contract 통과. 실패 전/후 로그와 현행 소스를 보존했다.\n\n이번 증거는 MCP의 현재 정책·grant 경계다. 개인정보/금융 전체 자료별egress, 실계정·다른 제공자의 모든 외부효과, OS원자적 권한 철회는 남아 있고 전체 인수를 완료로 올리지 않는다. 이미 전달된 자료를 소급 회수하지 않으며 verifier에 전달된 자료의 유출을 원천 차단한 의미도 아니다. 임시 callback은10분/16개 기존 캐시에만 보관하며 새 영속 민감정보 저장은 없다. 추가 정책 검사 비용/제품p50/p95는 미측정. 운영서비스/설치본/사용자계정·기억 변경 없음. 복원은 이번 검증후·cache·Core 정책 연결/시험/문서만 검토한다.\n`,{flag:'wx'});
+const evidencePaths=['report.md','verification.json','source.json','before.txt','focused.txt','recheck.txt','recheck-final.txt','build.txt','contract.txt'].map(x=>`${prefix}-${x}`);
+writeFileSync(`${prefix}-attempt.json`,JSON.stringify({id:'mcp-verifier-policy-20261007',candidateId:'agent-platform-observed-scenario-status',kind:'workflow-test',reportedOutcome:'passed',observedAt,evidencePaths,hypothesis:'비동기 검증과 보관된 결과 반환도 현재 정책 및 grant revision을 검사하면 오래된 정책으로 자료가 노출되는 경로를 차단할 수 있다.',lesson:'응답 수신·독립 검증 완료·결과 재조회는 서로 다른 권한 관측 시점이다. 캐시는 이전 정책 결정을 실행 권한으로 보존하면 안 된다.',limitations:'실제 Core/MCP HTTP·SQLite83통과. 전체egress/실계정/다른제공자/OS원자철회·제품시간비용 미완료, 공식51유지.'},null,2),{flag:'wx'});
+const path='docs/universal-control-v3-acceptance.json',a=JSON.parse(read(path)),gates=a.stages.flatMap(s=>s.gates);
+assert.equal(gates.length,100);assert.equal(gates.filter(g=>g.status==='verified').length,51);
+for(const id of ['V3-029','V3-031']){const g=gates.find(g=>g.id===id);assert.equal(g.status,'in_progress');g.evidence.push(...evidencePaths.slice(0,3));g.reviewedAt=observedAt;g.limitations.push('2026-10-07 MCP verifier 이후/결과 cache·Core 현재정책 검사5실패 수정·83/83/build/contract. 전체egress/모든효과·실계정·OS원자철회 미완료.');}
+a.updatedAt=observedAt;writeFileSync(path,JSON.stringify(a,null,2)+'\n');
+appendFileSync('docs/execution-to-100.md',`\n최신 ${prefix}-report.md: MCP 검증후/결과cache 현재정책·실제Core긴급잠금·83통과·공식51유지. 전체egress/실계정/OS원자철회 남음.\n`);
+console.log(JSON.stringify({verified:51,tests:83,observedAt}));

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "g01-w3c-wcag22-source-snapshot-v1",
+  "capturedAt": "2026-09-29T00:00:00.000Z",
+  "fixtureNotice": "Offline text excerpts from two public W3C WAI WCAG 2.2 explanatory pages. This fixture is not a live fetch or proof of current page contents.",
+  "sources": [
+    {
+      "id": "wcag-target-size-minimum",
+      "publisher": "W3C WAI",
+      "title": "Understanding Success Criterion 2.5.8: Target Size (Minimum)",
+      "url": "https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum",
+      "quote": "The size of the target for pointer inputs is at least 24 by 24 CSS pixels",
+      "claim": "WCAG 2.2 SC 2.5.8 sets a 24 by 24 CSS pixel minimum target size, subject to stated exceptions."
+    },
+    {
+      "id": "wcag-focus-not-obscured-minimum",
+      "publisher": "W3C WAI",
+      "title": "Understanding Success Criterion 2.4.11: Focus Not Obscured (Minimum)",
+      "url": "https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum",
+      "quote": "When a user interface component receives keyboard focus, the component is not entirely hidden due to author-created content.",
+      "claim": "WCAG 2.2 SC 2.4.11 requires keyboard-focused components not to be entirely hidden by author-created content."
+    }
+  ]
+}

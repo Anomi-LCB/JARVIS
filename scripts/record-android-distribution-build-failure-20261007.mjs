@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
+const prefix='artifacts/android-distribution-build-failure-20261007',observedAt=new Date().toISOString();
+const read=p=>readFileSync(p,'utf8').replace(/^\uFEFF/u,''),write=(suffix,value)=>writeFileSync(`${prefix}-${suffix}`,typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',{flag:'wx'});
+const log=read('artifacts/android-distribution-20261007-manifests-online.txt');assert.match(log,/BUILD FAILED/u);assert.match(log,/Could not find method buildConfigField/u);
+const source=read('apps/mobile/android/app/build.gradle');assert.match(source,/buildTypes\s*\{\s*debug\s*\{\s*buildConfigField/u);
+write('report.md',`# Android Gradle 실제 검사 실패와 수정\n\n관측 ${observedAt}. 온라인 Manifest 검사 session3145는 exit1로 종료했다. 서명 설정 SigningConfig에 buildConfigField를 넣은 구현 오류가 원인이다. 초기 소스/실패 로그를 이전 증거와 온라인 로그에 보존한다. debug/release의 상수를 buildTypes에 옮겼으며 캐시가 준비된 후 offline Manifest/BuildConfig 재검사를 session55475로 실행 중이다. 이 handle은 실제 tool poll에서 아직 실행 중으로 확인했다.\n\n이 기록은 실패한 실험이다. 수정 소스의 존재를 Android build 성공으로 계산하지 않는다. 기존31검사+모바일업무1검사/웹 build/Core계약 결과와 Gradle 결과는 별도다. 083진행중,공식51유지. 이전 보고서의 session3145 진행 상태는 당시 관측이며 최신 상태는 종료/실패다.\n`);
+write('corrected-build.gradle',source);
+write('verification.json',{observedAt,previousSessionId:3145,previousExitCode:1,reason:'buildConfigField-in-signingConfigs',correctedLocation:'buildTypes',recheckSessionId:55475,recheckStatus:'running',androidBuildPassed:false,verified:51});
+const evidencePaths=[`${prefix}-report.md`,`${prefix}-corrected-build.gradle`,`${prefix}-verification.json`,'artifacts/android-distribution-20261007-manifests-online.txt'];
+write('attempt.json',{id:'android-distribution-build-failure-20261007',candidateId:'agent-platform-observed-scenario-status',kind:'workflow-test',reportedOutcome:'failed',observedAt,evidencePaths,hypothesis:'Android의 실제 Manifest/BuildConfig 생성으로 배포 경로 분리를 확인한다.',lesson:'BuildConfig 상수는 SigningConfig가 아니라 buildTypes에 설정해야 한다. JS 검사와 빌드 소스만으로 Android 생성 성공을 주장할 수 없다.',limitations:'잘못된Gradle DSL이 실제 검사에서 발견됨. 수정 후 session55475 실행중. 공식51유지.'});
+const path='docs/universal-control-v3-acceptance.json',a=JSON.parse(read(path)),g=a.stages.flatMap(s=>s.gates).find(g=>g.id==='V3-083');assert.equal(g.status,'in_progress');g.evidence.push(...evidencePaths.slice(0,3));g.reviewedAt=observedAt;g.limitations.push('2026-10-07 Gradle3145 exit1: SigningConfig/buildConfigField 배치오류. buildTypes로 수정 후 실제재검사55475진행중. 성공으로 계산하지 않음.');a.updatedAt=observedAt;writeFileSync(path,JSON.stringify(a,null,2)+'\n');
+appendFileSync('docs/execution-to-100.md',`\n최신 ${prefix}-report.md: Android3145실패(DSL배치오류)→buildTypes수정. 재검사55475실행중; 다음 턴 같은handle 확인. 공식51/083진행중.\n`);
+console.log(JSON.stringify({failedSession:3145,recheckSession:55475,verified:51}));

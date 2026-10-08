@@ -1,11 +1,26 @@
+import { verifyTabularProcedureResult } from './tabular-result-verifier.js';
+import {zipMemberEvidence} from '../../../packages/core/src/mission/xlsx-cell-evidence.js';
+import {readFileSnapshot} from '../../pc-agent/src/adapters/filesystem/read-text-snapshot.js';
+import {supportsScopedVerificationTarget} from '../../../packages/shared/src/scoped-recovery-verification.js';
 import { ActionType, ApprovalDecision } from '../../../packages/shared/src/types.js';
-import { stat } from 'node:fs/promises';
+import { stat, lstat, readFile, realpath } from 'node:fs/promises';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { JsonlAuditLog } from '../../../packages/shared/src/audit-log.js';
 import { VerificationReportStore } from './reports/report-store.js';
 import { LocalNetworkGuard } from '../../bridge/src/network-guard.js';
+import {PdfTextReader} from '../../pc-agent/src/adapters/pdf/pdf-reader.js';
+import {XlsxRegionReader} from '../../pc-agent/src/adapters/excel/xlsx-reader.js';
+import {verifyArtifactLayoutCurrent} from './artifact-layout-verifier.js';
+import {verifyDocumentTables,verifyDocumentParagraphs} from '../../pc-agent/src/adapters/word/table-verifier.js';
+import {verifyHwpxContentCurrent} from './hwpx-content-verifier.js';
+import {verifyDocumentEditCurrent} from './document-edit-verifier.js';
+import {verifyMacroPublicationCurrent} from './macro-publication-verifier.js';
+import {verifyHancomRenderingCurrent} from './hancom-render-verifier.js';
+import {verifyOfficeDocumentRenderingCurrent} from './office-document-render-verifier.js';
+import {layoutRequirementsSha256} from '../../../packages/shared/src/artifact-layout-requirements.js';
 
 const jarvisDocumentFiles = [
   ['A', '1. JARVIS_A_공통 코어 엔진v1.0.md'],
@@ -17,17 +32,18 @@ const jarvisDocumentFiles = [
   ['G', '7. JARVIS_G_테스트검증  시뮬레이션시스템_개발문서 v1.0.md']
 ];
 
-export function defaultJarvisDocumentPaths(root = process.env.JARVIS_DOCS_DIR ?? 'C:/Users/user/Downloads/JARVIS') {
+export function defaultJarvisDocumentPaths(root = process.env.JARVIS_DOCS_DIR ?? (existsSync('docs/jarvis-source') ? 'docs/jarvis-source' : 'C:/Users/user/Downloads/JARVIS')) {
   return jarvisDocumentFiles.map(([docId, fileName]) => ({
     docId,
     path: join(root, fileName)
   }));
 }
 
-export const defaultLearningVerifierFixturePath = 'apps/verification/fixtures/learning-verifier-fixtures.json';
-export const defaultSimulationExpandedScenarioPath = 'apps/verification/fixtures/ag-simulation-expanded-scenarios.json';
-export const defaultRedTeamFixturePath = 'apps/verification/fixtures/prompt-redteam-fixtures.json';
-export const defaultRegressionExternalFixturePath = 'apps/verification/fixtures/regression-external-fixtures.json';
+const installedFixturePath = name => fileURLToPath(new URL('../fixtures/' + name, import.meta.url));
+export const defaultLearningVerifierFixturePath = installedFixturePath('learning-verifier-fixtures.json');
+export const defaultSimulationExpandedScenarioPath = installedFixturePath('ag-simulation-expanded-scenarios.json');
+export const defaultRedTeamFixturePath = installedFixturePath('prompt-redteam-fixtures.json');
+export const defaultRegressionExternalFixturePath = installedFixturePath('regression-external-fixtures.json');
 
 export function loadLearningVerifierFixturePack(fixturePath = defaultLearningVerifierFixturePath) {
   const raw = readFileSync(fixturePath, 'utf8');
@@ -326,8 +342,8 @@ function deepMerge(base, patch) {
   return output;
 }
 
-const defaultPolicyComplianceFixturePath = 'apps/verification/fixtures/policy-compliance-fixtures.json';
-const defaultToolPoisoningLeakFixturePath = 'apps/verification/fixtures/tool-poisoning-leak-fixtures.json';
+const defaultPolicyComplianceFixturePath = installedFixturePath('policy-compliance-fixtures.json');
+const defaultToolPoisoningLeakFixturePath = installedFixturePath('tool-poisoning-leak-fixtures.json');
 
 export function loadPolicyComplianceFixturePack(fixturePath = defaultPolicyComplianceFixturePath) {
   const raw = readFileSync(fixturePath, 'utf8');
@@ -458,6 +474,8 @@ function serializedVerificationContainsAny(value, needles = []) {
 }
 
 export class PolicyComplianceVerifier {
+  constructor({ clock = () => new Date() } = {}) { this.clock = clock; }
+
   runFixturePack({ fixturePack, failBelow = 1, generatedAt = new Date().toISOString() } = {}) {
     const items = (fixturePack?.fixtures ?? []).map((fixture) => {
       const checks = this.verify(fixture.target ?? {});
@@ -628,7 +646,7 @@ export class PolicyComplianceVerifier {
       add('capability_no_admin_privilege', capabilityToken.permissions?.allowAdminPrivilege === false, 'Capability Token은 관리자 권한을 포함하면 안 됩니다.', 'critical');
       add('capability_has_expiry', Boolean(capabilityToken.expiresAt), 'Capability Token은 만료 시간이 있어야 합니다.', 'high');
       if (capabilityToken.expiresAt) {
-        add('capability_not_expired', Date.parse(capabilityToken.expiresAt) > Date.now(), 'Capability Token은 만료되지 않아야 합니다.', 'critical', {
+        add('capability_not_expired', Date.parse(capabilityToken.expiresAt) > this.clock().getTime(), 'Capability Token은 만료되지 않아야 합니다.', 'critical', {
           expiresAt: capabilityToken.expiresAt
         });
       }
@@ -647,14 +665,76 @@ export class PolicyComplianceVerifier {
   }
 }
 
+function hasVerifiedUnchangedWorkflowPublication(executionResult, evidence) {
+  if (executionResult?.executedBy?.toolName !== 'workflow.execute') return false;
+  const workflow = executionResult.evidence?.workflow ?? evidence?.adapterEvidence?.workflow;
+  const proof = workflow?.publication;
+  const outputPaths = executionResult.outputPaths;
+  const changedItems = executionResult.changedItems;
+  if (proof?.version !== 'workflow-publication-v1' || proof.changedFileCount !== 0
+    || !Array.isArray(outputPaths) || outputPaths.length === 0
+    || new Set(outputPaths).size !== outputPaths.length
+    || !Array.isArray(proof.files) || proof.files.length !== outputPaths.length
+    || proof.unchangedFileCount !== outputPaths.length
+    || !Array.isArray(changedItems) || changedItems.length !== outputPaths.length
+    || new Set(changedItems.map((item) => item?.path)).size !== outputPaths.length
+    || new Set(proof.files.map((file) => file?.path)).size !== outputPaths.length
+    || executionResult.undoJournalId || evidence?.undo?.undoJournalId
+    || executionResult.rollbackAvailable !== false) return false;
+  const evidenceFiles = new Map((evidence?.files ?? []).map((file) => [file.path, file]));
+  return proof.files.every((file) => {
+    const actual = evidenceFiles.get(file?.path);
+    const item = changedItems.find((entry) => entry?.path === file?.path);
+    return outputPaths.includes(file?.path) && file?.existedBefore === true && file.changed === false
+      && /^[a-f0-9]{64}$/iu.test(String(file.beforeSha256 ?? ''))
+      && file.beforeSha256 === file.afterSha256 && file.afterSha256 === actual?.sha256
+      && Number.isInteger(file.size) && file.size >= 0 && file.size === actual?.size
+      && item?.type === 'unchanged_file' && item.sha256 === file.afterSha256 && item.size === file.size;
+  });
+}
+
 export class ExecutionResultVerifier {
-  async verify({ executionResult, evidence, capabilityToken = null, rollbackProof = null, adapterContract = null, adapterFixtureReport = null, undoChain = null, rollbackTransactionStatus = null }) {
+  async verify({ executionResult, evidence, capabilityToken = null, recoveryReadRoots = [], beforeResultRead = null, macroControlStorePath=null, rollbackProof = null, adapterContract = null, adapterFixtureReport = null, undoChain = null, rollbackTransactionStatus = null, capabilityPackageVerification = undefined }) {
     const checks = [];
     const add = (checkName, pass, message, severity = 'medium', proof = {}) => {
       checks.push({ checkId: checkName, checkName, status: pass ? 'passed' : 'failed', severity, message, evidence: proof });
     };
     add('execution_result_present', Boolean(executionResult), 'ExecutionResult가 있어야 합니다.', 'critical');
     if (!executionResult) return checks;
+    if((evidence?.toolName??executionResult.executedBy?.toolName)==='macro.save'){
+      const proof=await verifyMacroPublicationCurrent({executionResult,registeredPath:macroControlStorePath});
+      add('macro_current_whole_store_verified',proof.passed===true,'등록된 매크로 저장소의 현재 전체 내용과 원래 게시 계약을 대조합니다.','critical',proof);
+    }
+    if((evidence?.toolName??executionResult.executedBy?.toolName)==='document.edit'){
+      const proof=await verifyDocumentEditCurrent({executionResult,allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+      add('document_edit_current_original_and_cells_verified',proof.passed===true,'원래 백업과 요청 편집 및 현재 전체 시트 값을 독립적으로 대조합니다.','critical',proof);
+    }
+    if((evidence?.toolName??executionResult.executedBy?.toolName)==='word.create'){
+      const proof=await verifyOfficeDocumentRenderingCurrent({executionResult,allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+      add('office_current_structure_and_rendering_verified',proof.passed===true,'현재 저장된 문서 구조와 실제 Word PDF의 필수 본문·페이지 경계를 독립적으로 대조합니다.','critical',proof);
+    }
+    if(['hwp.create','weather.createHwpReport'].includes(evidence?.toolName??executionResult.executedBy?.toolName)&&executionResult.nativeRendering){
+      const proof=await verifyHancomRenderingCurrent({executionResult,allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+      add('hancom_current_rendering_verified',proof.passed===true,'실제 한컴 PDF의 필수 본문과 페이지 이미지의 실제 픽셀을 현재 파일에서 대조합니다.','critical',proof);
+    }
+    if(['hwp.create','weather.createHwpReport'].includes(evidence?.toolName??executionResult.executedBy?.toolName)&&executionResult.targetPath?.toLowerCase().endsWith('.hwpx')){
+      const proof=await verifyHwpxContentCurrent({executionResult,allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+      add('hwpx_current_content_structure_verified',proof.passed===true,'HWPX의 본문·표 머리글·셀 위치를 현재 파일에서 확인합니다. 실제 한컴 렌더링은 별도 검증이 필요합니다.','critical',proof);
+    }
+    if((evidence?.toolName??executionResult.executedBy?.toolName)==='word.create'&&executionResult.targetPath?.toLowerCase().endsWith('.docx')){
+      const proof=await verifyDocumentTables(executionResult.targetPath,executionResult.documentTables,{allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+      if(proof.passed){proof.proofs=[{kind:'document.tables',path:executionResult.targetPath,requirementsSha256:layoutRequirementsSha256('document.tables',executionResult.documentTables),files:[{path:executionResult.targetPath,sha256:proof.sha256}]}];}
+      add('word_current_table_coordinates_verified',proof.passed===true,'저장된 Word 표의 행·열별 값을 현재 파일에서 독립적으로 확인합니다.','critical',proof);
+      if(executionResult.documentParagraphs){
+        const paragraphs=await verifyDocumentParagraphs(executionResult.targetPath,executionResult.documentParagraphs,{allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+        if(paragraphs.passed)paragraphs.proofs=[{kind:'document.paragraphs',path:executionResult.targetPath,requirementsSha256:layoutRequirementsSha256('document.paragraphs',executionResult.documentParagraphs),files:[{path:executionResult.targetPath,sha256:paragraphs.sha256}]}];
+        add('word_current_paragraph_sequence_verified',paragraphs.passed===true,'현재 Word 본문의 정확한 문단 순서와 값을 확인합니다.','critical',paragraphs);
+      }
+    }
+    if(['visual.createCards','powerpoint.create'].includes(evidence?.toolName??executionResult.executedBy?.toolName)){
+      const proof=await verifyArtifactLayoutCurrent({executionResult:{...executionResult,toolName:evidence?.toolName??executionResult.executedBy?.toolName},allowedRoots:capabilityToken?.scope?.allowedPaths??recoveryReadRoots});
+      add('artifact_current_content_layout_verified',proof?.passed===true,'문구·배치는 현재 파일을 독립적으로 다시 읽어 확인해야 합니다.','critical',proof??{});
+    }
     add('execution_task_id_present', Boolean(executionResult.taskId), 'ExecutionResult에는 taskId가 있어야 합니다.', 'high', {
       taskId: executionResult.taskId
     });
@@ -670,10 +750,28 @@ export class ExecutionResultVerifier {
     });
     const contract = adapterContract ?? executionResult.safety?.adapterContract;
     const readOnlyExecution = contract?.readOnly === true || executionResult.readOnly === true;
-    if (readOnlyExecution) {
+    const explicitlyNonRollbackable = contract?.rollback === false;
+    const unchangedWorkflowPublication = hasVerifiedUnchangedWorkflowPublication(executionResult, evidence);
+    if (unchangedWorkflowPublication) {
+      add('workflow_unchanged_publication_verified', true, '기존 파일과 결과의 동일 해시를 G가 재확인했으므로 되돌릴 변경이 없습니다.', 'high', {
+        publication: executionResult.evidence?.workflow?.publication ?? evidence?.adapterEvidence?.workflow?.publication
+      });
+    } else if (readOnlyExecution) {
       add('read_only_no_undo_required', !executionResult?.undoJournalId && executionResult?.rollbackAvailable === false, 'Read-only 실행은 UndoJournal/rollback을 요구하지 않아야 합니다.', 'medium', {
         undoJournalId: executionResult?.undoJournalId,
         rollbackAvailable: executionResult?.rollbackAvailable
+      });
+    } else if (explicitlyNonRollbackable) {
+      add('non_rollback_contract_explicit', executionResult?.rollbackAvailable === false, '되돌릴 수 없는 실행은 adapter contract와 실행 결과에 비롤백 상태를 명시해야 합니다.', 'high', {
+        contractRollback: contract?.rollback,
+        rollbackAvailable: executionResult?.rollbackAvailable
+      });
+      add('non_rollback_postcondition_verified', executionResult?.verification?.passed === true, '되돌릴 수 없는 실행은 목표 상태를 독립적으로 재확인해야 합니다.', 'critical', {
+        verification: executionResult?.verification
+      });
+      add('non_rollback_changed_items_bounded', (executionResult?.changedItems ?? []).length > 0
+        && (executionResult?.changedItems ?? []).length <= 20, '되돌릴 수 없는 실행은 변경 항목을 명시하고 정책 상한 안으로 제한해야 합니다.', 'high', {
+        changedItemCount: executionResult?.changedItems?.length ?? 0
       });
     } else {
       add('undo_journal_present', Boolean(executionResult?.undoJournalId || evidence?.undo?.undoJournalId), 'UndoJournal 증거가 필요합니다.', 'high');
@@ -738,6 +836,129 @@ export class ExecutionResultVerifier {
       add('shadow_expected_changes_consistent', Number.isInteger(evidence.shadow?.expectedChangesCount) && evidence.shadow.expectedChangesCount >= 0, 'Shadow evidence에는 expectedChangesCount가 있어야 합니다.', 'medium', {
         shadow: evidence.shadow
       });
+      const requiresEvidenceSchema = executionResult?.executedBy?.toolName === 'workflow.execute'
+        || evidence.schemaValidation !== undefined;
+      if (requiresEvidenceSchema) {
+        add('execution_evidence_schema_valid', evidence.schemaValidation?.valid === true, 'ExecutionEvidence는 등록된 도구 스키마의 필수 증거를 모두 충족해야 합니다.', 'critical', {
+          schemaId: evidence.schemaValidation?.schemaId ?? null,
+          required: evidence.schemaValidation?.required ?? [],
+          missing: evidence.schemaValidation?.missing ?? []
+        });
+      }
+    }
+    if(/^mcp\./u.test(executionResult?.executedBy?.toolName??'')){
+      add('mcp_capability_package_verifier_passed',capabilityPackageVerification?.toolName===executionResult.executedBy.toolName&&capabilityPackageVerification?.valid===true&&Array.isArray(capabilityPackageVerification?.reasons)&&capabilityPackageVerification.reasons.length===0,'MCP 결과는 설치된 능력 패키지 검증기를 통과해야 합니다.','critical');
+    }
+    if(executionResult?.executedBy?.toolName==='case.readLocalRecord'){
+      const proof=capabilityPackageVerification;
+      add('lifecycle_case_package_verifier_bound',proof?.toolName==='case.readLocalRecord'&&Boolean(proof.verifierId)
+        &&/^[a-f0-9]{64}$/iu.test(String(proof.verifierFingerprint??''))&&/^[a-f0-9]{64}$/iu.test(String(proof.packageDigest??'')),
+        '로컬 생활 기록은 활성 검증기와 패키지에 결속되어야 합니다.','critical');
+      add('lifecycle_case_current_core_verified',proof?.valid===true&&Array.isArray(proof.reasons)&&proof.reasons.length===0,
+        '현재 Core 원장과 대상·버전·권한을 독립 대조해야 합니다. 공급자 완료 증거는 아닙니다.','critical');
+    }
+    if(executionResult?.executedBy?.toolName==='source.collectMicrosoftMetadata'){
+      const proof=capabilityPackageVerification;
+      add('microsoft_collection_package_verifier_bound',proof?.toolName==='source.collectMicrosoftMetadata'&&Boolean(proof.verifierId)
+        &&/^[a-f0-9]{64}$/u.test(proof?.verifierFingerprint??'')&&/^[a-f0-9]{64}$/u.test(proof?.packageDigest??''),
+        'Microsoft 수집은 활성 패키지와 독립 SQL 검증기에 결속되어야 합니다.','critical');
+      add('microsoft_collection_current_sql_verified',proof?.valid===true&&Array.isArray(proof.reasons)&&proof.reasons.length===0,
+        '현재 권한·개별 작업과 실제 저장 페이지를 대조해야 합니다.','critical');
+    }
+    if(executionResult?.executedBy?.toolName==='source.readSelectedInbox'){
+      const proof=capabilityPackageVerification;
+      add('selected_source_package_verifier_bound',proof?.toolName==='source.readSelectedInbox'&&Boolean(proof.verifierId)
+        &&/^[a-f0-9]{64}$/u.test(proof?.verifierFingerprint??'')&&/^[a-f0-9]{64}$/u.test(proof?.packageDigest??''),
+        '선택 자료 읽기는 활성 패키지의 독립 검증기에 결속되어야 합니다.','critical');
+      add('selected_source_current_core_verified',proof?.valid===true&&Array.isArray(proof.reasons)&&proof.reasons.length===0,
+        '선택 자료는 현재 Core 작업의 범위와 원장 결과에 일치해야 합니다.','critical');
+    }
+    if(executionResult?.xlsxRead||executionResult?.executedBy?.toolName==='excel.readWorkbook'){
+      const read=executionResult.xlsxRead;let passed=false;
+      try{
+        if(!read||read.path!==evidence?.shadow?.requestedXlsxPath||read.range!==evidence.shadow.requestedXlsxRange
+          ||evidence.shadow.requestedSheetName!==null&&read.sheetName!==evidence.shadow.requestedSheetName)throw Error('XLSX_REQUEST_MISMATCH');
+        const checkAllowedPath=async path=>{
+          if(path!==read.path)throw Error('XLSX_REQUEST_MISMATCH');const actual=await realpath(path);
+          if(capabilityToken&&!capabilityToken.scope?.allowedPaths?.some(root=>{const rel=relative(resolve(root),actual);return !isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep);}))throw Error('XLSX_SCOPE_DENIED');return path;
+        };
+        const observed=await new XlsxRegionReader().read({path:read.path,sheetName:evidence.shadow.requestedSheetName??undefined,range:read.range,expectedSha256:read.sourceSha256,checkAllowedPath});
+        const {path,...reported}=read;
+        passed=JSON.stringify(observed)===JSON.stringify(reported)&&read.sourceSha256===executionResult.contentSha256
+          &&executionResult.readOnly===true&&executionResult.outputPaths?.length===0&&executionResult.changedItems?.length===0;
+      }catch{}
+      add('xlsx_region_current_source_verified',passed,'엑셀 저장 값과 선택 범위를 현재 원본으로 재확인해야 합니다. 수식 재계산·표시 형식은 별도입니다.','high',{
+        passed,verificationScope:'literal-region-values',formulaRecalculationVerified:false,
+        ...(passed?{sourceSha256:read.sourceSha256,sheetName:read.sheetName,range:read.range,
+          cellsSha256:createHash('sha256').update(JSON.stringify(read.cells)).digest('hex')}:{} )});
+    }
+    if(executionResult?.pdfExport||executionResult?.executedBy?.toolName==='excel.exportPdf'){
+      const exported=executionResult.pdfExport,native=exported?.render,pdf=native?.pdf;let observed=false;
+      try{
+        if(exported.inputPath!==evidence?.shadow?.requestedXlsxSource||exported.outputPath!==evidence.shadow.pdfOutputPath||pdf.path!==exported.outputPath)throw Error('XLSX_PDF_REQUEST_MISMATCH');
+        for(const path of [exported.inputPath,pdf.path]){
+          const actual=await realpath(path),info=await lstat(path);
+          if(!info.isFile()||info.isSymbolicLink()||info.size>32*1024*1024)throw Error('XLSX_PDF_FILE_INVALID');
+          if(capabilityToken&&!capabilityToken.scope?.allowedPaths?.some(root=>{const rel=relative(resolve(root),actual);return !isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep);}))throw Error('XLSX_PDF_SCOPE_DENIED');
+        }
+        const source=await readFile(exported.inputPath),bytes=await readFile(pdf.path);
+        observed=bytes.length===pdf.size&&bytes.subarray(0,5).toString()==='%PDF-'&&bytes.subarray(-1024).toString('latin1').includes('%%EOF')
+          &&createHash('sha256').update(bytes).digest('hex')===pdf.sha256
+          &&createHash('sha256').update(source).digest('hex')===exported.sourceSha256&&native.sourceSha256===exported.sourceSha256;
+      }catch{}
+      add('excel_existing_pdf_export_verified',observed&&native?.status==='passed'&&native.actualRenderingExecuted===true
+        &&native.renderer==='Microsoft Excel COM'&&native.sourceUnchanged===true&&native.readOnly===true
+        &&executionResult.outputPaths?.length===1&&executionResult.outputPaths[0]===pdf?.path,
+        '기존 원본 보존과 요청한 PDF의 현재 파일 해시를 확인해야 합니다. 의미·시각 품질은 별도입니다.','high',
+        {observed,visualQualityVerified:false,wholeDocumentEquivalenceVerified:false});
+    }
+    if(executionResult?.pdfRead||executionResult?.executedBy?.toolName==='document.readPdf') {
+      const read=executionResult.pdfRead;let passed=false;
+      try {
+        if(!read||read.path!==evidence?.shadow?.requestedPdfPath||read.firstPage!==evidence.shadow.pdfFirstPage
+          ||read.pages?.length!==Math.min(evidence.shadow.pdfMaxPages,read.totalPages-read.firstPage+1))throw Error('PDF_REQUEST_RANGE_MISMATCH');
+        const checkAllowedPath=async path=>{
+          if(path!==read.path)throw Error('PDF_REQUEST_PATH_MISMATCH');
+          const actual=await realpath(path);
+          if(capabilityToken&&!capabilityToken.scope?.allowedPaths?.some(root=>{
+            const rel=relative(resolve(root),actual);return !isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep);
+          }))throw Error('PDF_VERIFICATION_SCOPE_DENIED');
+          return path;
+        };
+        const observed=await new PdfTextReader().read({path:read.path,firstPage:read.firstPage,maxPages:read.pages.length,
+          expectedSha256:read.sourceSha256,checkAllowedPath});
+        passed=observed.sourceUnchanged===true&&observed.sourceSha256===executionResult.contentSha256
+          &&JSON.stringify(observed.pages)===JSON.stringify(read.pages)&&observed.totalPages===read.totalPages
+          &&observed.truncated===read.truncated&&executionResult.readOnly===true
+          &&read.verificationScope==='text-layer-only'&&read.ocrPerformed===false&&read.sourceUnchanged===true
+          &&executionResult.outputPaths?.length===0&&executionResult.changedItems?.length===0;
+      }catch{}
+      add('pdf_text_current_source_verified',passed,'PDF 텍스트와 페이지 범위는 현재 원본을 다시 읽어 대조해야 합니다. OCR·시각 품질은 별도입니다.','high',
+        {passed,verificationScope:'text-layer-only',ocrPerformed:false,
+          ...(passed?{sourceSha256:read.sourceSha256,pagesSha256:createHash('sha256').update(JSON.stringify(read.pages)).digest('hex'),
+            firstPage:read.firstPage,totalPages:read.totalPages,truncated:read.truncated}:{} )});
+    }
+    if(executionResult?.executedBy?.toolName==='archive.createZip'){
+      let passed=false;
+      try{
+        const inputs=evidence?.shadow?.archiveInputs,output=evidence?.shadow?.outputPath;
+        if(!Array.isArray(inputs)||!inputs.length||inputs.length>100||executionResult.outputPaths?.length!==1
+          ||executionResult.outputPaths[0]!==output||JSON.stringify(inputs)!==JSON.stringify(executionResult.evidence?.inputs))throw Error('ZIP_CONTRACT_MISMATCH');
+        const checkAllowedPath=async path=>{
+          const actual=await realpath(path);
+          if(capabilityToken&&!capabilityToken.scope?.allowedPaths?.some(root=>{const rel=relative(resolve(root),actual);return !isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep);}))throw Error('ZIP_SCOPE_DENIED');
+          return actual;
+        };
+        const {bytes}=await readFileSnapshot({path:output,maxBytes:513*1024*1024,checkAllowedPath});
+        const members=zipMemberEvidence(bytes);
+        if(members.length!==inputs.length||members.some((item,index)=>item.name!==inputs[index].archiveName||item.sha256!==inputs[index].sha256))throw Error('ZIP_CONTENT_MISMATCH');
+        if(createHash('sha256').update(bytes).digest('hex')!==executionResult.sha256)throw Error('ZIP_HASH_MISMATCH');
+        let total=0;
+        for(const input of inputs){const {bytes}=await readFileSnapshot({path:input.path,maxBytes:Math.min(128*1024*1024,512*1024*1024-total),checkAllowedPath});total+=bytes.length;
+          if(createHash('sha256').update(bytes).digest('hex')!==input.sha256)throw Error('ZIP_SOURCE_CHANGED');}
+        passed=true;
+      }catch{}
+      add('zip_current_members_verified',passed,'ZIP 내부 파일과 현재 원본이 원래 입력 계약에 일치해야 합니다.','high',{passed});
     }
     if (executionResult?.evidence?.workbook) {
       const workbook = executionResult.evidence.workbook;
@@ -750,6 +971,27 @@ export class ExecutionResultVerifier {
       add('excel_workbook_no_macro_profile', !String(executionResult.outputPaths?.[0] ?? '').toLowerCase().endsWith('.xlsm'), '검증된 workbook 실행은 macro-enabled xlsm을 생성하면 안 됩니다.', 'critical', {
         outputPaths: executionResult.outputPaths ?? []
       });
+      if(evidence?.shadow?.pdfOutputPath || workbook.renderValidation?.requested===true) {
+        const native=workbook.renderValidation, pdf=native?.pdf;
+        let observed=false;
+        try {
+          const info=await lstat(pdf.path),sourceInfo=await lstat(workbook.outputPath);
+          if(info.isFile()&&!info.isSymbolicLink()&&info.size>=20&&info.size<=32*1024*1024
+            &&sourceInfo.isFile()&&!sourceInfo.isSymbolicLink()&&sourceInfo.size<=32*1024*1024) {
+            const bytes=await readFile(pdf.path),source=await readFile(workbook.outputPath);
+            observed=bytes.subarray(0,5).toString()==='%PDF-'&&bytes.subarray(-1024).toString('latin1').includes('%%EOF')
+              &&bytes.length===pdf.size&&createHash('sha256').update(bytes).digest('hex')===pdf.sha256
+              &&createHash('sha256').update(source).digest('hex')===native.sourceSha256
+              &&native.sourceSha256===workbook.sourceSha256;
+          }
+        } catch {}
+        add('excel_native_pdf_export_verified',native?.status==='passed'&&native.actualRenderingExecuted===true
+          &&native.readOnly===true&&native.sourceUnchanged===true&&observed
+          &&executionResult.outputPaths?.includes(pdf?.path)
+          &&(!evidence?.shadow?.pdfOutputPath||pdf?.path===evidence.shadow.pdfOutputPath),
+          '요청한 PDF는 실제 native export와 원본 보존·현재 파일 해시로 확인해야 합니다. 시각 품질 검증은 별도입니다.','high',
+          {status:native?.status??'missing',actualRenderingExecuted:native?.actualRenderingExecuted===true,visualQualityVerified:false,observed});
+      }
     }
     if (executionResult?.search) {
       add('browser_search_read_only', executionResult.readOnly === true, '브라우저 검색은 read-only여야 합니다.', 'high', executionResult.search);
@@ -767,6 +1009,122 @@ export class ExecutionResultVerifier {
       });
       add('browser_side_effects_disallowed', browserEvidence?.sideEffectsAllowed === false, '브라우저 어댑터는 side-effect를 허용하면 안 됩니다.', 'critical', {
         sideEffectsAllowed: browserEvidence?.sideEffectsAllowed
+      });
+    }
+    if (executionResult?.news) {
+      const newsEvidence = executionResult.evidence?.news ?? evidence?.adapterEvidence?.news ?? executionResult.news;
+      const articles = Array.isArray(newsEvidence?.items) ? newsEvidence.items : [];
+      add('news_fetch_read_only', executionResult.readOnly === true && (executionResult.outputPaths ?? []).length === 0 && (executionResult.changedItems ?? []).length === 0, '뉴스 조회는 로컬 변경이 없는 읽기 전용 실행이어야 합니다.', 'critical', {
+        readOnly: executionResult.readOnly,
+        outputPaths: executionResult.outputPaths ?? [],
+        changedItems: executionResult.changedItems ?? []
+      });
+      add('news_fetch_live_source', newsEvidence?.live === true && newsEvidence?.replay !== true && newsEvidence?.fixture !== true && newsEvidence?.fetched === true, '뉴스 결과는 fixture/replay가 아닌 실제 조회 증거여야 합니다.', 'critical', {
+        live: newsEvidence?.live,
+        replay: newsEvidence?.replay,
+        fixture: newsEvidence?.fixture,
+        fetched: newsEvidence?.fetched
+      });
+      add('news_fetch_http_success', Number(newsEvidence?.httpStatus ?? newsEvidence?.responseStatus ?? 0) >= 200 && Number(newsEvidence?.httpStatus ?? newsEvidence?.responseStatus ?? 0) < 300, '뉴스 RSS GET은 2xx 응답이어야 합니다.', 'high', {
+        httpStatus: newsEvidence?.httpStatus ?? newsEvidence?.responseStatus ?? null
+      });
+      const isPublisherFeed = executionResult.executedBy?.toolName === 'news.fetchPublisherFeed';
+      let publisherFeedProvenanceValid = false;
+      if (isPublisherFeed) {
+        try {
+          const original = new URL(newsEvidence?.feedUrl);
+          const final = new URL(newsEvidence?.finalFeedUrl);
+          publisherFeedProvenanceValid = original.protocol === 'https:' && final.protocol === 'https:'
+            && !original.username && !original.password && !final.username && !final.password
+            && (!original.port || original.port === '443') && (!final.port || final.port === '443')
+            && final.hostname === newsEvidence?.sourceHost
+            && newsEvidence?.sourceHost !== 'news.google.com'
+            && articles.every(article => {
+              try { const url = new URL(article.url); return url.protocol === 'https:' && url.hostname !== 'news.google.com' && !url.username && !url.password; }
+              catch { return false; }
+            });
+        } catch { publisherFeedProvenanceValid = false; }
+      }
+      add('news_fetch_provenance_complete', isPublisherFeed
+        ? publisherFeedProvenanceValid && Boolean(newsEvidence?.feedUrl) && Boolean(newsEvidence?.finalFeedUrl) && Boolean(newsEvidence?.retrievedAt)
+        : newsEvidence?.sourceHost === 'news.google.com' && Boolean(newsEvidence?.sourceUrl) && Boolean(newsEvidence?.retrievedAt),
+        '뉴스 증거에는 안전하고 일관된 피드 출처 URL과 조회 시점이 있어야 합니다.', 'high', {
+        sourceHost: newsEvidence?.sourceHost,
+        sourceUrl: newsEvidence?.sourceUrl,
+        feedUrl: newsEvidence?.feedUrl,
+        finalFeedUrl: newsEvidence?.finalFeedUrl,
+        retrievedAt: newsEvidence?.retrievedAt
+      });
+      add('news_fetch_articles_complete', articles.length > 0 && articles.length === Number(newsEvidence?.itemCount ?? 0) && articles.every((article) => Boolean(article?.title) && Boolean(article?.url) && Boolean(article?.publishedAt) && Boolean(article?.source)), '각 뉴스 항목에는 제목, URL, 발행 시각, 출처가 있어야 합니다.', 'high', {
+        itemCount: newsEvidence?.itemCount,
+        articleCount: articles.length
+      });
+    }
+    if (executionResult?.executedBy?.toolName === 'workflow.execute') {
+      const workflow = executionResult.evidence?.workflow ?? evidence?.adapterEvidence?.workflow;
+      const manifest = executionResult.evidence?.manifest ?? evidence?.adapterEvidence?.manifest;
+      const evidenceFiles = new Map((evidence?.files ?? []).map((file) => [String(file.path), file]));
+      const receiptIds = new Set((workflow?.receipts ?? []).map((receipt) => String(receipt?.nodeId ?? '')));
+      const manifestPaths = new Set((manifest ?? []).map((item) => String(item?.path ?? '')));
+      const outputPaths = (executionResult.outputPaths ?? []).map(String);
+      const outputPathSet = new Set(outputPaths);
+      if (capabilityPackageVerification !== undefined) {
+        add('workflow_capability_package_verifier_bound', capabilityPackageVerification?.toolName === 'workflow.execute'
+          && Boolean(capabilityPackageVerification?.verifierId)
+          && /^[a-f0-9]{64}$/iu.test(String(capabilityPackageVerification?.verifierFingerprint ?? ''))
+          && /^[a-f0-9]{64}$/iu.test(String(capabilityPackageVerification?.packageDigest ?? '')), 'workflow.execute는 활성 capability package의 verifier ID, fingerprint, package digest에 결속되어야 합니다.', 'critical', {
+          toolName: capabilityPackageVerification?.toolName ?? null,
+          verifierId: capabilityPackageVerification?.verifierId ?? null,
+          verifierFingerprint: capabilityPackageVerification?.verifierFingerprint ?? null,
+          packageDigest: capabilityPackageVerification?.packageDigest ?? null
+        });
+        add('workflow_capability_package_verifier_passed', capabilityPackageVerification?.valid === true
+          && Array.isArray(capabilityPackageVerification?.reasons)
+          && capabilityPackageVerification.reasons.length === 0, 'workflow.execute 증거는 활성 capability package verifier를 통과해야 합니다.', 'critical', {
+          verifierId: capabilityPackageVerification?.verifierId ?? null,
+          valid: capabilityPackageVerification?.valid === true,
+          reasons: capabilityPackageVerification?.reasons ?? ['capability-package-verification-missing']
+        });
+      }
+      add('workflow_evidence_identity', workflow?.schemaVersion === 'jarvis-local-workflow-v1'
+        && Boolean(workflow?.workflowId)
+        && /^[a-f0-9]{64}$/iu.test(String(workflow?.specSha256 ?? '')), '워크플로 증거에는 버전, ID, 명세 해시가 있어야 합니다.', 'critical', {
+        schemaVersion: workflow?.schemaVersion,
+        workflowId: workflow?.workflowId,
+        specSha256: workflow?.specSha256
+      });
+      add('workflow_node_receipts_complete', Number.isInteger(workflow?.nodeCount)
+        && workflow.nodeCount > 0
+        && Array.isArray(workflow?.receipts)
+        && workflow.receipts.length === workflow.nodeCount
+        && receiptIds.size === workflow.receipts.length
+        && workflow.receipts.every((receipt) => typeof receipt?.nodeId === 'string'
+          && receipt.nodeId.length > 0
+          && ['success', 'skipped'].includes(receipt?.status)
+          && /^[a-f0-9]{64}$/iu.test(String(receipt?.resultSha256 ?? ''))), '모든 워크플로 노드는 성공 또는 조건부 건너뜀 영수증과 결과 해시를 남겨야 합니다.', 'critical', {
+        nodeCount: workflow?.nodeCount,
+        receiptCount: workflow?.receipts?.length ?? 0,
+        statuses: workflow?.receipts?.map((receipt) => receipt.status) ?? []
+      });
+      add('workflow_artifact_manifest_bound', Array.isArray(manifest)
+        && manifest.length > 0
+        && manifest.length === outputPaths.length
+        && manifestPaths.size === manifest.length
+        && outputPathSet.size === outputPaths.length
+        && outputPaths.every((path) => manifestPaths.has(path))
+        && manifest.every((item) => {
+          const file = evidenceFiles.get(String(item?.path));
+          return file
+            && typeof item?.path === 'string'
+            && item.path.length > 0
+            && /^[a-f0-9]{64}$/iu.test(String(item?.sha256 ?? ''))
+            && item.sha256 === file.sha256
+            && Number.isInteger(item.size)
+            && item.size >= 0
+            && item.size === file.size;
+        }), '워크플로 산출물 manifest는 G가 다시 수집한 실제 파일 해시와 일치해야 합니다.', 'critical', {
+        manifest,
+        evidenceFiles: [...evidenceFiles.values()].map((file) => ({ path: file.path, sha256: file.sha256, size: file.size }))
       });
     }
     if ((executionResult.changedItems ?? []).some((item) => item.type === 'move_file')) {
@@ -837,7 +1195,9 @@ export class ExecutionResultVerifier {
 
     for (const outputPath of executionResult?.outputPaths ?? []) {
       try {
+        if (beforeResultRead) await beforeResultRead({ path: outputPath, kind: 'read' });
         const file = await stat(outputPath);
+        if (beforeResultRead) await beforeResultRead({ path: outputPath, kind: 'read' });
         if (rollbackProof?.success === true) {
           add(`file_absent_after_rollback:${outputPath}`, false, `${outputPath} 파일은 rollback 후 남아 있으면 안 됩니다.`, 'high', {
             size: file.size
@@ -860,6 +1220,7 @@ export class ExecutionResultVerifier {
 }
 
 export class LearningVerifier {
+  verifyTabularProcedureResult(input) { return verifyTabularProcedureResult(input); }
   verify({ memoryEvent, memoryEvents = [], autonomyCandidate, patterns = [], preferenceCandidates = [], hygieneReport = null, hygieneTrend = null, retentionSchedule = null }) {
     const checks = [];
     const add = (checkName, pass, message, severity = 'medium', evidence = {}) => {
@@ -1518,7 +1879,7 @@ export class SimulationRunner {
     this.bridgeSecurityVerifier = bridgeSecurityVerifier;
     this.clock = clock;
     this.fixturePackId = 'g-simulation-scenario-pack-v2';
-    this.scenarioFile = 'apps/verification/fixtures/ag-simulation-scenarios.json';
+    this.scenarioFile = installedFixturePath('ag-simulation-scenarios.json');
     this.expandedScenarioPath = expandedScenarioPath;
     this.expandedScenarioPack = loadSimulationExpandedScenarioPack(expandedScenarioPath);
     this.reportStore = reportStore;
@@ -2980,7 +3341,7 @@ function safeReportFileName(value) {
 export class EvalScoreEngine {
   constructor() {
     this.dimensionRubricVersion = 'g-12d-rubric-v1';
-    this.rubricSource = 'apps/verification/fixtures/12d-rubric.json';
+    this.rubricSource = installedFixturePath('12d-rubric.json');
     this.thresholds = {
       recommendedMinTotal: 85,
       maxRegression: 5
@@ -3548,9 +3909,10 @@ export class VerificationRuntime {
     reportDir = null,
     injectionDetector = null,
     toolOutputEvaluator = null,
+    capabilityPackageVerifier = null,
     growthRuntime = null,
     documentPaths = defaultJarvisDocumentPaths(),
-    planFixturePath = 'apps/verification/fixtures/plan-verifier-fixtures.json',
+    planFixturePath = installedFixturePath('plan-verifier-fixtures.json'),
     learningFixturePath = defaultLearningVerifierFixturePath,
     simulationExpandedScenarioPath = defaultSimulationExpandedScenarioPath,
     redTeamFixturePath = defaultRedTeamFixturePath,
@@ -3570,7 +3932,7 @@ export class VerificationRuntime {
     });
     this.baselineComparator = new BaselineComparator();
     this.planVerifier = new PlanVerifier();
-    this.policyVerifier = new PolicyComplianceVerifier();
+    this.policyVerifier = new PolicyComplianceVerifier({ clock: this.clock });
     this.executionVerifier = new ExecutionResultVerifier();
     this.learningVerifier = new LearningVerifier();
     this.approvalFlowVerifier = new ApprovalFlowVerifier();
@@ -3604,6 +3966,7 @@ export class VerificationRuntime {
     this.learningFixturePath = learningFixturePath;
     this.regressionExternalFixturePath = regressionExternalFixturePath;
     this.scoreEngine = new EvalScoreEngine();
+    this.capabilityPackageVerifier = capabilityPackageVerifier;
     this.growthRuntime = growthRuntime;
     this.results = new Map();
     this.regressionHistory = [];
@@ -3616,7 +3979,7 @@ export class VerificationRuntime {
     this.learningVerifierHistory = [];
   }
 
-  result({ verificationId, taskId, checks }) {
+  result({ verificationId, taskId, checks, recordLearning = true }) {
     const failed = checks.some((check) => check.status === 'failed');
     const score = this.scoreEngine.score(checks);
     const value = {
@@ -3650,13 +4013,15 @@ export class VerificationRuntime {
       status: value.status,
       score: value.score
     });
-    this.emitLearningSignal(value);
+    if (recordLearning) this.emitLearningSignal(value);
     return value;
   }
 
   emitLearningSignal(result) {
-    if (!this.growthRuntime?.ingestor?.ingest) return null;
-    return this.growthRuntime.ingestor.ingest({
+    const ingest = this.growthRuntime?.ingest?.bind(this.growthRuntime)
+      ?? this.growthRuntime?.ingestor?.ingest?.bind(this.growthRuntime.ingestor);
+    if (!ingest) return null;
+    return ingest({
       eventId: `verdict_${result.verificationId}`,
       eventType: result.status === 'passed' ? 'verification.passed' : 'verification.failed',
       taskId: result.taskId ?? result.verificationId,
@@ -4831,11 +5196,53 @@ export class VerificationRuntime {
     };
   }
 
-  async verifyExecution(request) {
+  async verifyExecution(request, { observationOnly = false, beforeResultRead = null } = {}) {
+    if (typeof observationOnly !== 'boolean') throw new TypeError('Invalid verification observation mode');
+    if (beforeResultRead !== null && typeof beforeResultRead !== 'function') throw new TypeError('Invalid result read guard');
+    const target = { ...(request.target ?? {}), beforeResultRead };
+    if (beforeResultRead && !supportsScopedVerificationTarget(target.executionResult, target.evidence)) {
+      throw Object.assign(new Error('Result verification format needs a reviewed read boundary'), { code: 'G_RESULT_SCOPE_UNSUPPORTED' });
+    }
+    const assertReadScope = async () => {
+      if (!beforeResultRead) return;
+      const paths = [...(target.evidence?.files ?? []).map(file => file.path), ...(target.executionResult?.outputPaths ?? [])];
+      for (const path of new Set(paths)) await beforeResultRead({ path, kind: 'read' });
+    };
+    await assertReadScope();
+    const packageTool=target.executionResult?.executedBy?.toolName;
+    if (packageTool === 'workflow.execute'||packageTool==='source.readSelectedInbox'||packageTool==='case.readLocalRecord'||packageTool==='source.collectMicrosoftMetadata'||/^mcp\./u.test(packageTool??'')) {
+      if (typeof this.capabilityPackageVerifier !== 'function') {
+        target.capabilityPackageVerification = {
+          toolName: packageTool,
+          verifierId: null,
+          verifierFingerprint: null,
+          packageDigest: null,
+          valid: false,
+          reasons: ['capability-package-verifier-missing']
+        };
+      } else {
+        try {
+          target.capabilityPackageVerification = await this.capabilityPackageVerifier(packageTool, target.evidence);
+        } catch (error) {
+          target.capabilityPackageVerification = {
+            toolName: packageTool,
+            verifierId: null,
+            verifierFingerprint: null,
+            packageDigest: null,
+            valid: false,
+            reasons: [error?.code ?? 'capability-package-verifier-error']
+          };
+        }
+      }
+    }
+    await assertReadScope();
+    const checks = await this.executionVerifier.verify(target);
+    await assertReadScope();
     return this.result({
       verificationId: request.verificationId,
       taskId: request.taskId,
-      checks: await this.executionVerifier.verify(request.target ?? {})
+      recordLearning: !observationOnly,
+      checks
     });
   }
 

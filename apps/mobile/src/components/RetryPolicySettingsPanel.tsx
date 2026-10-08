@@ -28,7 +28,7 @@ export function RetryPolicySettingsPanel({ policy = null, readiness, draft = {},
   return (
     <View testID="retry-policy-settings-panel" style={{ gap: spacing.md, padding: spacing.md, borderWidth: 1, borderColor: colors.line }}>
       <View style={{ gap: spacing.xs }}>
-        <Text style={{ color: colors.text }}>Execution Queue Retry Policy</Text>
+        <Text style={{ color: colors.text }}>실행 대기열 재시도 정책</Text>
         <Text testID="retry-policy-max-attempts" style={{ color: colors.muted }}>시도 {state.draft.maxAttempts}회</Text>
         <Text testID="retry-policy-backoff" style={{ color: colors.muted }}>기본 대기 {state.draft.baseBackoffMs}ms</Text>
         {state.facts.updatedAt ? (

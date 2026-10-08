@@ -1,0 +1,9 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {importOfxBankStatement as parse} from '../packages/shared/src/ofx-bank-statement-import.js';
+const tx=(amount='-0.29',id='one')=>`<STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20261001</DTPOSTED><TRNAMT>${amount}</TRNAMT><FITID>${id}</FITID></STMTTRN>`;
+const statement=(rows,account='A')=>`<STMTTRNRS><STATUS><CODE>0</CODE></STATUS><STMTRS><CURDEF>USD</CURDEF><BANKACCTFROM><BANKID>synthetic</BANKID><ACCTID>${account}</ACCTID></BANKACCTFROM><BANKTRANLIST>${rows}</BANKTRANLIST></STMTRS></STMTTRNRS>`;
+const file=rows=>`<?xml version="1.0"?><OFX><BANKMSGSRSV1>${rows}</BANKMSGSRSV1></OFX>`;const options={currencyExponents:{USD:2}};
+test('OFX import preserves decimal sign, account scope and unclassified credits',()=>{const r=parse(file(statement(tx()+tx()+tx('10.00','two'))+statement(tx(),'B')),options);assert.equal(r.records.length,3);assert.equal(r.duplicateCount,1);assert.equal(r.records[0].signedAmountMinor,-29);assert.equal(r.records[1].signedAmountMinor,1000);assert.notEqual(r.records[0].id,r.records[2].id);assert.ok(r.records.every(x=>x.classification==='unclassified'));assert.equal(r.sourceAuthenticated,false);});
+test('OFX rejects errors, duplicate conflict, precision loss, external entities and malformed XML',()=>{
+ for(const [xml,code] of [[file(statement(tx()+tx('-2'))),'FINANCIAL_DUPLICATE_CONFLICT'],[file(statement(tx('-0.001'))),'FINANCIAL_PRECISION_LOSS'],[file(statement(tx())).replace('<CODE>0','<CODE>1'),'FINANCIAL_OFX_PROVIDER_ERROR'],['<!DOCTYPE OFX [<!ENTITY x SYSTEM "file:///secret">]>'+file(statement(tx())),'FINANCIAL_OFX_DTD_FORBIDDEN'],[file(statement(tx())).replace('</FITID>',''),'FINANCIAL_OFX_XML_INVALID']])assert.throws(()=>parse(xml,options),{code});
+ assert.throws(()=>parse(file(statement(tx())),{currencyExponents:{}}),{code:'FINANCIAL_CURRENCY_EXPONENT_REQUIRED'});
+});

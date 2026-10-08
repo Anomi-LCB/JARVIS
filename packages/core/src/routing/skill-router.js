@@ -2,9 +2,16 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { ActionType, ModuleId } from '../../../shared/src/types.js';
 import { defaultSkillManifest } from './default-skill-manifest.js';
+import { ExecutionStrategyRouter } from './execution-strategy-router.js';
 
 export class SkillRouter {
-  constructor({ manifest = defaultSkillManifest, trustedManifestKeys = ['jarvis-local-dev-key'], allowUnsigned = true } = {}) {
+  constructor({
+    manifest = defaultSkillManifest,
+    trustedManifestKeys = ['jarvis-local-dev-key'],
+    allowUnsigned = true,
+    executionStrategyRouter = null,
+    executionHealthRegistry = null
+  } = {}) {
     this.skills = new Map();
     this.pluginBundles = new Map();
     this.compatibilitySnapshots = [];
@@ -19,6 +26,7 @@ export class SkillRouter {
     this.manifestVersion = 'jarvis-a-skill-manifest@1';
     this.trustedManifestKeys = trustedManifestKeys;
     this.allowUnsigned = allowUnsigned;
+    this.executionStrategyRouter = executionStrategyRouter ?? new ExecutionStrategyRouter({ healthRegistry: executionHealthRegistry });
     this.migrations = [];
     this.loadManifest(manifest);
   }
@@ -51,6 +59,7 @@ export class SkillRouter {
       reversible: migrated.capability.reversible,
       module: ModuleId.PC_AGENT,
       ...migrated,
+      execution: this.executionStrategyRouter.profileFor(migrated),
       manifestVersion: this.manifestVersion,
       signature,
       pluginBundle: pluginBundle ? {
@@ -931,9 +940,12 @@ export class SkillRouter {
       module: skill.module,
       actionType: skill.actionType,
       toolName: skill.toolName,
+      category: skill.category,
+      match: skill.match,
       capability: skill.capability,
       safety: skill.safety,
       adapterContract: skill.adapterContract,
+      execution: skill.execution,
       lifecycle: skill.lifecycle,
       signature: skill.signature,
       pluginBundle: skill.pluginBundle
@@ -965,6 +977,13 @@ export class SkillRouter {
     } else if (slots.outputFormat && skill.match?.outputFormats && !skill.match.outputFormats.includes(slots.outputFormat)) {
       score -= 2;
       reasons.push(`output-format-mismatch:${slots.outputFormat}`);
+    }
+    if (slots.workflow && skill.match?.workflows?.includes(slots.workflow)) {
+      score += 8;
+      reasons.push(`workflow:${slots.workflow}`);
+    } else if (skill.match?.workflows?.length) {
+      score -= 5;
+      reasons.push('workflow-mismatch');
     }
     if (intent.entities?.mentionsExternalDestination && skill.capability.externalTransfer) {
       score += 3;
@@ -1031,6 +1050,22 @@ export class SkillRouter {
     return this.compatibleSkills({ actionType, category, slots })[0]?.skill ?? null;
   }
 
+  shortlistCapabilities(capabilities, options = {}) {
+    return this.executionStrategyRouter.shortlist(capabilities, options);
+  }
+
+  executionFabricStatus() {
+    return this.executionStrategyRouter.fabricStatus(this.capabilityMatrix());
+  }
+
+  recordExecutionHealth(sample) {
+    return this.executionStrategyRouter.recordExecution(sample);
+  }
+
+  executionHealthStatus(toolName) {
+    return this.executionStrategyRouter.healthStatusFor(toolName);
+  }
+
   route(intentCandidate) {
     const compatible = this.compatibleSkills({
       actionType: intentCandidate.actionType,
@@ -1054,6 +1089,41 @@ export class SkillRouter {
       requiredCapability: this.requiredCapability(skill),
       safety: skill.safety,
       adapterContract: skill.adapterContract,
+      executionStrategy: this.executionStrategyRouter.strategyFor(skill, {
+        objective: intentCandidate.rawText ?? intentCandidate.title ?? intentCandidate.label ?? '',
+        constraints: intentCandidate.constraints ?? [],
+        availableSkills: [...this.skills.values()]
+      }),
+      rationale: this.routeRationale(skill, intentCandidate, compatible)
+    };
+  }
+
+  routeTrustedCapability(intentCandidate, toolName) {
+    const skill = [...this.skills.values()].find(candidate => candidate.toolName === toolName);
+    if (!skill || skill.lifecycle.routable !== true || skill.actionType !== intentCandidate?.actionType) {
+      return {
+        routable: false,
+        reason: 'A_SKILL_NOT_FOUND',
+        actionType: intentCandidate?.actionType ?? null,
+        manifestVersion: this.manifestVersion
+      };
+    }
+    // The private Mission path already selected and validated this registered tool.
+    // Bind that exact capability here; re-ranking its natural-language command can
+    // turn a negated constraint (for example, "do not edit") into an edit intent.
+    const compatible = [{ skill, match: { score: 1, reasons: ['trusted-mission-capability'] } }];
+    return {
+      routable: true,
+      skill,
+      targetModule: skill.module,
+      requiredCapability: this.requiredCapability(skill),
+      safety: skill.safety,
+      adapterContract: skill.adapterContract,
+      executionStrategy: this.executionStrategyRouter.strategyFor(skill, {
+        objective: intentCandidate.rawText ?? intentCandidate.title ?? intentCandidate.label ?? '',
+        constraints: intentCandidate.constraints ?? [],
+        availableSkills: [...this.skills.values()]
+      }),
       rationale: this.routeRationale(skill, intentCandidate, compatible)
     };
   }

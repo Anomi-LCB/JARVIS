@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "suiteId": "news-source-grounding-contract-v1",
+  "evidenceClass": "synthetic-contract",
+  "cases": [
+    { "id": "NGE-01-exact-quote", "objective": "summary-one", "output": "markdown", "expected": true, "mutation": {} },
+    { "id": "NGE-02-normalized-whitespace", "objective": "summary-one", "output": "markdown", "expected": true, "mutation": { "quote": "The   council approved a flood barrier project." } },
+    { "id": "NGE-03-invented-quote", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "quote": "The project was cancelled last month." } },
+    { "id": "NGE-04-unobserved-url", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "claimUrl": "https://publisher.example/unobserved" } },
+    { "id": "NGE-05-unrelated-tool-body", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "articleTool": "browser.search" } },
+    { "id": "NGE-06-fixture-not-live", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "live": false } },
+    { "id": "NGE-07-article-g-failed", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "articleVerified": false } },
+    { "id": "NGE-08-body-digest-mismatch", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "digest": "0" }, "expectedBlockers": ["claim-source-evidence-incomplete"] },
+    { "id": "NGE-09-body-length-mismatch", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "characterCountDelta": 1 } },
+    { "id": "NGE-10-quote-over-limit", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "longQuote": true } },
+    { "id": "NGE-11-repeated-source-url", "objective": "summary-two", "output": "markdown", "expected": false, "mutation": { "claimCount": 2 }, "expectedBlockers": ["insufficient-distinct-live-sources"] },
+    { "id": "NGE-12-summary-claims-omitted", "objective": "summary-one", "output": "markdown", "expected": false, "mutation": { "claimCount": 0 }, "expectedBlockers": ["insufficient-summary-claims"] },
+    { "id": "NGE-13-fact-check-unimplemented", "objective": "fact-check", "output": "markdown", "expected": false, "mutation": {}, "expectedBlockers": ["semantic-entailment-not-implemented"] },
+    { "id": "NGE-14-unrelated-summary", "objective": "unrelated", "output": "markdown", "expected": null },
+    { "id": "NGE-15-non-text-artifact", "objective": "summary-one", "output": "png", "expected": null }
+  ]
+}

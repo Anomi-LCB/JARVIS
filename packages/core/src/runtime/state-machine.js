@@ -13,7 +13,9 @@ const allowedTransitions = new Map([
   [TaskStatus.FAILED, [TaskStatus.RETRYING, TaskStatus.PLANNING, TaskStatus.CANCELLED, TaskStatus.COMPENSATING, TaskStatus.BLOCKED]],
   [TaskStatus.COMPENSATING, [TaskStatus.COMPENSATED, TaskStatus.FAILED, TaskStatus.BLOCKED]],
   [TaskStatus.COMPENSATED, []],
-  [TaskStatus.COMPLETED, []],
+  // A completed reversible task can be explicitly undone by the user. The
+  // compensation states keep that post-completion mutation auditable.
+  [TaskStatus.COMPLETED, [TaskStatus.COMPENSATING]],
   [TaskStatus.EXPIRED, []],
   [TaskStatus.BLOCKED, []],
   [TaskStatus.CANCELLED, []]
@@ -21,6 +23,11 @@ const allowedTransitions = new Map([
 
 export class TaskStateMachine {
   constructor(initialStatus = TaskStatus.CREATED, { clock = () => new Date(), maxRetries = 2 } = {}) {
+    if (!Number.isInteger(maxRetries) || maxRetries < 0) {
+      const error = new RangeError('Task retry budget must be a non-negative integer.');
+      error.code = 'A_TASK_RETRY_BUDGET_INVALID';
+      throw error;
+    }
     this.status = initialStatus;
     this.clock = clock;
     this.maxRetries = maxRetries;
@@ -50,7 +57,7 @@ export class TaskStateMachine {
   }
 
   expireIfPast(expiresAt, { now = this.clock().toISOString(), reason = 'deadline-expired' } = {}) {
-    if (!expiresAt || Number.isNaN(Date.parse(expiresAt)) || Date.parse(now) <= Date.parse(expiresAt)) {
+    if (!expiresAt || Number.isNaN(Date.parse(expiresAt)) || Date.parse(now) < Date.parse(expiresAt)) {
       return { expired: false, status: this.status };
     }
     if (!this.canTransition(TaskStatus.EXPIRED)) {
@@ -79,8 +86,9 @@ export class TaskStateMachine {
       }
       return { retried: false, status: this.status, retryCount: this.retryCount, reason: 'retry-budget-exhausted' };
     }
-    this.retryCount += 1;
-    this.transition(TaskStatus.RETRYING, reason, { ...evidence, retryCount: this.retryCount, maxRetries: this.maxRetries });
+    const nextRetryCount = this.retryCount + 1;
+    this.transition(TaskStatus.RETRYING, reason, { ...evidence, retryCount: nextRetryCount, maxRetries: this.maxRetries });
+    this.retryCount = nextRetryCount;
     return { retried: true, status: this.status, retryCount: this.retryCount, maxRetries: this.maxRetries };
   }
 

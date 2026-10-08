@@ -1,0 +1,1272 @@
+{
+  "version": 1,
+  "candidates": [
+    {
+      "id": "browser-context-account-isolation-runtime",
+      "title": "실제 BrowserContext와 JARVIS 계정·환경 binding 연결",
+      "problem": "브라우저 handoff manager는 이제 opaque 계정과 context binding을 검사하지만 실제 브라우저 cookie·storage 격리 factory와 제품 runtime 연결은 없다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://playwright.dev/docs/browser-contexts",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 문서는 BrowserContext마다 cookies, local storage 및 session storage가 분리되고 같은 browser에서 multi-user scenario용 두 context를 만들 수 있다고 설명"
+        },
+        {
+          "url": "https://playwright.dev/docs/api/class-browsercontext",
+          "checkedAt": "2026-09-30",
+          "revision": "browser.newContext() creates isolated non-persistent sessions that do not write browsing data to disk; context must be explicitly closed"
+        }
+      ],
+      "nextExperiment": "새 runtime 의존성을 설치하기 전에 현재 연결된 브라우저 실행기를 확인한다. 승인된 local fixture origin에서 별도 BrowserContext 2개 생성, cookie/localStorage 교차 비노출, context 종료 후 데이터 보존 범위를 검증하고, session contextId를 BrowserHandoffManager에 결합한다. 제품 runtime 연결 전에는 synthetic driver 완료와 구분한다."
+    },
+    {
+      "id": "korean-audio-correction-turn-readiness",
+      "title": "한국어 STT 정확도와 음성 정정 턴 경계",
+      "problem": "모바일 음성 경로는 부분·최종 결과 이벤트를 받지만 기기별 한국어 모델 가용성, 전사 품질·지연 및 correction 뒤 최종 대상만 제출되는 실음성 증거가 부족하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://developer.android.com/reference/android/speech/SpeechRecognizer",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 API는 기기별 recognition support 검사와 API 31 on-device recognizer 가용성을 별도로 제공"
+        },
+        {
+          "url": "https://developer.android.com/reference/android/speech/RecognitionListener",
+          "checkedAt": "2026-09-30",
+          "revision": "partial result는 zero/one/multiple callbacks일 수 있으며 onResults는 final result를 제공"
+        }
+      ],
+      "nextExperiment": "승인된 Android emulator 또는 실제 기기에서 SpeechRecognizer recognition support 및 on-device availability를 확인하고, 비민감 고정 한국어 합성 발화를 실제 음성 입력으로 넣어 WER·p50/p95·partial/final 순서를 측정한다. final correction 이후 이전 초안이 작업으로 제출되지 않는지 실제 앱 통합을 검증한다."
+    },
+    {
+      "id": "travel-provider-quote-sandbox-readiness",
+      "title": "실제 여행 견적 API 후보의 가용 조건과 합성 quote 비교 계약",
+      "problem": "결정형 견적 비교는 구현됐지만 실 공급자 접근, 정확한 가격 재검증, 예약 경계를 구성하려면 현재 API 프로그램·sandbox·production 조건을 확인해야 한다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://admin.developers.amadeus.com/self-service/apis-docs/guides/developer-guides/faq/",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 FAQ 설명상 test 환경은 제한된 데이터이며 실제 booking은 Flight Offers Price 후 Flight Create Orders를 사용; production 접근은 별도 시장·법률·consolidator 조건에 종속"
+        },
+        {
+          "url": "https://developers.amadeus.com/toolbox",
+          "checkedAt": "2026-09-30",
+          "revision": "현재 공식 랜딩 페이지는 Self-Service portal이 2026-07-17 decommissioned되었고 Enterprise API portal만 제공한다고 고지"
+        },
+        {
+          "url": "https://duffel.com/docs/api/v2/offers",
+          "checkedAt": "2026-10-03",
+          "revision": "v2: offer expiry/update; total excludes ancillary services; get-single-offer refresh is not a booking-availability guarantee; tax breakdown is not a complete total oracle"
+        },
+        {
+          "url": "https://duffel.com/docs/api/overview/test-mode",
+          "checkedAt": "2026-10-03",
+          "revision": "Official testing access token and separate test resources; Duffel Airways synthetic schedules/prices; no account or token connected here"
+        }
+      ],
+      "nextExperiment": "2026-10-04 실제 Core/PC/Bridge/UI+configured broker 격리 기동/순차종료/UI프록시준비조회/부모IPC소실 확인, 공유회귀23건 통과. 다음은 공급자키저장과 중개 접근실패를 사용자 상태에서 구분하는 경로, 운영PKI/profile 설치 인계. 설치본/실계정/신원격리/전체여행/장기관측 pending."
+    },
+    {
+      "id": "multi-provider-mission-planning",
+      "title": "JARVIS 기준 기록을 유지하는 xAI·Meta·Gemini Mission 계획기",
+      "problem": "제공자를 교체할 때 응답 형식·중단·usage 차이가 권한 우회, 허위 완료, 동시 요청 비용 오집계로 이어질 수 있다. 모델 연결과 완제품 전체 위임을 구별해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/developers/model-capabilities/legacy/chat-completions",
+          "checkedAt": "2026-09-28",
+          "revision": "v1 legacy text endpoint; current page updated 2026-08-25; Responses preferred for new advanced capabilities"
+        },
+        {
+          "url": "https://dev.meta.ai/docs/protocols",
+          "checkedAt": "2026-09-28",
+          "revision": "2026-09-29: no documented store parameter; caller-managed message state; not a data-retention guarantee; Standard tier required"
+        },
+        {
+          "url": "https://dev.meta.ai/docs/protocols/chat-completions",
+          "checkedAt": "2026-09-29",
+          "revision": "messages processed per request, no built-in memory; parameter table omits store; not a retention guarantee"
+        },
+        {
+          "url": "https://ai.google.dev/api/generate-content",
+          "checkedAt": "2026-09-28",
+          "revision": "v1beta generateContent/streamGenerateContent; GenerationConfig.responseJsonSchema JSON Schema subset; usageMetadata"
+        },
+        {
+          "url": "https://docs.x.ai/developers/model-capabilities/text/structured-outputs",
+          "checkedAt": "2026-09-28",
+          "revision": "Responses text.format json_schema; schema subset and open additionalProperties supported"
+        },
+        {
+          "url": "https://dev.meta.ai/docs/structured-output",
+          "checkedAt": "2026-09-28",
+          "revision": "Chat Completions response_format json_schema; strict defaults false; open schema allowed outside strict subset"
+        }
+      ],
+      "nextExperiment": "기존 JSON mode와 새 schema-constrained plan envelope를 동일한 고정 Mission 사례·provider version·도구 집합에서 비교한다. 형식 재시도·계획 요구 누락·잘못된 tool arguments·G 결과·p50/p95·실제 사용량을 기록하고 미측정 비용은 null로 유지한다. 합성 fixture는 계약만 검증하므로 모델 품질 성과로 계산하지 않는다. 그 뒤 credentials·계정 데이터 조건·비용 한도가 준비된 공개자료 전용 API 파일럿을 실행한다. native function calls·Responses reasoning replay·managed environment는 별도 어댑터와 정책 경계로 추가한다. 독립 12 홀드아웃은 개발 36 사례와 분리해 작성·봉인한다."
+    },
+    {
+      "id": "local-ollama-mission-provider",
+      "title": "Ollama 로컬 모델의 공통 Mission 계획기 연결",
+      "problem": "외부 모델 자격증명이나 개인자료 전송 없이 로컬 계획을 시도할 수 있지만, 설치 모델 목록의 cloud 항목과 출력 절단·형식 오류를 구별하고 Mission 권한 없이 계획 텍스트만 공급해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.ollama.com/api/generate",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 generate 계약: format JSON Schema, stream=false, done/usage 및 처리시간 필드"
+        },
+        {
+          "url": "https://docs.ollama.com/api/tags",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 model catalog 계약; 실제 설치 모델과 원격 모델 metadata 구분"
+        },
+        {
+          "url": "https://docs.ollama.com/gpu",
+          "checkedAt": "2026-10-04",
+          "revision": "GT710 driver475.14/2GB actual read-only; official NVIDIA550+/Vulkan installed alternative, real acceleration not verified."
+        }
+      ],
+      "nextExperiment": "2026-09-30 동일한 synthetic 한국어 파일 목록 요청에서 Gemma 3 4.3B Q4_K_M는 document.edit를 선택해 실패했고 결정형 fast path는 filesystem.listFiles를 312ms에 성공했다. 모델 강제 경로는 237116ms였으나 이는 각 1회 측정이라 약 760x 차이는 사례별 관측일 뿐이다. 원문 금지 조건 guard는 모델 제안을 fail-closed 차단했고, 최초에 생긴 내부 승인 Task는 실행 전 취소하도록 수정해 실제 모델 재실행에서 CANCELLED를 확인했다. 다음은 실제 업무 자료와 개인정보를 제외한 최소 30개 고정 의미 라벨 사례에서 결정형·로컬 모델 계획을 비교하고, 모델이 개입할 필요가 있는 복합 요청도 포함해 요구 보존·안전성·p50/p95·실패 원인·사용자 개입을 기록한다. 별도 12개 holdout은 개발 코퍼스와 분리해 작성 후 봉인하고 독립 검토가 끝날 때까지 승격 판단에 쓰지 않는다. 로컬 하드웨어 에너지·비용은 미측정이고, 외부 모델 API 실계정 파일럿은 자격증명·요금 한도·데이터 승인 조건이 준비될 때까지 차단한다.\n2026-10-04 최신 하드웨어 증거: artifacts/local-model-hardware-20261004-report.md. 드라이버475.14는현재공식CUDA조건미달,설치Vulkan은실행미검증. 현재백엔드실제offload/가용VRAM과고정품질cold/warm지연비교,새비용/driver변경없이진행."
+    },
+    {
+      "id": "role-scoped-mission-execution",
+      "title": "역할별 Mission 도구·기억 범위 집행",
+      "problem": "계획기 안에서 researcher/editor/verifier 역할 이름을 붙이는 것만으로 도구 권한이나 기억 접근이 분리되지 않는다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/overview",
+          "checkedAt": "2026-09-28",
+          "revision": "official product overview; role bots and persistent work environments"
+        },
+        {
+          "url": "https://docs.x.ai/grok-bot/approvals-security-and-privacy",
+          "checkedAt": "2026-09-28",
+          "revision": "official security guidance; bot account environment and approval boundaries"
+        }
+      ],
+      "nextExperiment": "별도 worker 및 역할별 기억 권한 경계를 구현하고, G01/G12 고정 사례에서 권한 누출·worker 종료·재개를 실제 실행으로 검증한다. 현재 도구 범위 검사만으로 협업 기능을 완성 판정하지 않는다."
+    },
+    {
+      "id": "interactive-browser-human-handoff",
+      "title": "브라우저 자동화의 취소 가능한 사용자 인계",
+      "problem": "로그인이나 본인 확인을 사용자에게 인계할 때 지연된 자동 입력과 재개된 오래된 계획이 실행되지 않도록, 실제 지속 세션의 입력 직전까지 세대·출처·권한을 확인하는 경계가 필요하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://playwright.dev/docs/api/class-page",
+          "checkedAt": "2026-09-29",
+          "revision": "official API; headed mode required; resume continues the paused original script"
+        },
+        {
+          "url": "https://playwright.dev/docs/api/class-browsercontext",
+          "checkedAt": "2026-09-29",
+          "revision": "official API; context-scoped pages, events and lifecycle"
+        }
+      ],
+      "nextExperiment": "합성 M08 게이트는 통과했지만 실제 브라우저에 연결되지 않았다. page.pause()는 정지한 스크립트를 그 지점부터 재개하므로 기존 계획의 세대 무효화를 대체하지 못한다. 실제 persistent driver에 취소 가능한 입력 토큰, 사용자 인계 UI, tab/page lifecycle, origin 재검사, 즉시 권한 철회를 연결하고 이미 진행 중인 입력 취소 보장 범위를 실브라우저 race 시험으로 측정한다. 테스트 계정의 읽기 전용 페이지부터 검증하며 자격증명 입력은 사람만 담당한다."
+    },
+    {
+      "id": "typed-artifact-consistency-contract",
+      "title": "공통 원자료 버전에 결합된 문서·표·카드 수치 검증",
+      "problem": "여러 형식의 결과물을 따로 작성하면 한 산출물이 이전 revision의 수치를 계속 보여 줄 수 있다. 원자료 provenance와 bounded typed facts를 각 결과에 결합하고 기계로 비교하는 계약이 필요하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://json-schema.org/draft/2020-12/json-schema-validation",
+          "checkedAt": "2026-09-29",
+          "revision": "JSON Schema validation vocabulary, 2020-12"
+        },
+        {
+          "url": "https://www.w3.org/TR/prov-dm/",
+          "checkedAt": "2026-09-29",
+          "revision": "W3C PROV-DM Recommendation; entity/activity/derivation provenance model"
+        },
+        {
+          "url": "https://www.yonhapnewstv.co.kr/add/rss",
+          "checkedAt": "2026-09-29",
+          "revision": "연합뉴스TV 공식 RSS 안내; 최신 피드 경로와 비영리 이용 제한 확인"
+        }
+      ],
+      "nextExperiment": "실 RSS Google News artifact pilot의 source/report/table/card facts는 DOCX·XLSX·CSV까지 다시 열어 검증하고, CSV는 workflow 성공 영수증·게시 저널 해시/크기·실제 바이트를 삼중 대조한다. PNG 3장은 Windows.Media.Ocr ko 엔진으로 원시 텍스트 미저장 상태에서 전체 제목 순서 문자 포함률 90% 이상 및 게시자명을 모두 확인했으며, OCR 전 시각 점검에서 발견한 긴 제목 말줄임 결함은 adaptive wrapping으로 수정했다. Google News 래핑 링크는 여전히 원문 본문 0/3이라 partial이다. 연합뉴스TV official feed는 카탈로그에 등록했고 자연어 요청→Core 계획→실제 RSS 실행→G 통과 Mission을 한 번 관측했으나 semantic goal coverage는 required=false였다. 다음은 publisher source URL→허용된 official feed 매핑과 RSS 항목↔Google News headline의 보수적 제목·시각 일치 검증을 연결하되, 미등록 출처는 추측하지 않고 차단하는 것이다. 출처별 이용 조건을 조사한다. PNG OCR은 새 제목 길이·기호·크기 holdout에서 측정하고 별도 human visual-quality 검토와 golden labels를 추가한다."
+    },
+    {
+      "id": "publisher-headline-resolution",
+      "title": "집계 뉴스 헤드라인의 공식 게시자 기사 연결",
+      "problem": "집계 RSS가 중개 URL을 반환하면 기사 본문을 읽기 어렵다. 알려진 공식 게시자 feed와 출처 호스트, 정확한 정규화 제목, 게시 시각, 피드 관측 시점을 함께 대조하는 보수적인 대체 링크가 필요하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://www.yonhapnewstv.co.kr/add/rss",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 RSS 안내; 연합뉴스TV feed 및 비영리 이용 제한 문구 확인"
+        },
+        {
+          "url": "https://news.google.com/rss",
+          "checkedAt": "2026-09-29",
+          "revision": "실시간 공개 RSS 관측; Google News 중개 기사 URL과 게시자 메타데이터 확인"
+        }
+      ],
+      "nextExperiment": "고정 title/time/host oracle와 악성·과거·미래·중복 사례는 보존한다. 2026-09-29 공식 RSS 안내에는 영리 목적의 배포·사용 제한, 공식 기사 페이지에는 무단 전재·재배포 및 AI 학습·활용 금지 고지가 확인되어 현재 연합뉴스TV 콘텐츠의 AI 처리·배포는 권리 검토가 끝날 때까지 차단한다. RSS/기사 어댑터는 네트워크 요청 전에 차단하고, Google News 결과와 오래된 Mission 관측에서도 해당 게시자의 제목·URL·본문을 제거하며 제한 건수와 게시자 ID만 남긴다. 다음 실험은 해당 이용 목적을 명시적으로 허용하는 공식 라이선스/피드 또는 권리 확인이 가능한 출처를 찾고, 허용 근거가 확보된 경우에만 격리 catalog fixture와 실제 조건을 다시 검증하는 것이다. 정확 제목 연결 자체는 유지되나 해당 게시자에는 실행되지 않으며 현재 후보의 상용·AI 처리 적격성은 blocked 상태다."
+    },
+    {
+      "id": "graphiti-temporal-links",
+      "title": "Graphiti의 출처와 시간 이력을 갖는 기억 연결",
+      "problem": "기존 F·cognition의 검증 사건과 개인 프로필은 있지만, 결정의 이유와 변경 이력에서 작업·실제 검증 결과까지 연결하는 공통 계약이 부족하다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://github.com/getzep/graphiti/releases/tag/v0.30.2",
+          "checkedAt": "2026-09-18",
+          "revision": "v0.30.2; eaa4128681bc53487138a4bbc22d58336ebe70d2"
+        },
+        {
+          "url": "https://github.com/getzep/graphiti/blob/v0.30.2/graphiti_core/edges.py",
+          "checkedAt": "2026-09-18",
+          "revision": "v0.30.2"
+        },
+        {
+          "url": "https://www.w3.org/TR/2013/REC-prov-dm-20130430/",
+          "checkedAt": "2026-09-18",
+          "revision": "W3C Recommendation 2013-04-30; provenance concepts only"
+        },
+        {
+          "url": "https://github.com/open-telemetry/semantic-conventions-genai/tree/c88d504ab3d9879f8e50d3cc87e69775e11db234",
+          "checkedAt": "2026-09-20",
+          "revision": "c88d504ab3d9879f8e50d3cc87e69775e11db234; Development; no released version"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/quickstart",
+          "checkedAt": "2026-09-24",
+          "revision": "documentation-checked-2026-09-24; external SDK not installed"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents/guardrails-approvals",
+          "checkedAt": "2026-09-24",
+          "revision": "documentation-checked-2026-09-24; external SDK not installed"
+        }
+      ],
+      "nextExperiment": "기존 단일14·복합12와 새 노드 검증 게이트8 공개 인수 사례를 보존한다. node G실패·부재·예외 이후 후속 차단과 이미 실행된 효과의 보상범위, 같은task 다른G 재사용, 큐 재등록 중복을 검증한다. 다음은 명시적 재계획·프로세스 재시작 후 부분실행 복구, F 원본 철회 전파와 기억 사용 전후의 신규 독립 평가를 다룬다. 기존 비교와 고정 사례의 회귀를 일반화 성능으로 해석하지 않는다."
+    },
+    {
+      "id": "bounded-file-verification",
+      "title": "정확한 파일 동일성 검사와 제한된 해시 읽기",
+      "problem": "복구 중 열린 파일과 같은 경로에 게시된 파일이 달라질 수 있으며, 검증 횟수를 줄이면 변경 감지 기회를 잃는다. 전체 바이트·파일 동일성·검증 횟수를 유지하면서 I/O 왕복 비용을 비교해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://nodejs.org/download/release/v24.8.0/docs/api/process.html",
+          "checkedAt": "2026-09-28",
+          "revision": "v24.8.0; process.memoryUsage.rss supported; resourceUsage.maxRSS unsupported on Windows"
+        },
+        {
+          "url": "https://nodejs.org/download/release/v24.8.0/docs/api/fs.html",
+          "checkedAt": "2026-09-17",
+          "revision": "v24.8.0; local-runtime-version"
+        },
+        {
+          "url": "https://github.com/nodejs/node/blob/v24.8.0/deps/uv/src/win/fs.c",
+          "checkedAt": "2026-09-17",
+          "revision": "v24.8.0"
+        }
+      ],
+      "nextExperiment": "현 결과는 제품 채택 근거로 부족하다. 독립 검토자가 사례 기대값과 실행 JSON을 재검토하고 새 미공개 holdout을 작성하게 한다. 별도 로컬 시험은 실제 업무에서 나온 비식별 파일 크기 분포(내용·경로 제외)를 기준으로 64KiB/1MiB의 paired 반복, 정확한 파일 교체·ID 회귀, Windows 프로세스 RSS·지연 상한을 확인한다. 종합 p95와 메모리 상한이 사전 기준을 충족하고 정확성 회귀가 0건일 때만 더 작은 read chunk 증분을 검토한다. 그렇지 않으면 64KiB를 유지하며 마지막 관찰 뒤의 변경까지 원자 스냅샷으로 보장한다고 주장하지 않는다."
+    },
+    {
+      "id": "google-mars",
+      "title": "Google Research MARS",
+      "problem": "연구 후보를 조사한 뒤 비교 실험과 실패 교훈을 이어 읽는 구조가 없어 같은 가설과 실패를 반복할 수 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://research.google/pubs/mars-modular-agent-with-reflective-search-for-automated-ai-research/",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        },
+        {
+          "url": "https://arxiv.org/abs/2602.02660v3",
+          "checkedAt": "2026-09-14",
+          "revision": "2602.02660v3"
+        },
+        {
+          "url": "https://github.com/jfc43/MARS",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        }
+      ],
+      "nextExperiment": "현재 미해결 기능 하나에 대안 두 개와 동일한 완료 조건을 등록하고, 성공·실패·미실행을 구분한 실험 증거와 차이에서 얻은 교훈이 재시작 후에도 유지되는지 검사한다. 장부 구현과 MARS 전체 재현은 구분한다."
+    },
+    {
+      "id": "gepa",
+      "title": "GEPA",
+      "problem": "계획 프롬프트와 복구 절차의 변경이 독립 평가 없이 채택되면 특정 사례에만 맞고 기존 업무의 정확성이 떨어질 수 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://github.com/gepa-ai/gepa",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        },
+        {
+          "url": "https://arxiv.org/abs/2507.19457v2",
+          "checkedAt": "2026-09-14",
+          "revision": "2507.19457v2"
+        }
+      ],
+      "nextExperiment": "기존 계획기 하나를 대상으로 후보 생성용 사례와 최종 보류 사례를 분리하고, GEPA가 만든 후보와 현재 버전을 같은 G 검증 기준으로 비교한다. 필수 결과 누락·중복 실행·회귀를 먼저 검사하고 처리 시간과 개발·운영 호출 비용을 별도로 기록한다."
+    },
+    {
+      "id": "agent-lightning",
+      "title": "Microsoft Agent Lightning 개발용 최적화 스킬",
+      "problem": "프롬프트·도구·작업 순서 개선을 실제 평가와 비용 장부에 연결하는 개발 절차가 부족하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://github.com/microsoft/agent-lightning/releases/tag/v1.0.1",
+          "checkedAt": "2026-09-29",
+          "revision": "v1.0.1 (official releases page rechecked; no newer release observed)"
+        },
+        {
+          "url": "https://github.com/microsoft/agent-lightning/blob/8435586d147b4cf7bff33e687d7317149e79cbb8/skills/agent-lightning/SKILL.md",
+          "checkedAt": "2026-09-14",
+          "revision": "8435586d147b4cf7bff33e687d7317149e79cbb8"
+        }
+      ],
+      "nextExperiment": "격리된 평가 환경에서 실제 측정값을 갖는 비용 장부를 원본 스킬의 cost_budget 계약과 연결한다. 동일한 계획기·생성 사례·보류 사례를 사용해 현재 버전 및 GEPA와 정확성·완료율·회귀·지연·비용을 비교한다. GPU 모델 훈련은 별도 후보로 분리한다."
+    },
+    {
+      "id": "letta-memory",
+      "title": "Letta MemFS와 dreaming",
+      "problem": "검증 사실을 매번 대화 중에 정리하면 응답이 늦어지고, 모델 요약과 원본 사건이 섞이면 잘못된 기억을 추적하고 취소하기 어렵다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://docs.letta.com/configuration/memory",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        },
+        {
+          "url": "https://docs.letta.com/concepts/memfs",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        },
+        {
+          "url": "https://arxiv.org/abs/2504.13171",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        }
+      ],
+      "nextExperiment": "기존 SQLite 검증 사건을 보존한 채 증거 참조와 버전이 있는 파생 교훈만 비동기로 생성한다. 잘못된 요약의 취소·재생성, 새로운 명령의 검색 정확도, 사용자 응답 지연과 백그라운드 총비용을 기존 경로와 비교한다."
+    },
+    {
+      "id": "temporal-durable-agents",
+      "title": "Temporal 에이전트 지속 실행",
+      "problem": "장기 미션과 외부 모델 세션 사이에서 프로세스 종료나 응답 유실이 발생하면 결과를 잃거나 외부 작업을 중복 실행할 수 있다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://temporal.io/changelog/product-area/python-sdk",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        },
+        {
+          "url": "https://github.com/temporalio/documentation/blob/main/docs/develop/typescript/integrations/openai-agents.mdx",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        }
+      ],
+      "nextExperiment": "기존 Mission 경로의 실행 직전·실행 직후·결과 회송 중 종료와 응답 유실을 주입해 재개 및 중복 방지 계약을 확인한다. 같은 조건의 Temporal 구현과 결과 유실·중복 실행·재개 시간·운영 부담을 비교한 뒤 별도 서비스 도입 여부를 판단한다."
+    },
+    {
+      "id": "gemini-live-api",
+      "title": "Gemini Live API",
+      "problem": "연속 음성·시각 입력과 사용자의 발화 중단 및 정정을 작업 상태와 일관되게 연결하는 기능이 부족하다.",
+      "priority": 3,
+      "sources": [
+        {
+          "url": "https://ai.google.dev/gemini-api/docs/live-api",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        }
+      ],
+      "nextExperiment": "사용 가능한 모델과 실제 장치 입력을 확인한 뒤 읽기 전용 음성·시각 작업 하나를 연결한다. 한국어 전사 정확도·첫 응답 시간·전체 완료 시간·비용을 기존 음성 경로와 비교하고, 중단·재연결 때 대기 도구의 취소와 유지가 정확한지 검사한다."
+    },
+    {
+      "id": "a2a-protocol",
+      "title": "A2A 에이전트 연결 표준",
+      "problem": "제공자가 다른 전문 에이전트를 연결할 때 업무 ID·취소·산출물·인증 계약을 매번 별도로 구현해야 한다.",
+      "priority": 3,
+      "sources": [
+        {
+          "url": "https://a2a-protocol.org/latest/blog/2026/03/12/a2a-protocol-ships-v10-production-ready-standard-for-agent-to-agent-communication/",
+          "checkedAt": "2026-09-14",
+          "revision": "v1.0"
+        },
+        {
+          "url": "https://github.com/a2aproject/a2a-js",
+          "checkedAt": "2026-09-14",
+          "revision": "checked-2026-09-14"
+        }
+      ],
+      "nextExperiment": "실제로 연결할 외부 에이전트 한 곳을 먼저 확인한다. 대상이 준비되면 좁은 읽기 전용 업무에서 버전 협상·업무 ID·인증·취소·산출물 검증을 구현하고, 직접 어댑터와 완료율·지연·유지 비용을 비교한다. 대상이 없으면 미실행 상태를 유지한다."
+    },
+    {
+      "id": "google-artemis",
+      "title": "Google ARTEMIS",
+      "problem": "Android의 저수준 조작과 사용자가 요청한 일반 앱 업무의 완료 검증 사이에 연결이 부족하다.",
+      "priority": 3,
+      "sources": [
+        {
+          "url": "https://github.com/google/artemis/tree/371aa6df56880643da57b30da936e9812fb0ec66",
+          "checkedAt": "2026-09-14",
+          "revision": "371aa6df56880643da57b30da936e9812fb0ec66"
+        }
+      ],
+      "nextExperiment": "프로젝트 전용 ARTEMIS의 자격 증명과 대상 기기 준비 상태를 확인하고 Core 실행 경로에 연결한다. 준비된 단일 테스트 기기에서 검색·조회 업무를 실행해 독립 G 검증, 취소, 응답 유실 후 중복 방지를 확인하며 서버 연결과 실제 업무 성공을 구분한다."
+    },
+    {
+      "id": "inspect-ai",
+      "title": "Inspect AI 평가 기록과 채점 범위",
+      "problem": "평가 오류·시간 초과·미채점 결과를 집계에서 제외하면 후보의 성공률과 비용이 과장될 수 있다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://inspect.aisi.org.uk/scoring-policy.html",
+          "checkedAt": "2026-09-15",
+          "revision": "documentation-checked-2026-09-15"
+        },
+        {
+          "url": "https://inspect.aisi.org.uk/eval-logs.html",
+          "checkedAt": "2026-09-15",
+          "revision": "eval-log-v2; package-version-unconfirmed"
+        }
+      ],
+      "nextExperiment": "로컬 복구 비교기의 오류·미측정 사용량 기록을 보존하는 계약을 검증한다. 외부 모델 평가가 필요해지면 Inspect 배포 버전을 고정하고 같은 사례별 원시 결과와 채점 범위를 손실 없이 교환할 수 있는지 별도 어댑터로 확인한다. 문서 원칙 적용과 Inspect 설치·모델 평가를 구분한다."
+    },
+    {
+      "id": "tau-bench",
+      "title": "τ-bench 결과 중심 채점과 평가기 버전 고정",
+      "problem": "참조 계획과 다른 정당한 확인 행동을 오답 처리하거나 채점기 수정으로 오른 점수를 에이전트 개선으로 오인할 수 있다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://github.com/sierra-research/tau2-bench/releases/tag/v1.0.1",
+          "checkedAt": "2026-09-15",
+          "revision": "v1.0.1; fc0055d"
+        },
+        {
+          "url": "https://github.com/sierra-research/tau2-bench/blob/main/docs/evaluation.md",
+          "checkedAt": "2026-09-15",
+          "revision": "documentation-checked-2026-09-15"
+        }
+      ],
+      "nextExperiment": "동일 업무에 여러 유효 계획을 허용하면서 필수 결과·금지 행동·중복 부작용을 판정하는 후속 사례를 고정한다. 현재 비교기는 복구 상태만 평가하므로 실제 계획/업무 후보를 연결할 때 평가기와 사례 버전을 함께 고정하고 두 후보를 같은 기준으로 평가한다. Python·모델 접근·비용 조건이 확인되기 전 외부 벤치마크 점수는 미실행으로 남긴다."
+    },
+    {
+      "id": "openai-agents-api-runtime-selection",
+      "title": "OpenAI Agents API와 기능 완성 Agents SDK의 런타임 선택",
+      "problem": "JARVIS에는 Responses 선택 어댑터 설계가 있지만 장기 세션·중단 복구·도구 실행을 현재 제품 실행 계약에 연결한 실제 외부 비교가 없다. 제공자의 새 공식 권고와 SDK 지원 상태가 바뀌면 장기 투자 선택이 달라질 수 있다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents/sdk",
+          "checkedAt": "2026-09-27",
+          "revision": "official documentation rechecked; SDK feature-complete/maintenance status"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents",
+          "checkedAt": "2026-09-27",
+          "revision": "managed Codex harness, durable sessions, and runtime choice overview checked"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/architecture",
+          "checkedAt": "2026-09-27",
+          "revision": "hosted/self-hosted/none environments and executor lifecycle checked"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/sessions",
+          "checkedAt": "2026-09-27",
+          "revision": "reconnect and missed-event recovery contract checked"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/tools/computer-use",
+          "checkedAt": "2026-09-30",
+          "revision": "2026-09-29 Agents API hosted-browser tool; origin approvals, separate browser sign-in flow, and no per-action approval guarantee rechecked"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/changelog",
+          "checkedAt": "2026-09-30",
+          "revision": "official changelog rechecked: Sep 15 organization/project API-key governance controls; Sep 10 configurable API-key expiration and Agents API public beta"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.dpapidataprotector.scope",
+          "checkedAt": "2026-09-27",
+          "revision": "CurrentUser DPAPI is limited to the user credential context; same-user applications can unprotect"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/workload-identity-federation",
+          "checkedAt": "2026-09-30",
+          "revision": "official API WIF: OIDC/JWT and API-only X.509 exchange to short-lived service-account token; organizational issuer/mapping setup required"
+        }
+      ],
+      "nextExperiment": "2026-09-30 added read-only Core readiness reporting that distinguishes provider HTTP 401 authentication rejection from 403 authorization rejection, persists only fixed status/error code, surfaces existing redacted verification state in the UI, and never grants JARVIS execution permission. Core HTTP contract uses mocked 403 and passes through verifier -> vault record -> /integrations/model-providers/:provider/verify -> /integrations. Next implement a concrete production broker/provider composition only after an approved issuer/service-account mapping and OS identity source are configured; then test least-scope, token expiry/revocation, Windows service identity, actual admin key policy denial, and authorized session/resource creation. Current E2E and denial case use synthetic identity/network fixtures; no real organization/account/API token, hosted session, user data, cost, or Windows service identity has been verified. Browser UI check was blocked by stopped Core/PC/Bridge services; only layout loaded, so the rendered stored-state item remains unverified in a connected browser. Do not infer a specific cause from provider 403 bodies; default managed sessions and external egress remain disabled. New computer-use track: after a local event/origin-approval contract and security review, evaluate only public read-only sites in a fresh hosted session; do not submit passwords/OTP or enable logged-in workflows until a dedicated masked credential UI exists. The provider requires approval for each new origin but documents no individual-action approval guarantee, so hosted computer use must not handle purchases, deletions, writes, or other consequential operations. Compare against the existing controlled browser using fixed public read-only cases; real API, cost, and account conditions stay blocked until expressly configured."
+    },
+    {
+      "id": "google-long-form-video-orchestration",
+      "title": "Google Co-Director 계열 장편 영상 일관성 오케스트레이션",
+      "problem": "JARVIS의 현재 확인된 시각 산출은 검증된 PNG 카드 수준이며, 장면 간 인물·장소·사물 상태를 유지하며 영상 생성기를 반복 평가·수정하는 기능은 확인되지 않았다.",
+      "priority": 3,
+      "sources": [
+        {
+          "url": "https://research.google/blog/coherent-long-form-video-generation/",
+          "checkedAt": "2026-09-25",
+          "revision": "published-2026-09-24"
+        },
+        {
+          "url": "https://github.com/GoogleCloudPlatform/genmedia-izumi-agent",
+          "checkedAt": "2026-09-25",
+          "revision": "990b56f2cdd04b818383463a75f233095d9b6ac5"
+        },
+        {
+          "url": "https://arxiv.org/abs/2604.24842",
+          "checkedAt": "2026-09-25",
+          "revision": "2604.24842v1"
+        }
+      ],
+      "nextExperiment": "기능 코드 한 경로를 pinned commit에서 읽고 license·비공식 지원 고지·Vertex/Gemini/Veo 호출·인증·요금·산출물 권한을 확인한다. 먼저 제품과 분리한 storyboard/visual-state/critic 결과 계약을 JARVIS의 기존 visual 출력 검증에 연결할 수 있는지 정적 설계 비교한다. 클라우드 계정·모델 비용이 명시적으로 준비되기 전 설치·배포·생성 호출은 하지 않는다."
+    },
+    {
+      "id": "prime-agent-continual-harness",
+      "title": "Prime Agent의 지속 문맥과 검증 근거에 따른 지침 개선",
+      "problem": "사용자 목표를 이어가는 연구·개발 지침은 있지만 검증된 실패에서 얻은 파생 지침이 신규 업무에 도움이 되는지 비교하고 철회하는 계약이 충분히 연결되지 않았다. 기존 F/cognition 기억과 중복 런타임을 만들지 않으면서 지속 개선의 실제 효과를 확인해야 한다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://github.com/PrimeIntellect-ai/prime-agent/blob/cd1f215cffd09223316c54dddae5e1b654718c31/README.md",
+          "checkedAt": "2026-09-26",
+          "revision": "cd1f215cffd09223316c54dddae5e1b654718c31; README reviewed; not installed"
+        },
+        {
+          "url": "https://github.com/PrimeIntellect-ai/prime-agent/blob/cd1f215cffd09223316c54dddae5e1b654718c31/LICENSE",
+          "checkedAt": "2026-09-26",
+          "revision": "MIT license at cd1f215cffd09223316c54dddae5e1b654718c31"
+        },
+        {
+          "url": "https://arxiv.org/abs/2608.23552v1",
+          "checkedAt": "2026-09-26",
+          "revision": "v1; author technical report; headline results not reproduced"
+        }
+      ],
+      "nextExperiment": "원본 refine/지속 상태 구현을 고정 버전에서 읽고 Windows 사용 조건을 확인한다. 기존 연구 장부·F/cognition를 유지하면서 파생 교훈 제안/채택/철회 계약을 설계하고, 이전 실패를 고친 지침을 별도 작성 신규 업무에 사용 전후 비교한다. 지침 파일 작성과 제품의 자동 학습을 구별하고, 새 런타임 설치는 기존 경로로 해결되지 않는 이점이 확인된 뒤 격리 환경에서만 비교한다."
+    },
+    {
+      "id": "jev-typed-decision-cascade",
+      "title": "Jev의 빠른 선택 판단과 기존 Mission 계획기 비교",
+      "problem": "큰 모델에 맡기는 잔여 도구 선택을 줄일 가능성이 있지만, 기존 로컬 라우터보다 느려지거나 한국어 요구를 누락할 위험이 있다. 마지막 응답 중심 사용량 기록만으로 재시도 포함 비용 개선을 판단하기 어렵다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.typesafe.ai/models",
+          "checkedAt": "2026-09-26",
+          "revision": "jev-1.13.0; official text-only and language support contract"
+        },
+        {
+          "url": "https://docs.typesafe.ai/api",
+          "checkedAt": "2026-09-26",
+          "revision": "POST /v1/systemone; official API checked 2026-09-26"
+        },
+        {
+          "url": "https://docs.typesafe.ai/model-jaggedness/jev-1.13",
+          "checkedAt": "2026-09-26",
+          "revision": "jev-1.13 limitations; page last-reviewed 2026-09-17"
+        },
+        {
+          "url": "https://docs.typesafe.ai/legal",
+          "checkedAt": "2026-09-26",
+          "revision": "official data conditions; enterprise ZDR separate"
+        },
+        {
+          "url": "https://arxiv.org/abs/2609.29769v1",
+          "checkedAt": "2026-09-26",
+          "revision": "v1; rubric judges correlated errors"
+        },
+        {
+          "url": "https://arxiv.org/abs/2609.27331v1",
+          "checkedAt": "2026-09-26",
+          "revision": "v1; JEV-Star system comparison, not isolated planning ablation"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/decisions",
+          "checkedAt": "2026-10-07",
+          "revision": "Public beta gpt-6-luna; POST /v1/decisions; predicate/choice/score/refusal; speed claim not JARVIS measurement; SDK JS >=7.30.0."
+        },
+        {
+          "url": "https://developers.openai.com/api/reference/resources/decisions/methods/create",
+          "checkedAt": "2026-10-07",
+          "revision": "Official API reference viewed through web tool; .md export returned404 and was not treated as evidence of absent API."
+        }
+      ],
+      "nextExperiment": "따로 만든 실행 시스템 대신 기존 결정형 경로 뒤의 Mission planner에 선택적 select_tool/escalate 판단을 비교 모드로 연결한다. 먼저 호출별 재시도·fallback 사용량과 지연을 계측하고, 현재 구현·코드 최적화만 한 구현·Jev 추가 구현을 같은 한국어 평가와 실제 결과 검증으로 비교한다. 공개·합성 자료부터 평가하며 인증·예산·데이터 전송 조건이 준비되기 전 외부 호출은 미실행으로 남긴다. 개발/보정/최종 평가를 분리하고 confidence를 업무 정확도로 오인하지 않는다. 상세 계약은 docs/jev-hybrid-upgrade-assessment-20260926.md. 2026-10-07: OpenAI Decisions beta도 같은 기존 선택 판단 비교의 후보로 추가한다. 결정형/실제 Laya 탈락 기록을 보존한다. 고정 한국어 분류 및 명시적 금지 사례에 대해 동일 입력으로 비교하고 거부·이름 누락/중복·범위 밖 선택·낮은 확신에서 기존 planner로 인계한다. confidence는 E 권한이나 G 완료 근거가 아니다. 외부 전송/예산/인증이 준비되기 전 API 호출은 하지 않는다. 전체 요구 보존·실제 결과·p50/p95·재시도 포함 비용으로 승격하며 업체10배 주장은 미측정으로 남긴다."
+    },
+    {
+      "id": "natural-language-execution-routing",
+      "title": "한국어 자연어 의도에서 안전한 실행 도구까지의 경로 정확도",
+      "problem": "실사용 명령 점검에서 파일 생성과 저장을 함께 말한 단일 요청이 macro.save로 오분류됐고, 긴 자연어 절 연결은 Mission 컴파일러에서 실행 전에 차단됐다. 한 문장 표현 차이가 결과 누락이나 번잡한 재시도로 이어진다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/overview",
+          "checkedAt": "2026-09-25",
+          "revision": "official tool/session orchestration contract; used as runtime boundary reference"
+        },
+        {
+          "url": "https://inspect.aisi.org.uk/scoring-policy.html",
+          "checkedAt": "2026-09-25",
+          "revision": "official scoring policy rechecked 2026-09-25"
+        }
+      ],
+      "nextExperiment": "2026-09-30 보강: 아이 도착하면·회의 끝난 뒤·결제 승인되면·예배 전에·파일 업로드 완료 후 등 사건 기반 시간 표현 5종을 unresolved로 보존하고 실제 MissionRuntime의 읽기·로컬 저장은 허용하되 이메일 handoff를 시도 0회로 막는 것을 확인했다(집중 41/41, v3 1010/1010, 전체 2152 pass·0 fail·1 선택 skip). 다음은 표현 목록을 작성하지 않은 평가자에게 사건 기반 시간 지시와 시간 의미가 없는 유사 문장을 별도로 작성·사전 라벨링하게 해 recall과 false-block precision을 동시에 측정하는 의미 holdout이다. 실제 계정·메일·달력·기기, 일반 한국어 의미 이해, over-block률은 검증되지 않았다."
+    },
+    {
+      "id": "secure-provider-connection-lifecycle",
+      "title": "로컬 자격증명 보관과 provider OAuth 연결 수명주기",
+      "problem": "보호된 자격증명 vault는 있지만 신뢰된 커넥터별 등록·최소 권한·provider 검증·토큰 갱신·철회가 완결된 공통 흐름으로 연결되지 않았다. 자격증명 파일 존재를 연결 성공으로 오인하거나 임의 scope를 저장하면 잘못된 권한과 거짓 실행 가능 상태를 만들 수 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://www.rfc-editor.org/rfc/rfc8252.html",
+          "checkedAt": "2026-09-28",
+          "revision": "BCP 212; native apps use external user-agent; public clients MUST use PKCE"
+        },
+        {
+          "url": "https://www.rfc-editor.org/rfc/rfc9700.html",
+          "checkedAt": "2026-09-28",
+          "revision": "BCP 240; public-client refresh tokens require sender constraint or rotation; least privilege"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata",
+          "checkedAt": "2026-09-28",
+          "revision": "Windows DPAPI protected data API; local-at-rest boundary only"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/windows/win32/services/interactive-services",
+          "checkedAt": "2026-09-28",
+          "revision": "services run in session 0 and should use a separate interactive user process for user interaction"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights",
+          "checkedAt": "2026-09-28",
+          "revision": "default named-pipe DACL includes Everyone and anonymous read; explicit DACL can include logon SID"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea",
+          "checkedAt": "2026-09-28",
+          "revision": "CreateNamedPipe supports PIPE_REJECT_REMOTE_CLIENTS"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/windows/win32/ipc/impersonating-a-named-pipe-client",
+          "checkedAt": "2026-09-28",
+          "revision": "server can identify/impersonate named-pipe client token subject to client impersonation level"
+        },
+        {
+          "url": "https://developers.google.com/identity/protocols/oauth2/native-app",
+          "checkedAt": "2026-10-08",
+          "revision": "Installed app system browser, PKCE and loopback; incremental authorization not supported for installed apps/devices"
+        }
+      ],
+      "nextExperiment": "2026-10-08: 보조 종료코드/환경 상속/삭제 후 재연결 수정61검사에 이어 영속 중지 schema 무시/저장 안내 노출을 수정. 최초14실패→최종92회귀/build/contract 및 실제 별도PID3/CoreHTTP/SQLite에서 수집0. 운영/실계정 미반영. 다음은 실제OAuth·공급자 history/syncToken 증분동기화·scope분리/refresh token 보호 비교. artifacts/google-sync-control-20261008-report.md"
+    },
+    {
+      "id": "safe-publisher-article-retrieval",
+      "title": "SSRF 경계를 적용한 뉴스 출처 기사 본문 읽기",
+      "problem": "직접 publisher URL의 안전한 읽기, Mission E→B→G 흐름, 출처 완료 판정, xAI·Meta·Gemini 요청 직전의 기사 본문 전달 및 주입문 차단은 합성 계약·격리 시험에서 연결됐다. 2026-09-28 Newsis 파일럿은 기사 3건 본문을 읽고 PNG 3장을 만들었다. 제한형 parser는 RSS 2.0의 명시적 시간대 날짜와 dc:date, Atom feed/entry/alternate link를 지원한다. 8개 공식 기관 피드 표본 중 5개(Newsis·SBS·경향신문·매일경제·한국은행)가 10/10 직접 HTTPS 링크를 파싱했고, 별도 공식 GitHub Atom 피드도 10/10 파싱했다. Korea.net은 redirect loop, KOSIS는 HTTPS redirect 경계, 중기부는 시간대 없는 14자리 pubDate로 보류됐다. 뉴스 요약 품질·로그 보존과 사용권한은 미실증이다. Mission G의 뉴스 요약 판정은 이제 각 요약 주장에 대해 검증된 라이브 기사 URL·본문 SHA-256·정확한 연속 인용(기사당 25단어 이내)·요청된 기사 수만큼의 서로 다른 출처를 검사한다. 이는 인용 연결만 증명하며 의미적 함의는 검증하지 않는다. 팩트체크 요청은 의미 평가기가 없어 명시 사유와 함께 차단된다. 기사 본문 근거는 이제 임의 관찰 data.article이 아니라 전용 news.fetchArticle의 성공·G 통과 결과에서만 가져오도록 제한했다. 고정 15건 합성 계약 코퍼스와 실행기를 연결했고 15/15가 사전 oracle과 일치한다. 이는 인용 출처 연결 회귀이지 의미적 지지·사실성 점수나 독립 평가가 아니다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://nwww.newsis.com/RSS/",
+          "checkedAt": "2026-09-28",
+          "revision": "Newsis 공식 RSS 안내; 실제 공개 피드 3건과 직접 기사 URL 접근 파일럿 통과"
+        },
+        {
+          "url": "https://www.korea.net/Others/Subscribe-to-Koreanet/RSS-Service",
+          "checkedAt": "2026-09-28",
+          "revision": "Korea.net 공식 RSS 안내; 게시된 피드 경로가 동일 URL 302 반복으로 이번 환경에서 실패"
+        },
+        {
+          "url": "https://news.sbs.co.kr/news/rss.do",
+          "checkedAt": "2026-09-28",
+          "revision": "공식 피드 안내와 개인 비상업 사용 조건을 확인; 제한형 클라이언트에서 10개 항목 파싱"
+        },
+        {
+          "url": "https://www.khan.co.kr/help/help_rss.html",
+          "checkedAt": "2026-09-28",
+          "revision": "공식 RSS 개인 구독/재배포 안내를 확인; 이번 endpoint는 운영 파서에서 유효 항목 0개"
+        },
+        {
+          "url": "https://www.mk.co.kr/rss",
+          "checkedAt": "2026-09-28",
+          "revision": "공식 RSS 목록의 endpoint 10개 항목 파싱; 재사용 권리는 확인되지 않음"
+        },
+        {
+          "url": "https://www.bok.or.kr/static/guide/portal/popup/rss_popup.html",
+          "checkedAt": "2026-09-28",
+          "revision": "공식 안내에 연결된 통화정책 보도자료 RSS에서 10개 항목 파싱; 재사용 권리는 확인되지 않음"
+        },
+        {
+          "url": "https://kosis.kr/serviceInfo/rssGuide.do",
+          "checkedAt": "2026-09-28",
+          "revision": "공식 RSS 안내 확인; feed redirect가 HTTPS URL 검증 경계에서 차단됨"
+        },
+        {
+          "url": "https://mss.go.kr/rss/smba/board/86.do",
+          "checkedAt": "2026-09-28",
+          "revision": "공식 중기부 RSS; 14자리 시간대 없는 pubDate를 안전하게 해석할 수 없어 파싱 보류"
+        }
+      ],
+      "nextExperiment": "다음에는 다른 평가자가 작성·이중 라벨링한 한국어/영어 뉴스 claim-attribution 홀드아웃을 마련하고, 출처 관련성과 주장 지지 여부를 분리 채점한다. 부정·숫자·날짜·화자 귀속·조건/추론·동일 의미 표현 교란·오해 인용·상충/정정 보도를 포함하고 사람 간 합의, 판정자별 false positive/negative, abstention, p50/p95와 호출·비용을 기록한다. 최근 ACL 장문 사실성 스트레스 연구가 보여준 의미 보존 변형 민감도를 반례 설계에 반영하되, 어떤 LLM 판정기 점수도 사람 라벨 비교 전 제품 G 성공으로 승격하지 않는다. provider credentials·전송 동의·예산이 없어 실제 모델 judge 비교는 blocked. 기존 15건은 구현 회귀용 고정 공개 집합에 유지하며 독립 holdout과 섞지 않는다."
+    },
+    {
+      "id": "bounded-local-test-concurrency",
+      "title": "로컬 서비스 테스트 실행의 병렬도 안정화",
+      "problem": "전체 회귀는 다수의 실제 로컬 서비스·SQLite·파일 worker를 병렬 생성한다. Node 기본 병렬도는 사용 가능한 CPU 수에 따라 커져 G 경계 timeout, 로컬 test server 연결, 복구 이벤트 누락처럼 부하에 민감한 시험이 전체 스위트에서 간헐적으로 실패할 수 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://nodejs.org/download/release/v24.8.0/docs/api/cli.html",
+          "checkedAt": "2026-09-28",
+          "revision": "Node.js v24.8.0; default test-file concurrency is availableParallelism() - 1; explicit CLI override supported"
+        }
+      ],
+      "nextExperiment": "현재 Windows 개발 호스트에서 수정된 Egress key store와 기본 test-concurrency=2 전체 코퍼스를 6회 연속 실행해 모두 1887/1888 통과(선택적 skip 1, 실패 0)했고 build 및 Mission audit도 통과했다. 현재 로컬 게이트는 통과한 것으로 기록하되, 과거 Egress 409의 정확한 원인은 재현되지 않았음을 유지한다. 다음에는 출시 CI 또는 다른 지원 Windows 호스트에서 동일 코퍼스·Node 버전·실행 권한으로 검증하고, 이 observer의 정적 실패 단계/cause code를 보존한다. 그 외부 호스트가 준비되지 않은 동안 타 호스트 검증은 blocked로 계산하며, 본 호스트의 6회 반복을 일반적인 무결함 보증으로 확대하지 않는다. 명시적 CLI concurrency override와 전체 사례 집합을 유지한다. 2026-09-29 regression: the nested local proxy test timeout of 30s caused two full-suite failures under concurrent load, while its isolated run passed in 26.3s. Raising only the outer timeout to 90s preserved all 33 proxy cases/independent-oracle runs; the next complete suite passed 2031/2032 (one optional skip) in 175.3s. This supports timeout headroom under observed runner contention, not faster runtime or root-cause proof for earlier unrelated intermittent failures. Recheck on supported CI/other Windows host and retain all cases."
+    },
+    {
+      "id": "external-capability-region-direction-catalog",
+      "title": "외부 앱 제공 조건·API 방향과 JARVIS 부분 대안 준비도 판정",
+      "problem": "외부 서비스의 지역·언어·계정·제품 조건을 넘겨짚거나, 다른 제품이 JARVIS를 호출하는 연결을 JARVIS가 그 제품을 호출할 수 있는 것처럼 혼동하면 사용할 수 없는 기능을 실행 가능하다고 안내한다. 부분적인 로컬 대안도 동등 기능이나 실행 권한으로 과장될 수 있다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://support.google.com/gemini/answer/17209137",
+          "checkedAt": "2026-09-29",
+          "revision": "Custom Connected Apps: US, English, personal Google Account, age 18+, Keep Activity on; provider calls configured MCP server"
+        }
+      ],
+      "nextExperiment": "JARVIS Core의 읽기 전용 external capability catalog를 단일 Gemini custom-app offer에 연결한다. 한국 지역/한국어 차단, 호출 방향, 현재 Core에 등록된 workflow.execute 부분 대안, E 정책 미부여를 반복 평가한다. 이후 서비스별 source/region/version과 offering 변경 시각을 저장하는 persistence, locale별 경계, UI 접근 경로, independently authored holdout을 추가하되 실제 외부 계정 연결·Gemini app configuration·행동 실행은 별도 증거가 있을 때만 검증한다."
+    },
+    {
+      "id": "g01-live-public-source-mission-adapter",
+      "title": "공개 1차 출처를 사용하는 역할분담 Mission 평가 어댑터",
+      "problem": "G01 공개 코퍼스는 local role-scoped Mission 회귀와 동일하지 않으며, 공개 source GET·권한 경계·보고서 검증을 실행 가능한 공개 시나리오 증거로 연결할 어댑터가 없었다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 W3C WAI 설명 페이지; live GET status 200, HTML hash 및 앵커 검사 3회 관측; normative spec 자체는 별도 참조 필요"
+        },
+        {
+          "url": "https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 W3C WAI 설명 페이지; live GET status 200, HTML hash 및 앵커 검사 3회 관측; normative spec 자체는 별도 참조 필요"
+        }
+      ],
+      "nextExperiment": "2026-09-29 재실행에서 G01 live allowlisted W3C sources가 3/3 oracle 통과(p50 1239ms/p95 1249ms, GET 6, provider 0, external writes 0, cost unmeasured); 역할 경계와 보고서 해시 검사 포함. 전체 ready-run은 G01 포함 18/18 시나리오·54/54 반복 oracle 통과였고 나머지 17개 no-network 실행은 외부 효과 0이다. 이는 같은 저장소의 separate-process oracle이며 독립 human holdout이 아니다. G12는 OS kill이 아닌 runtime 재생성만 확인. 다음으로 12건 독립 저자 holdout을 작성하고, 두 W3C 페이지의 차단·변경·잘못된 참조 실패 주입과 실제 child-process kill recovery를 추가한다. 공개 평가 전부 및 Grok API/완제품 품질로 확대 해석하지 않는다."
+    },
+    {
+      "id": "g12-local-role-handoff-scenario-adapter",
+      "title": "G12 역할 인계 공개 평가 어댑터",
+      "problem": "역할 인계와 G검증에 대한 로컬 회귀는 있지만 고정 공개 평가 시나리오 G12에 실행 이력·반복별 결과·오라클을 자동 연결하는 어댑터가 없었다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/overview",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 제품 구조 검토에서 역할별 bot과 지속 업무 context 설명 확인; 이번 실행에서 xAI API/봇은 호출하지 않음"
+        }
+      ],
+      "nextExperiment": "로컬 Mission test selector를 격리 subprocess에서 3회 실행해 runtime/durable Mission 동일성, researcher 실패 보존, editor/verifier handoff, 모든 artifact G검증 및 bytes를 독립 predicate process가 확인했다(3/3; p50 905ms/p95 960ms; 비용·질문·승인 미측정). 다만 Node test subprocess 내부에서 같은 runtime store를 재시작한 것이므로 실제 앱 종료/새 OS process persistence는 입증되지 않았다. 다음에는 actual child-process kill fixture와 사용자 종료/재개 adapter를 결합하고 독립 작성 holdout을 요구한다."
+    },
+    {
+      "id": "g02-local-artifact-conflict-scenario-adapter",
+      "title": "G02 동시 편집 공개 평가 어댑터",
+      "problem": "PC 파일 도구의 CAS 충돌 unit test는 있었지만 고정 공개 G02 시나리오의 반복·개별 oracle·실행 이력 집계 경로가 없었다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/overview",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 제품 구조 검토에서 역할/업무 협업 참고; 본 adapter는 Grok API 기능을 호출하지 않음"
+        }
+      ],
+      "nextExperiment": "동일 base revision을 두 프로세스에서 동시에 갱신하는 fixture에서 Windows가 기존 exclusive lock open에 EPERM을 돌려보내는 경쟁 조건을 재현했다. file lock이 실제 존재할 때 EPERM/EACCES를 contention으로 처리하고, 경로가 없는 genuine 권한 오류는 계속 실패하도록 수정했다. 로컬 proxy 30/30 및 분리 G02X 테스트를 통과했다. 다음에는 Windows 여러 사용자/권한별 파일시스템에서 lock 경합과 stale recovery를 반복하고 별도 작성 holdout으로 검증한다."
+    },
+    {
+      "id": "g03-local-durable-routine-scenario-adapter",
+      "title": "G03 예약 실행·중복 방지 공개 평가 어댑터",
+      "problem": "이미 구축된 durable routine scheduler와 SQLite 재시작 회귀가 공개 고정 G03 요구·누락실행 정책·독립 결과 오라클로 추적되지 않았다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/overview",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 제품 구조 검토의 예약/이벤트 trigger 비교 기준; 이번 실험은 외부 제품을 호출하지 않음"
+        }
+      ],
+      "nextExperiment": "로컬 durable routine API/scheduler 및 Mission 경로에 고정 한국어 내일 오전 9시 요청을 3회 연결하고 SQLite 재시작 후 단일 Mission·내용 검증·중복 dispatch 방지·오프라인 missed notification을 별도 process oracle로 3/3 확인했다. p50 732ms/p95 863ms; 외부 provider/network/write 0; 비용 미측정. 후속 코드 감사에서 직접 API가 반복 요일·시각과 다른 scheduledAt을 받을 수 있음을 발견해 시간대 현지 ISO 요일·시·분을 저장 시 검증하도록 보강했다. mismatch 거부와 일치 허용, HTTP conflict 응답 및 안전한 UI 안내를 추가하고 집중 27/27, 전체 2112/2113 pass·0 fail·1 optional skip, build·Core contract·integrity 8/8을 확인했다. 테스트 시간·자료는 합성 fixture다. 다음은 Windows Service sleep/wake, 사용자 프로필, 실계정 일정 연결이며 계정·서비스 신원·실기기 인수 조건 전에는 blocked로 유지한다. 2026-09-30 후속 회귀에서 주입된 정책 시계와 시스템 시계가 어긋나 아직 유효한 capability를 만료로 판단하는 결함을 재현·수정했다. G03 재현 1/1, 예약·인지 테스트 49/49, 로컬 프록시 독립 오라클 30/30, 전체 suite 2214 pass·0 fail·4 optional skip, build·Core contract·integrity 8/8을 확인했다. 이는 테스트 시계 일관성 검증이며 실제 Windows 서비스 identity·재부팅/절전 후 일정은 다음 파일럿에서 측정한다."
+    },
+    {
+      "id": "g08-local-cancellation-scenario-adapter",
+      "title": "G08 취소·늦은 계획 응답 공개 시나리오 어댑터",
+      "problem": "Mission cancel/late-planner 경계 테스트를 공개 평가 G08의 증거로 반복하고 평가 이력에 연결하는 어댑터가 없었다.",
+      "nextExperiment": "Core API를 통한 실제 local Mission 취소, 기존 검증 draft 보존, 늦은 planner wave 차단과 추가 filesystem effect 0을 고정 fixture에서 3회 수행했다. 별도 process oracle 3/3; p50 652ms/p95 663ms; 외부 호출·쓰기 0; 비용 미측정. 외부 provider stream/UI/voice race와 독립 holdout은 다음이다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/approvals-security-and-privacy",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 보안·승인 경계 검토 참조; 현재 adapter 실험은 JARVIS local runtime만 실행"
+        }
+      ]
+    },
+    {
+      "id": "g09-local-grant-revocation-scenario-adapter",
+      "title": "G09 Mission 권한 축소 공개 시나리오 어댑터",
+      "problem": "Mission 중 권한 revision을 축소할 때 취소된 action 실행을 막고 남은 권한 동작을 검증하는 테스트가 public G09 adapter와 연결되지 않았다.",
+      "nextExperiment": "실행 전 grant를 READ_ONLY로 축소한 실제 local Mission을 3회 수행해 쓰기 dispatch/파일 효과 0, 새 revision의 읽기 성공 및 G evidence를 별도 process oracle 3/3 확인했다. p50 608ms/p95 656ms; 외부 호출·쓰기 0. OAuth provider scope revoke와 service identity 전파, UI race는 미검증.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/approvals-security-and-privacy",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 보안·승인 경계 검토 참조; 현재 adapter 실험은 JARVIS local runtime만 실행"
+        }
+      ]
+    },
+    {
+      "id": "g10-local-injection-egress-scenario-adapter",
+      "title": "G10 악성 웹 지시 격리·egress 공개 평가 어댑터",
+      "problem": "합성 injection regression은 있었지만 공개 G10 command에 실행 가능한 반복 결과와 egress 차단 증거를 결합하지 못했다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.x.ai/grok-bot/approvals-security-and-privacy",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 bot security/privacy 경계 리뷰; 이번 run은 Grok/provider 호출 없이 JARVIS synthetic fixture"
+        }
+      ],
+      "nextExperiment": "local real Mission을 통해 외부 자료 삽입 악성 지시를 untrusted로 유지하고 공인 fact/report G 검증은 통과시키며 email.send worker dispatch가 0회인 것을 고정 synthetic source로 3회 실행했다. 별도 process oracle 3/3, p50 706ms/p95 715ms. 외부 provider/network 0; OS egress·실제 웹 공격 변형 미측정. 다음은 URL/material 다양성·prompt injection holdout 및 강제 OS network boundary 테스트."
+    },
+    {
+      "id": "m02-separate-process-mission-recovery-adapter",
+      "title": "M02 별도 제품 프로세스 durable Mission 복구 어댑터",
+      "problem": "기존 새 runtime instance 회귀는 같은 Node 프로세스였으므로 M02 앱 종료/재기동 이후 durable Mission·effect receipt continuity를 공개 시나리오 수준으로 검증하지 못했다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse",
+          "checkedAt": "2026-09-28",
+          "revision": "이전 공식 Muse security/process boundary review; 이번 실험은 제품 기능 주장을 비교하지 않고 local persistence를 시험"
+        }
+      ],
+      "nextExperiment": "실제 별도 Node process1이 Mission을 만들고 createTextFile effect 뒤 verifier interruption으로 PAUSED 종료, process2가 같은 file MissionStore/audit receipt를 다시 열어 action replay 없이 COMPLETED로 복구하도록 구현. 서로 다른 PID를 capture하고 oracle이 same MissionId, durable action/observation, recovery source, verified artifact exact bytes/hash, duplicate task dispatch 0을 3/3 판정했다. p50 799ms/p95 800ms. 첫 시도는 completion criterion phrase가 unsupported라 3/3 PAUSED; existing supported filename criterion으로 수정 후 통과. GUI process kill/Windows service/user UI/outage/other host remains unverified."
+    },
+    {
+      "id": "m10-minimized-egress-provider-payload",
+      "title": "M10 외부 에이전트에 전달되는 최소화 payload의 정책 경계",
+      "problem": "민감한 파일을 외부 에이전트가 요청할 때 분류·최소화 결과뿐 아니라 실제 dispatcher가 provider tool 응답으로 넘기는 payload와 고위험 차단 이력을 함께 검증해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://openai.github.io/openai-agents-python/guardrails/",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 Agents SDK guardrails 문서는 custom function tool마다 호출 전후 검사를 지원하며 일부 hosted tools에는 동일 tool guardrail pipeline이 적용되지 않는다고 설명; JARVIS 실험은 자체 E/B/G·egress dispatcher 경계를 검사"
+        }
+      ],
+      "nextExperiment": "실제 JARVIS managed-agent dispatcher에 혼합 공개·개인 자료와 D3 계좌 fixture를 넣어 mock provider 제출 직전/직후 payload를 캡처하고, 민감 원문 누출 0·고위험 정책 콜백 전 차단·전송 이력과 결과 상태를 3회 별도 oracle로 재계산했다. 외부 provider API/네트워크는 호출하지 않았고 실제 분류기 일반화·오탐/미탐, 계정 승인 UI, 비용은 미측정. 다음은 변형된 다국어·문서·여러 분류 규칙을 가진 독립 holdout 평가다."
+    },
+    {
+      "id": "growth-memory-skill-revision-lifecycle",
+      "title": "Growth Memory 업무 절차 revision 검토·승격·복원",
+      "problem": "성공한 반복 업무에서 보조 절차 초안을 만들고 최초 검토하는 경로는 있지만, 수정된 절차의 immutable version lineage, 평가 근거, stale-write 보호, 명시적 승격과 복원 이력이 연결되지 않으면 사용자의 업무 방식을 안전하게 점진 개선할 수 없다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.langchain.com/oss/javascript/langgraph/thinking-in-langgraph",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 문서는 durable checkpoint와 interrupt/resume human input을 상태 전이·재개 구조로 설명; JARVIS에는 코드 이식이 아닌 lifecycle 비교 기준으로 사용"
+        },
+        {
+          "url": "https://docs.langchain.com/langsmith/configuration-cloud",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 LangSmith assistant version API는 set_latest(version)으로 다음 run의 활성 버전을 변경할 수 있다고 설명; JARVIS 로컬 revision은 해당 관리형 API를 호출하지 않음"
+        }
+      ],
+      "nextExperiment": "G05 typed tabular-group-sum-v1를 추가해 고정 합성 demonstration과 별도 source/renamed-header holdout으로 교차 자료 평가했다. 독립 별도-process oracle과 3회 통과, fail-injected alias 누락 시 기존 active pointer 보존, raw holdout row 비저장, review-required 및 executableByDefault=false를 확인했다. 인증 Bridge HTTP create/evaluate/review/promote 회귀도 통과했다. 이 결과는 일반 자연어 절차 추출이나 문서 의미 품질을 검증하지 않는다. 다음은 샌드박스에서 지원 가능한 더 넓은 구조화 절차 유형을 비교하되 새 holdout을 독립 작성하고, 실제 사용자 문서/UI/설치 서비스 검증은 분리한다. guidance-on/off 요구 보존 평가와 독립 저자 holdout 12개는 여전히 미완료이며 자동 skill 실행은 계속 금지한다."
+    },
+    {
+      "id": "gemini-interactions-api-planning-adapter",
+      "title": "Gemini Interactions API stateless Mission planning adapter",
+      "problem": "JARVIS의 Gemini Mission adapter는 generateContent만 호출하며, 공식적으로 권장되는 Interactions API의 multimodal·agent 통합 표면을 이용하지 못한다. 신규 모델/도구 접근 경로를 별도 계약으로 제공하되 원문 보관·외부 function call의 위험을 통제해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://ai.google.dev/gemini-api/docs/interactions-overview",
+          "checkedAt": "2026-09-29",
+          "revision": "Google states GA since June 2026 and recommends Interactions for new projects; output is steps-based; stateless request can set store=false; custom tools are application-executed"
+        },
+        {
+          "url": "https://ai.google.dev/api/interactions-api",
+          "checkedAt": "2026-09-29",
+          "revision": "v1 stable REST endpoint /v1/interactions; completed/incomplete/requires_action statuses and usage totals are documented"
+        }
+      ],
+      "nextExperiment": "A stateless structured-output adapter now targets the stable v1 Interactions endpoint, reuses the existing Gemini key/catalog check, rejects unsupported streaming and provider function calls, and is surfaced as separately unverified in readiness UI. Its contract fixtures pass, but no live model call or real latency/cost has been measured. Next, when user-managed credentials, project policy, and a request budget are configured, run one low-risk synthetic prompt with store=false, compare model availability and output-quality oracle against legacy generateContent, then measure end-to-end latency and billed usage before considering activation."
+    },
+    {
+      "id": "m01-long-goal-revision-and-replanning",
+      "title": "Mission 장기 목표 revision과 단계 재계획",
+      "problem": "우선순위가 바뀌는 장기 목표에서 기한·의존 단계·이전 결정 이유를 유지하고 이미 수행되었거나 불명확한 효과를 중복 실행하지 않아야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.langchain.com/oss/javascript/langgraph/thinking-in-langgraph",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 문서는 durable state, human interrupts, 재개 가능한 장기 workflow를 설명; JARVIS는 자체 MissionGoalRevisionCoordinator와 SQLite store의 synthetic plan을 검증하며 LangGraph를 호출하지 않음"
+        }
+      ],
+      "nextExperiment": "SQLite Mission에서 기한 있는 다단계 목표를 생성하고 우선순위 변경을 revision으로 적용했다. phase-a 의존 순서를 유지하고 phase-b를 제외해 phase-c로 재계획하며 원문과 변경 이유를 보존하는 로컬 공개 시나리오 3회+별도 oracle 3/3을 확인했다. 이는 자동 장기 계획 품질, 여러 프로젝트의 자원 스케줄링, 프로세스 강제종료 복구를 검증하지 않는다. 다음은 missed deadline/uncertain effect/competing revision 실패 조건을 추가하고 독립 holdout으로 revision conflict 처리를 확인한다."
+    },
+    {
+      "id": "m06-docker-offline-execution-boundary",
+      "title": "격리된 Linux 컨테이너에서의 JARVIS 로컬 코드 실행 경계",
+      "problem": "생성 코드·문서 변환을 호스트 자격증명과 업무 폴더로부터 분리하고 네트워크·자원·입출력 범위를 실제 운영체제 경계로 제한해야 한다. Docker daemon 자체의 권한 위험과 컨테이너/VM 범위를 구분해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://docs.docker.com/engine/security/",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 Engine security: 기본 daemon root 권한, API 노출 시 생성 매개변수 검증의 보안 영향"
+        },
+        {
+          "url": "https://docs.docker.com/engine/security/rootless/",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 Rootless mode: daemon과 containers를 user namespace에서 비-root 사용자로 실행"
+        },
+        {
+          "url": "https://docs.docker.com/engine/containers/run/",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 run: image digest와 container resource/network controls"
+        }
+      ],
+      "nextExperiment": "고정 digest M06 어댑터를 Docker Desktop에서 3회 실행해 네트워크 none, read-only rootfs/input, 비특권 UID, resource caps, secret env 부재, 비마운트 호스트 파일 접근 실패를 확인했다. 관측은 로컬 Linux container 경계뿐이며 rootful Docker Desktop daemon, 커널/daemon escape, Windows 네이티브·장기 부하·다중 payload는 미검증이다. 다음은 설치 가능한 rootless backend 또는 별도 관리 VM의 권한·성능·복구 조건을 공식 문서와 비교하고, JARVIS 일반 API에 Docker socket이 닿지 않는 프로세스 경계를 증명한다. 격리 수준을 검증하기 전에는 모델 생성 코드를 기본 실행 경로에 승격하지 않는다."
+    },
+    {
+      "id": "mission-time-zone-and-dst-constraints",
+      "title": "Mission 날짜·시간대·DST 제약의 로컬 의미 검증",
+      "problem": "날짜와 지역 시각을 따로 파싱하면 DST 전환 때 존재하지 않는 시간이나 두 번 발생하는 시각이 예약·외부 커밋으로 전달될 수 있다. 날짜·시각 연결과 불명확한 표현의 외부 실행 차단을 버전 고정 평가로 검증해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://nodejs.org/download/release/v24.8.0/docs/api/intl.html",
+          "checkedAt": "2026-09-30",
+          "revision": "Node v24.8.0 uses ICU for Intl; the official binary defaults to full-icu, while custom system-icu/small-icu builds may have reduced data. JARVIS runtime observed Node v24.8.0 / ICU 77.1."
+        },
+        {
+          "url": "https://tc39.es/ecma402/",
+          "checkedAt": "2026-09-30",
+          "revision": "ECMA-402 current specification requires timezone-aware implementations to use IANA time-zone identifiers and data; behavior remains dependent on runtime time-zone database version."
+        }
+      ],
+      "nextExperiment": "2026-09-30 v1/v2 개발 실험에서 Node v24.8.0/ICU 77.1로 New York의 1시간 DST gap/fold, Australia/Lord_Howe의 30분 gap/fold, Asia/Seoul의 유일 wall time을 고정 oracle로 검사하고 unresolved-time Mission dispatch를 차단했다(집중 37/37, v3 1006/1006, 전체 2148 pass·0 fail·1 skip). 로컬 파서 지연도 기록했으나 서비스 패키지의 ICU/IANA 데이터, 설치 identity, 독립 작성 holdout, 일정 API 통합은 미검증이다. 다음은 설치 번들에서 실제 Node/ICU/tzdata 식별과 동일 oracle 실행을 시도하고, provider sandbox 준비 시 실제 calendar boundary까지 검증한다."
+    },
+    {
+      "id": "m12-signed-promotion-journal-and-recovery",
+      "title": "신뢰 앵커가 있는 capability 패키지 승격 원장과 재시작 복구",
+      "problem": "격리 평가와 소유자 승인 뒤 도구 패키지를 교체하는 수명주기가 메모리에만 있으면 중단 뒤 승인·효과를 감사하거나 안전하게 재개할 수 없다. 반대로 임의 코드·소유자 세션 식별자를 원장에 직렬화하면 복구 편의가 실행 권한 누출로 이어질 수 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://nodejs.org/docs/latest-v24.x/api/crypto.html",
+          "checkedAt": "2026-09-29",
+          "revision": "Node.js v24.21.0 공식 문서 재확인: createHmac, timingSafeEqual 지원. JARVIS trust key에서 purpose-separated HMAC 서명기를 파생해 사용하며 API 자체가 패키지 출처를 증명하지는 않는다."
+        },
+        {
+          "url": "https://nodejs.org/docs/latest-v24.x/api/fs.html",
+          "checkedAt": "2026-09-29",
+          "revision": "Node.js v24.21.0 공식 파일 시스템 문서. 서명 원장은 공유 process-lock 아래 open/write/fsync/close를 사용한다. Windows 서비스 계정 ACL, 파일시스템별 fsync/rename 내구성은 별도 검증 필요."
+        }
+      ],
+      "nextExperiment": "같은 로컬 사용자·임시 폴더에서 실제 Core child를 journal append 전, journal fsync 뒤 trust anchor 전, anchor 직후, trust-state temp write 직후(Windows), state rename 성공 뒤 저장 API 반환 전(Windows), JSONL 새 레코드의 절반을 쓴 직후에 종료했다. 재시작 oracle은 빈 journal, 미앵커된 유효 suffix, 앵커된 promotion pending, torn tail bytes를 구분하고 미완료·손상 promotion을 fail-closed했다. Torn tail은 원본 그대로 보존되고 trust anchor는 GENESIS에 머물렀다. trust-state persist 오류 주입과 Windows non-empty directory replacement 실패도 확인했다(최종 집중 14/14; 전체 회귀 2145 pass/0 fail/1 skip/2146 total). 다음은 directory durability와 플랫폼별 flush·rename 보장, 가능한 전원/디스크 cache 장애 시험 범위를 공식 문서와 실험으로 분리한다. 전원/디스크 cache durability는 검증하지 않았다. 이후 trusted source-to-loaded adapter/verifier resolver, ownerSessionId 비영속 단기 one-time review receipt/replay 방지, 승격·수동해소 UI가 남는다. Windows 설치 서비스 identity의 DPAPI scope·ACL과 배포 서비스 2개 동시 실행은 별도다. 모호한 효과·승인 재사용·잘못된 코드 활성화가 하나라도 나오면 fail-closed로 유지한다."
+    },
+    {
+      "id": "agent-platform-observed-scenario-status",
+      "title": "통합 공개 시나리오의 실행 이력 기반 상태 보고",
+      "problem": "고정 평가 코퍼스의 not-run 선언을 제품 상태의 현재 실행 결과로 오인하면 최근 로컬 평가를 숨기거나 미실행 사례를 성공으로 오해할 수 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://github.com/sierra-research/tau2-bench/blob/main/docs/evaluation.md",
+          "checkedAt": "2026-09-29",
+          "revision": "공식 평가 지침을 결과 오라클/고정 평가 버전 구분 참고로 사용; τ-bench 코드·점수는 사용하지 않음"
+        }
+      ],
+      "nextExperiment": "S09는 로컬 공개 adapter 3회 및 별도 oracle 3회 통과로 연결했다. 다음으로 S07 고정 한국어 발화의 실기기 recognizer 지원/WER/p50/p95 관측을 시도하고, S08의 합성 browser driver를 실제 Playwright BrowserContext 두 개와 local cookie/storage 분리 평가로 교체한다. S04는 공식 제공자 sandbox/API 계약을 다시 점검하되 실제 최신 요금·예약은 실계정 없이 미측정으로 둔다. 별도 작성된 12개 holdout과 승인된 계정/기기에서 다시 평가하고, 미준비 항목은 blocked로 남긴다."
+    },
+    {
+      "id": "agents-api-hosted-computer-use-boundary",
+      "title": "Agents API 호스팅 브라우저 computer-use 경계 검증",
+      "problem": "OpenAI가 Agents API에 hosted browser computer-use를 추가했지만, 호스트된 브라우저의 origin 승인만으로 각 UI 행동의 권한·구매 확인을 보장하지 않는다. JARVIS의 로컬 PC 제어, 계정 로그인, 외부 데이터 처리 조건과 구별되지 않으면 권한 우회나 기능 과장 위험이 있다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/changelog",
+          "checkedAt": "2026-09-30",
+          "revision": "2026-09-29 Agents API computer use, GPT-6.1 Sol, Astra ultrafast 공개 기록을 원문 대조"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/tools/computer-use",
+          "checkedAt": "2026-09-30",
+          "revision": "hosted browser와 origin/auth approval lifecycle, per-action confirmation 한계를 원문 대조"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/agents-api/overview",
+          "checkedAt": "2026-09-30",
+          "revision": "Agents API runtime/tool/sandbox 전체 연결 경계 확인"
+        }
+      ],
+      "nextExperiment": "모의 Agents event stream에서 public URL 읽기·origin deny/approve·authentication 취소·중복 approval·approval 뒤 202 미완료 상태를 검증한다. 앱의 허용 origin을 초과한 경우, 로그인·구매·삭제·메일 발송 요구, 응답 유실은 모두 중단되어야 한다. 각 행동의 confirmation을 앱이 강제할 수 있는지 공식 API 계약으로 확인하고, 데이터 레지던시·보존·요금·취소 및 기존 JARVIS Mission/E/G 경로와 비교한다. 숙고 완료 전에 API key·비용·개인 자료·실계정 세션은 사용하지 않는다."
+    },
+    {
+      "id": "s11-health-connect-record-summary",
+      "title": "웨어러블 건강 기록의 출처·단위·누락을 보존하는 요약",
+      "problem": "자연어 건강 기록 요약은 Health Connect 읽기 범위, 페이지 처리, 여러 출처의 누적 수치와 단위 변환, 누락·오래된 측정 구간을 구분해야 하며 합성 시험을 실센서 검증과 혼동하지 않아야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://developer.android.com/health-and-fitness/health-connect/read-data",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 읽기 가이드 재검토: foreground/background read와 별도 background 권한, pageToken 반복, StepsRecord 누적 유형의 aggregate 사용 권고 및 다중 출처 중복 회피를 확인"
+        },
+        {
+          "url": "https://developer.android.com/health-and-fitness/health-connect/get-started",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 시작 가이드에서 데이터 유형별 사용자 권한과 Health Connect 사용 전 기기/API 조건 확인"
+        }
+      ],
+      "nextExperiment": "합성 Health Connect 형식의 센서 데이터를 대상으로 누락 날짜, source/original unit/timestamp, 지원 가능한 단위의 정규화, 오래된 측정 표시와 의료진 상담용 중립 요약을 구현했다. 3회 실행 및 별도 프로세스 오라클 3/3, 네트워크·provider·외부 쓰기 0을 확인했다. 실기기·사용자 계정·Health Connect 권한·pagination과 aggregate API, 센서 정확성은 미검증이다. 다음은 Android 앱 fixture API로 공식 Health Connect sandbox/device test에서 permission grant/revoke, aggregate multi-origin steps, pagination, stale/missing intervals를 검증하고 사용자 원자료를 로그에 남기지 않는 것이다."
+    },
+    {
+      "id": "s12-physical-device-action-reconciliation",
+      "title": "물리 기기 동작의 응답 유실·재시도·복원 충돌 제어",
+      "problem": "스마트홈 기기 명령은 응답 유실 시 실제 상태를 다시 조회하고 중복 동작을 막아야 하며, 조명처럼 제한된 행동과 도어락·난방 같은 위험 기기를 분리하고 상태 충돌 시 덮어쓰지 않는 안전 계약이 필요하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://developers.home.google.com/apis/android/permissions",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 Google Home APIs 문서 재검토: 구조별 사용자 권한과 민감 기기/기기 유형별 허용 범위를 확인"
+        },
+        {
+          "url": "https://developers.home.google.com/apis/android/device",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 기기 API 및 명령별 HomeException 오류 처리 안내 재검토"
+        }
+      ],
+      "nextExperiment": "조명만 허용하는 비네트워크 시뮬레이터에 응답 유실 뒤 상태 재조회, 멱등키 중복 억제, 취소 복원, 외부 상태 충돌 시 복원 거부를 구현했다. 테스트와 별도 고정 predicate 오라클을 3회 실행해 통과했다. 실제 Google Home/Matter 계정·허브·Android 기기는 연결하지 않았다. 다음 단계는 승인된 Android 기기와 Google Home 구조 권한으로 조명 읽기·가역 제어만 수행하고 응답 유실과 사용자 동시 변경을 실제 장치에서 확인하는 것이다. 잠금·난방 제어는 별도 위험 검토 전 계속 차단한다."
+    },
+    {
+      "id": "g11-accessible-desktop-fixture-control",
+      "title": "레이아웃 변화에 견디는 접근성 기반 화면 설정 조작",
+      "problem": "화면 좌표가 바뀌는 앱에서 고정 클릭 위치는 잘못된 설정을 바꿀 수 있다. 화면 레이아웃 변경 후에도 접근 가능한 이름으로 정확한 항목을 찾고 저장 결과를 다시 읽는 검증이 필요하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://playwright.dev/docs/locators",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 Playwright locator 문서: getByRole/accessibility name 우선, 각 동작 시 DOM 재탐색과 retryability 원칙 재검토"
+        },
+        {
+          "url": "https://playwright.dev/docs/actionability",
+          "checkedAt": "2026-09-30",
+          "revision": "공식 actionability 문서: 클릭 전 visible/enabled/receives-events 등의 조건 대기 재검토"
+        }
+      ],
+      "nextExperiment": "합성 설정 UI에서 저장 버튼 레이아웃을 196px 이동시키고 접근성 이름 locator로 같은 옵션을 변경했다. 저장 상태를 localStorage와 다시 열린 화면에서 재조회하고, 무관한 외부 전송 옵션은 그대로 꺼 둔 상태를 확인했다. headless Chromium·loopback·고정 오라클 3/3 통과. 실제 Windows UI Automation·화면 OCR·타사 앱에서의 신뢰성은 미검증이다. 다음은 권한 있는 격리 Windows fixture 앱에서 UIA AutomationId/name, 창 재배치·DPI·재렌더링을 테스트하고, 실패 시 입력 없이 사용자에게 인계하는 경계를 검증한다."
+    },
+    {
+      "id": "ui-and-local-latency-observation",
+      "title": "실제 UI 입력 표시와 로컬 업무 종단 지연 관측",
+      "problem": "V3-069에서 UI 입력 측정이 빠졌고 스크린샷 도구 대기를 제품 지연과 혼동할 수 있다. 입력 보존·raster 관측과 고정 결과 oracle을 함께 유지해야 한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://www.w3.org/TR/event-timing/",
+          "checkedAt": "2026-10-04",
+          "revision": "W3C Working Draft 19 March 2026; event timestamp→rendering"
+        },
+        {
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame",
+          "checkedAt": "2026-10-04",
+          "revision": "rAF before repaint; raster confirmation separately required"
+        }
+      ],
+      "nextExperiment": "데스크톱/모바일 화면 각50표본과 고정로컬40실행 목표충족. 다른 부하·한국어 IME·설치본·browser→G 단일 요청 종단으로 확장하되 기존 표본과 범위를 분리한다. 제품 자체 속도향상 주장은 하지 않는다."
+    },
+    {
+      "id": "korean-rail-travel-access-conditions",
+      "title": "한국 철도·여행 공식 접근 조건 및 미연결 분리",
+      "problem": "시간표 API를 예약 API로 오인하거나 공개 API 존재를 한국 계정 운영 접근으로 확대하면 허위 준비도가 된다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://www.data.go.kr/data/15098552/openapi.do",
+          "checkedAt": "2026-10-04",
+          "revision": "공개 항목을 예약/결제/실시간 좌석 API로 해석하지 않는다."
+        },
+        {
+          "url": "https://www.letskorail.com/",
+          "checkedAt": "2026-10-04",
+          "revision": "JS 사이트의 계정/실제 좌석/거래는 미실행"
+        },
+        {
+          "url": "https://openapis.korail.com/samples/public/run",
+          "checkedAt": "2026-10-04",
+          "revision": "루트 openapis 사이트 web 도구 Internal Error. 공개 샘플 접근만 확인, 인증 발급/일반예약 API 계약 미확인"
+        },
+        {
+          "url": "https://etk.srail.kr/hpg/hra/01/selectScheduleList.do",
+          "checkedAt": "2026-10-04",
+          "revision": "명절 회원전용 안내는 평시 일반 요건으로 적용하지 않는다. 로그인/구매 미실행; 장부 URL은 query 금지 계약에 따라 경로만 저장. 실제 검토 URL의 공개 pageId는 sources.json에 보존."
+        },
+        {
+          "url": "https://duffel.com/docs/guides/getting-started-with-flights",
+          "checkedAt": "2026-10-04",
+          "revision": "JARVIS 기존 test GET 경로가 주문/예약 구현을 증명하지 않는다."
+        },
+        {
+          "url": "https://admin.developers.amadeus.com/self-service/apis-docs/guides/developer-guides/faq/",
+          "checkedAt": "2026-10-04",
+          "revision": "한국 계정 운영 적합성·모든항공사·전자동환불 미검증"
+        }
+      ],
+      "nextExperiment": "TAGO 공식 명세의 보호 읽기 어댑터와 실제키/API 응답·페이지 전체·최신성을 검사. 예약/거래는 별도 인수에 유지."
+    },
+    {
+      "id": "commerce-final-commit-boundary",
+      "title": "거래 준비 이후 최종 발신 권한과 AP2 연결 경계",
+      "problem": "비Mission 주문의 최종 권한 재확인과 AP2 어댑터 확인 전달이 빠져 준비 이후 철회/변경을 발신 직전에 차단하지 못한다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://ucp.dev/specification/overview/",
+          "checkedAt": "2026-10-08",
+          "revision": "공식 인증·결제·보안·권한 경계; 로컬 구현은 고정 SDK 버전 별도 유지"
+        },
+        {
+          "url": "https://github.com/google-agentic-commerce/AP2",
+          "checkedAt": "2026-10-08",
+          "revision": "공식 AP2 원본 재조회; 기존 고정 SDK 서명 및 UCP bridge 계약 비교"
+        }
+      ],
+      "nextExperiment": "최종 발신 fence에 현재 위임/정책/견적/연결 상태를 연결하고 실제 로컬 TLS·SDK 서명·응답 손실/조회 전용 반례를 비교한다. 이어 목적별 자료범위/전송 경로를 점검한다. 실계정 거래는 별도 조건과 증거가 필요하다."
+    },
+    {
+      "id": "openai-decisions-bounded-routing-comparison",
+      "title": "Decisions 제한 선택 분류와 기존 Core 경로 비교",
+      "problem": "복합 계획과 분리된 애매한 lane/준비도 분류의 지연·정확성·비용 비교가 미측정이다.",
+      "priority": 2,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/guides/decisions",
+          "checkedAt": "2026-10-08",
+          "revision": "gpt-6-luna Decisions beta; typed predicate/choice/score, 확률 임계값은 실제 labeled data 기준"
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/changelog",
+          "checkedAt": "2026-10-08",
+          "revision": "2026-10-06 beta 발표; 회사 속도 주장은 자체 실측과 구분"
+        }
+      ],
+      "nextExperiment": "월 예산·실제 API 가용성 확인 뒤 합성 고정+holdout을 기존 command lane 분류기와 동일 조건으로 반복 비교한다. 필수 요구/권한 보존,오분류,p50/p95,호출,실측비용,개입을 기록한다. 모델 선택은 실행 권위가 아니며 timeout/미확인/확률 부족 시 보수적 경로 유지. 실험 전 제품 활성화/성능 향상 미측정."
+    },
+    {
+      "id": "classified-field-safe-preview-boundary",
+      "title": "분류 API 안전 미리보기의 탐지 민감 값 제거",
+      "priority": 1,
+      "problem": "필드 분류 action과 safePreview가 달라 NER/fallback 탐지 원문이 분류 보고서에 남는다.",
+      "sources": [
+        {
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html",
+          "checkedAt": "2026-10-08",
+          "revision": "unversioned living guidance; Data to exclude reviewed"
+        }
+      ],
+      "nextExperiment": "실제 로컬 HTTP 출력에서 탐지된 합성 민감 값 제거·공개 필드 보존을 확인했다. 다음은 미탐/사용자 정의 분류와 목적별 외부 전송 경계를 독립 평가한다."
+    },
+    {
+      "id": "stateless-bridge-production-maintenance",
+      "title": "신원이 다른 구형 모바일 브리지의 상태 보존과 단일 Core 전환",
+      "problem": "운영 Core/PC/UI는 정상이지만 독립 브리지의 실행 권위와 키 식별자가 달라 전체 제품이 degraded다. 정상 프로세스와 원래 페어링을 보존하는 별도 유지보수 범위가 필요하다.",
+      "priority": 1,
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata",
+          "checkedAt": "2026-10-08",
+          "revision": "Windows DPAPI CurrentUser와 사용자 프로필 의존성; 암호문 복호화와 서비스 전체 복원을 구분"
+        }
+      ],
+      "nextExperiment": "gateway-only 실제 자식 프로세스/독립 잠금/중개 미실행 31회귀와 운영 상태13개 DPAPI 암호화·저장본 복호화는 통과. 구형 프로세스 종료·교체는 자동 승인 검토 blocked by policy로 미실행. 허용된 유지보수 경로가 확보될 때만 정확한 프로세스·진행 작업·백업을 재확인하고 전환 후 전체 신원/원본/비인증 거절을 검증. 키·페어링 삭제나 우회 종료 금지. Android/SCM/전체복구 별도."
+    },
+    {
+      "id": "mcp-policy-request-binding",
+      "title": "MCP 권한 검사 목적·수신자·요청 지문의 불변 계약",
+      "priority": 1,
+      "problem": "실행 인자는 이미 동결돼 있지만 주변 목적·목적지·요청 해시 context는 정책 hook이 변경할 수 있고 정책 오류가 공급자 응답 유실로 오분류된다.",
+      "sources": [
+        {
+          "url": "https://modelcontextprotocol.io/specification/2025-11-25/server/tools",
+          "checkedAt": "2026-10-08",
+          "revision": "2025-11-25 tools/call name and arguments, schemas and untrusted annotations; immutable local policy snapshot is JARVIS design"
+        }
+      ],
+      "nextExperiment": "실제 로컬 HTTP/SQL과 최종94회귀/build/contract에서 정책 요청 전체 동결·예외 분류·기존 정상/철회/재시작 경로 확인. 다음은 각 목적과 수신자의 현재 위임/다른 API·기기 경계 대조. 운영/실계정/장기관측은 별도."
+    },
+    {
+      "id": "google-incremental-sync-contract",
+      "title": "Google 변경 이력 동기화의 기간·collection 위임 분리와 영속 token 계약",
+      "priority": 1,
+      "problem": "현재 worker는 기간 제한 bounded-poll이다. Calendar syncToken은 timeMin/timeMax와 함께 쓸 수 없고 Gmail은 historyId를 사용한다. 기존 기간 위임을 조용히 확장하거나 미지원 token을 버리면 요청 의미와 읽기 범위를 보존할 수 없다.",
+      "sources": [
+        {
+          "url": "https://developers.google.com/workspace/calendar/api/v3/reference/events/list",
+          "checkedAt": "2026-10-08",
+          "revision": "syncToken incompatible with timeMin/timeMax/updatedMin; whole-second time-filter precision; token expiration 410"
+        },
+        {
+          "url": "https://developers.google.com/workspace/calendar/api/guides/sync",
+          "checkedAt": "2026-10-08",
+          "revision": "Initial/incremental synchronization, same sync token through pagination, last-page nextSyncToken and 410 reset"
+        },
+        {
+          "url": "https://developers.google.com/workspace/gmail/api/guides/sync",
+          "checkedAt": "2026-10-08",
+          "revision": "Gmail full and historyId partial synchronization; separate from Calendar syncToken"
+        },
+        {
+          "url": "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list",
+          "checkedAt": "2026-10-08",
+          "revision": "historyId string, startHistoryId exclusive, last-page historyId, 404 expiration, typed added/deleted/label changes"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata",
+          "checkedAt": "2026-10-08",
+          "revision": "Windows DPAPI user/machine credential context and profile loading for impersonation; no scope change in implementation"
+        }
+      ],
+      "nextExperiment": "DPAPI 반복상태복호화축소·공개metadata/HMAC재사용·신규10/공유93/이전실패동일112검사통과. OS cold-start timeout영구해결아님. 다음 일반Google독립화면 동의/수집/갱신/이어가기, 명시적reset·미확정대사·원격broker. 실제Google/운영/장기관측 미완료. artifacts/vault-metadata-cache-20261008-report.md"
+    }
+  ]
+}

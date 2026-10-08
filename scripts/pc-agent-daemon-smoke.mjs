@@ -1,20 +1,8 @@
-import net from 'node:net';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startPcAgentServiceRuntime } from '../apps/pc-agent/src/main.mjs';
-
-async function findOpenPort(host = '127.0.0.1') {
-  return await new Promise((resolvePort, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, host, () => {
-      const address = server.address();
-      server.close(() => resolvePort(address.port));
-    });
-  });
-}
 
 async function getJson(url, token = null) {
   const response = await fetch(url, {
@@ -48,11 +36,15 @@ export async function runPcAgentDaemonSmoke({
   apiToken = 'local-pc-agent-api'
 } = {}) {
   const smokeRoot = await mkdtemp(join(tmpdir(), 'jarvis-pc-daemon-smoke-'));
-  const selectedPort = port ?? await findOpenPort(host);
+  const selectedPort = port ?? 0;
   const env = {
     ...process.env,
     PORT: String(selectedPort),
     JARVIS_LOCAL_ONLY: 'true',
+    JARVIS_TEST_MODE: '1',
+    JARVIS_PC_AGENT_API_TOKEN: apiToken,
+    JARVIS_PC_AGENT_API_TOKEN_SHA256: '',
+    JARVIS_PC_AGENT_API_TOKEN_STORE: '',
     JARVIS_SERVICE_DAEMON: 'true',
     JARVIS_QUEUE_DRAIN_ENABLED: 'true',
     JARVIS_AUDIT_ROOT: join(smokeRoot, 'logs'),
@@ -61,6 +53,7 @@ export async function runPcAgentDaemonSmoke({
     JARVIS_PACKET_JOURNAL: join(smokeRoot, 'logs', 'packet-journal.jsonl'),
     JARVIS_PACKET_QUEUE: join(smokeRoot, 'logs', 'packet-queue.jsonl'),
     JARVIS_TOKEN_VAULT: join(smokeRoot, 'logs', 'capability-vault.jsonl'),
+    JARVIS_TRUST_ROOT: join(smokeRoot, 'trust'),
     JARVIS_ALLOWED_ROOTS: join(smokeRoot, 'workspace')
   };
   await mkdir(env.JARVIS_ALLOWED_ROOTS, { recursive: true });
@@ -73,7 +66,7 @@ export async function runPcAgentDaemonSmoke({
 
   try {
     runtime = await startPcAgentServiceRuntime({ env });
-    const baseUrl = `http://${host}:${selectedPort}`;
+    const baseUrl = `http://${runtime.host}:${runtime.port}`;
     const health = await getJson(`${baseUrl}/health`);
     const serviceRuntime = await getJson(`${baseUrl}/service/runtime`);
     const queue = await getJson(`${baseUrl}/execution-packets/queue`, apiToken);
@@ -90,6 +83,12 @@ export async function runPcAgentDaemonSmoke({
       statusCode: health.statusCode,
       module: health.body.module,
       localOnly: health.body.localOnly
+    });
+    add('runtime-trust-operational', health.body.trust?.operational === true && health.body.trust?.mutatingExecutionAllowed === true, {
+      mode: health.body.trust?.mode,
+      operational: health.body.trust?.operational,
+      mutatingExecutionAllowed: health.body.trust?.mutatingExecutionAllowed,
+      reasons: health.body.trust?.reasonCodes ?? []
     });
     add('queue-drain-supervisor-running', serviceRuntime.body.status === 'running' && serviceRuntime.body.watchdog?.status === 'healthy', {
       status: serviceRuntime.body.status,
@@ -143,8 +142,8 @@ export async function runPcAgentDaemonSmoke({
       generatedAt: new Date().toISOString(),
       mode: 'user-process-daemon-smoke',
       serviceInstalled: false,
-      host,
-      port: selectedPort,
+      host: runtime.host,
+      port: runtime.port,
       baseUrl,
       smokeRoot,
       checks,

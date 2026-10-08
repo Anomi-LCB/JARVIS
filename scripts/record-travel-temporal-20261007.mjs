@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const prefix='artifacts/travel-temporal-20261007',observedAt=new Date().toISOString();
+const read=p=>readFileSync(p,'utf8').replace(/^\uFEFF/u,''),hash=x=>createHash('sha256').update(x).digest('hex');
+const log=read(`${prefix}-recheck.txt`),count=k=>Number(log.match(new RegExp(`(?:ℹ |# )${k} (\\d+)`))?.[1]);
+assert.equal(count('tests'),36);assert.equal(count('pass'),36);assert.equal(count('fail'),0);assert.equal(count('skipped'),0);
+assert.match(read(`${prefix}-before.txt`),/fail 8/u);assert.match(read(`${prefix}-build.txt`),/Built static JARVIS/u);assert.match(read(`${prefix}-contract.txt`),/gatePassed: true/u);
+const files=['packages/core/src/personal-operations/travel-quote-sandbox.js','tests/travel-quote-temporal-boundary.test.js','tests/travel-quote-budget.test.js','docs/travel-quote-temporal-boundary.md'];
+writeFileSync(`${prefix}-source.json`,JSON.stringify({observedAt,files:files.map(path=>({path,sha256:hash(readFileSync(path)),content:read(path)}))},null,2),{flag:'wx'});
+writeFileSync(`${prefix}-verification.json`,JSON.stringify({observedAt,tests:36,passed:36,failed:0,skipped:0,testFiles:5,syntheticSandbox:true,actualSqlite:true,realProvider:false,realPayment:false,externalCalls:0,actualCost:null,latencyPercentiles:null,verified:51},null,2),{flag:'wx'});
+writeFileSync(`${prefix}-report.md`,`# 여행 견적 달력·시간 순서 계약 보강\n\n관측 ${observedAt}. 공식 인수 **51/100 유지**.\n\n기존 날짜 검사는 형식과Date.parse 유한성만 확인해 존재하지 않는 날짜의 자동 보정을 허용했고, 도착이 출발보다 이르거나 같은 견적도 통과했다. 조회는 승객/수하물 최대9인데 견적은 상한을 검사하지 않았다. 최초10시험 중2통과/8실패를 보존했다.\n\nGregorian 달력·윤년·시/분 범위와 숫자offset을 검사하고 절대 도착시각이 출발 뒤인지 확인한다. 조회 날짜도 유효해야 한다. 견적의 승객1~9/수하물0~9 상한을 조회와 일치시켰다. 윤년/다른offset/자정 경계를 가진 양성대조가 통과한다. 기존 일정변경 단위시험은 원래 입력을 유지했다. 그 입력이 출발12시/도착9시55분의 잘못된시간표여서 더 앞선 invalid-source 오류를 기대하도록 분류만 수정했으며 예약0 검사도 유지했다. 고정 sandbox 평가 입력은 바꾸지 않았다.\n\n최종 실제5파일 **36/36, 실패0/미실행0**, build/Core계약 통과. 초기 focused에 존재하지 않은 travel-quote-sandbox.test.js는 실행 증거로 세지 않고 실제 agent-platform-s04-travel-sandbox.test.js를 포함한 최종 명령을 보존했다. 합성 sandbox/SQLite 예약이며 공식 공급자 sandbox·예약·환불·실거래가 아니다. 지역시간대DB/DST·실제운항·실계정 검증은 남아 있다. 실제비용/제품p50/p95 미측정. 운영서비스·사용자계정·자료·기억 변경 없음. 복원은 날짜/시간/견적인원 검사와 시험/문서만 검토한다.\n`,{flag:'wx'});
+const evidencePaths=['report.md','verification.json','source.json','before.txt','focused.txt','recheck.txt','build.txt','contract.txt'].map(x=>`${prefix}-${x}`);
+writeFileSync(`${prefix}-attempt.json`,JSON.stringify({id:'travel-temporal-20261007',candidateId:'agent-platform-observed-scenario-status',kind:'workflow-test',reportedOutcome:'passed',observedAt,evidencePaths,hypothesis:'조회와 공급 견적의 달력·시간 순서·인원 계약을 동일하게 검사하면 잘못된 견적이 예산 예약으로 전달되는 것을 막을 수 있다.',lesson:'Date.parse는 존재하지 않는 날짜를 보정할 수 있다. 현지 시각 문자열의 순서가 아니라 offset이 반영된 절대 시각과 달력을 함께 확인해야 한다.',limitations:'합성sandbox/SQLite36통과·build/contract. 실제 공급자/DST/예약/거래 인수 미완료, 공식51유지.'},null,2),{flag:'wx'});
+const path='docs/universal-control-v3-acceptance.json',a=JSON.parse(read(path)),gates=a.stages.flatMap(s=>s.gates);
+assert.equal(gates.length,100);assert.equal(gates.filter(g=>g.status==='verified').length,51);
+for(const id of ['V3-021','V3-074']){const g=gates.find(g=>g.id===id);assert.equal(g.status,'in_progress');g.evidence.push(...evidencePaths.slice(0,3));g.reviewedAt=observedAt;g.limitations.push('2026-10-07 합성여행 Gregorian/도착절대시각/인원상한8실패 수정·예약0/양성대조/36통과·build/contract. 실제공급자/DST/예약·환불 미완료.');}
+a.updatedAt=observedAt;writeFileSync(path,JSON.stringify(a,null,2)+'\n');
+appendFileSync('docs/execution-to-100.md',`\n최신 ${prefix}-report.md: 여행 날짜/시간 순서/인원 계약36통과·공식51유지. 공식sandbox/DST/예약·환불 남음.\n`);
+console.log(JSON.stringify({verified:51,tests:36,observedAt}));

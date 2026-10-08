@@ -1,0 +1,39 @@
+// Validate generated artifacts, not source snippets or a provider's success message.
+ext.validateJarvisDistribution = { File manifestFile, File configFile, String channel ->
+    if (!(channel in ['play-store', 'private-lab'])) {
+        throw new GradleException('Unknown JARVIS distribution channel')
+    }
+    def manifest = new groovy.xml.XmlParser(false, true).parse(manifestFile)
+    def androidNs = 'http://schemas.android.com/apk/res/android'
+    def attr = { node, key ->
+        node.attributes().find { name, value ->
+            name instanceof groovy.namespace.QName && name.namespaceURI == androidNs && name.localPart == key
+        }?.value?.toString()
+    }
+    def config = configFile.getText('UTF-8')
+    def channelFields = config =~ /(?m)^\s*public static final String JARVIS_DISTRIBUTION_CHANNEL = "([^"\r\n]+)";\s*$/
+    if (channelFields.count != 1 || channelFields[0][1] != channel) {
+        throw new GradleException('Generated BuildConfig distribution channel mismatch')
+    }
+    if (channel == 'play-store') {
+        def forbidden = ['android.permission.SYSTEM_ALERT_WINDOW',
+            'android.permission.READ_EXTERNAL_STORAGE', 'android.permission.WRITE_EXTERNAL_STORAGE',
+            'android.permission.MANAGE_EXTERNAL_STORAGE', 'android.permission.QUERY_ALL_PACKAGES',
+            'android.permission.BIND_ACCESSIBILITY_SERVICE'] as Set
+        def permissions = manifest.children().findAll { it instanceof groovy.util.Node && it.name().toString().startsWith('uses-permission') }
+        if (permissions.any { forbidden.contains(attr(it, 'name')) }) {
+            throw new GradleException('Private device-control permission in Play manifest')
+        }
+        def apps = manifest.application
+        if (apps.size() != 1 || attr(apps[0], 'usesCleartextTraffic') != 'false') {
+            throw new GradleException('Play manifest must explicitly disable cleartext traffic')
+        }
+        if (apps.service.any { service ->
+            attr(service, 'permission') == 'android.permission.BIND_ACCESSIBILITY_SERVICE' ||
+            service.'intent-filter'.action.any { attr(it, 'name') == 'android.accessibilityservice.AccessibilityService' }
+        }) {
+            throw new GradleException('Autonomous accessibility service in Play manifest')
+        }
+    }
+    return [channel: channel, passed: true]
+}

@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const prefix='artifacts/mcp-result-currentness-20261007',observedAt=new Date().toISOString();
+const read=p=>readFileSync(p,'utf8').replace(/^\uFEFF/u,''),hash=x=>createHash('sha256').update(x).digest('hex');
+const log=read(`${prefix}-recheck.txt`),count=key=>Number(log.match(new RegExp(`(?:ℹ |# )${key} (\\d+)`))?.[1]);
+assert.equal(count('tests'),77);assert.equal(count('pass'),77);assert.equal(count('fail'),0);assert.equal(count('skipped'),0);
+assert.match(log,/actual HTTP MCP result delivery rechecks policy-regrant/u);
+assert.match(read(`${prefix}-build.txt`),/Built static JARVIS/u);assert.match(read(`${prefix}-contract.txt`),/gatePassed: true/u);
+const files=['packages/core/src/personal-operations/mcp-connections.js','tests/mcp-result-currentness.test.js','tests/mcp-execution.test.js','docs/mcp-verified-results.md'];
+writeFileSync(`${prefix}-source.json`,JSON.stringify({observedAt,files:files.map(path=>({path,sha256:hash(readFileSync(path)),content:read(path)}))},null,2),{flag:'wx'});
+writeFileSync(`${prefix}-verification.json`,JSON.stringify({observedAt,tests:77,passed:77,failed:0,skipped:0,testFiles:9,durationMs:Number(log.match(/duration_ms ([\d.]+)/u)[1]),actualLoopbackHttp:true,actualSqlite:true,syntheticResult:true,realAccount:false,externalServiceCalls:0,actualCost:null,latencyPercentiles:null,verified:51},null,2),{flag:'wx'});
+writeFileSync(`${prefix}-report.md`,`# MCP 응답 전달의 현재 권한 검사\n\n관측 ${observedAt}. 공식 인수 **51/100 유지**.\n\n기존 코드는 실행 전 정책·허용 revision을 재검사했지만 비동기 응답 이후 수동 결과 전달 전에 같은 검사를 하지 않았다. 새 시험7건은 새 결과 전달 hook 부재로 먼저 실패했다. 코드 경로에서 권한 철회 이후에도 형식상 정상 응답을 반환하는 문제를 확인했다.\n\n이제 응답 전체 파싱/형식 검증 후 정책을 확인하고 hook 뒤의 현재 연결/endpoint/허용 revision/contract grant를 마지막으로 확인한다. 철회·재허용·연결 삭제·정책 거부·hook 예외·hook 내부 철회에는 result-withheld를 기록하고 원문을 반환하지 않는다. 이미 받은 정상 응답의 hash/providerResponseReceived는 보존하지만 업무 성공이나 취소를 주장하지 않는다. 형식 오류도 catch에서 원문을 제거하며 outcome-unknown으로 유지한다. 원래 요청ID는 재사용되지 않고 자동 재시도는false다. 새 사용자 요청까지 모두 금지하는 의미는 아니다.\n\n실제 loopback HTTP MCP와 별도SQLite manager에서 정상 대조1건과 철회/정책/형식 반례7건을 실행했다. 최종 실제9시험파일 **77/77, 실패0/미실행0**. Core HTTP 신뢰 정책·MCP Mission·다른 프로세스 재시작/예약·독립 원문 검사·package 회귀 포함. build/Core contract gate 통과. 결과 원문과 예외의 합성 민감 문구가 반환/저장 이력에 노출되지 않음을 검사했다.\n\n자료가 이미 MCP 서버로 전송된 뒤의 철회를 소급 취소하지 않는다. 자료 종류·목적별 전체egress, 실계정, 모든 외부효과, 비동기 verifier 이후 별도 정책 변경 경계와 OS 원자 철회는 전체 인수가 남아 있다. 추가 정책hook1회이며 전체 제품지연·비용은 미측정이다. 운영서비스/사용자계정/기억 변경 없음. 복원은 이번 응답 검사와 새시험·문서 연결만 검토하고 사용자 이력을 보존한다.\n`,{flag:'wx'});
+const evidencePaths=['report.md','verification.json','source.json','before.txt','focused.txt','recheck.txt','build.txt','contract.txt'].map(x=>`${prefix}-${x}`);
+writeFileSync(`${prefix}-attempt.json`,JSON.stringify({id:'mcp-result-currentness-20261007',candidateId:'agent-platform-observed-scenario-status',kind:'workflow-test',reportedOutcome:'passed',observedAt,evidencePaths,hypothesis:'비동기 MCP 응답 전달 직전에 정책과 현재 허용 revision을 재확인하면 철회된 자료가 수동 결과에 노출되는 것을 막을 수 있다.',lesson:'실행 허용과 자료 전달 허용의 시각은 다르다. 응답을 받은 사실은 보존하되 권한이 바뀐 자료는 반환하지 않고 통신 이력에 원문을 저장하지 않는다.',limitations:'실제loopback/SQLite77통과. 실계정·전체egress·비동기검증후 정책경계/OS원자철회·제품시간비용 미완료. 공식51유지.'},null,2),{flag:'wx'});
+const path='docs/universal-control-v3-acceptance.json',a=JSON.parse(read(path)),gates=a.stages.flatMap(s=>s.gates);
+assert.equal(gates.length,100);assert.equal(gates.filter(g=>g.status==='verified').length,51);
+for(const id of ['V3-029','V3-031']){const g=gates.find(g=>g.id===id);assert.equal(g.status,'in_progress');g.evidence.push(...evidencePaths.slice(0,3));g.reviewedAt=observedAt;g.limitations.push('2026-10-07 MCP 응答 직후 정책·grant revision 재검사/원문반환 억제·77/77·build/contract. 전체egress/모든효과·실계정·OS원자철회 미완료.');}
+a.updatedAt=observedAt;writeFileSync(path,JSON.stringify(a,null,2)+'\n');
+appendFileSync('docs/execution-to-100.md',`\n최신 ${prefix}-report.md: MCP 결과 반환 권한 재검사·77통과·철회원문 반환0·공식51유지. 전체egress/실계정/OS원자철회 남음.\n`);
+console.log(JSON.stringify({verified:51,tests:77,observedAt}));

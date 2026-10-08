@@ -2,6 +2,13 @@
 // 네이티브 모듈이 없는 환경(테스트 러너, 구 빌드)에서도 앱이 죽지 않도록
 // 지연 로딩하고, 미지원이면 조용히 비활성 상태로 남긴다.
 
+import { normalizeVoiceConfidence } from './voice-evidence.js';
+import {
+  buildRecognitionServiceOrder,
+  isRecoverableRecognitionStartError,
+  recognitionStartupTimeoutMs
+} from './recognitionPolicy.js';
+
 // Metro 런타임의 require를 지연 로딩에 사용한다 (strict TS 환경 대비 선언).
 declare const require: (id: string) => any;
 
@@ -22,11 +29,67 @@ try {
 }
 
 const recognitionModule = SpeechRecognition?.ExpoSpeechRecognitionModule ?? null;
+let recognitionServiceCursor = 0;
+let activeRecognitionEngine = 'platform-default';
+let recognitionActive = false;
+let recognitionStartOperation: Promise<RecognitionStartResult> | null = null;
+let recognitionAttemptSequence = 0;
+let suppressRecognitionEndUntil = 0;
+
+type RecognitionStartResult = {
+  engine: string;
+  attempts: number;
+  recovered: boolean;
+  cancelled?: boolean;
+};
+
+type RecognitionStartupError = Error & {
+  code: string;
+  engine: string;
+};
+
+type PendingRecognitionStart = {
+  id: number;
+  engine: string;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: () => void;
+  reject: (error: RecognitionStartupError) => void;
+};
+
+let pendingRecognitionStart: PendingRecognitionStart | null = null;
 
 export const voiceSupport = {
   tts: Boolean(Speech?.speak),
   stt: Boolean(recognitionModule?.start)
 };
+
+export function availableRecognitionServices(): string[] {
+  try {
+    const available = recognitionModule?.getSpeechRecognitionServices?.();
+    const defaultService = recognitionModule?.getDefaultRecognitionService?.()?.packageName;
+    return buildRecognitionServiceOrder({
+      availableServices: Array.isArray(available) ? available : [],
+      defaultService
+    });
+  } catch {
+    return ['platform-default'];
+  }
+}
+
+export function getRecognitionEngine(): string {
+  const services = availableRecognitionServices();
+  return services[recognitionServiceCursor % services.length];
+}
+
+export function getActiveRecognitionEngine(): string {
+  return activeRecognitionEngine;
+}
+
+export function rotateRecognitionEngine(): string {
+  const services = availableRecognitionServices();
+  if (services.length > 1) recognitionServiceCursor = (recognitionServiceCursor + 1) % services.length;
+  return getRecognitionEngine();
+}
 
 // TTS 낭독 상한: Android TTS 엔진의 4000자 제한 아래로 자른다.
 const maxSpeakChars = 3600;
@@ -95,6 +158,66 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function startupError(code: string, engine: string, message: string): RecognitionStartupError {
+  const error = new Error(message) as RecognitionStartupError;
+  error.code = String(code || 'unknown');
+  error.engine = engine;
+  return error;
+}
+
+function errorCode(error: unknown): string {
+  return String((error as { code?: unknown })?.code ?? 'unknown');
+}
+
+function rejectPendingRecognitionStart(error: RecognitionStartupError, { expectEnd = true } = {}) {
+  const pending = pendingRecognitionStart;
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  pendingRecognitionStart = null;
+  if (expectEnd) suppressRecognitionEndUntil = Date.now() + 1500;
+  pending.reject(error);
+  return true;
+}
+
+function waitForRecognitionStart(engine: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const id = ++recognitionAttemptSequence;
+    const timer = setTimeout(() => {
+      if (pendingRecognitionStart?.id !== id) return;
+      const error = startupError(
+        'startup-timeout',
+        engine,
+        `음성 인식 서비스가 ${recognitionStartupTimeoutMs / 1000}초 안에 준비되지 않았습니다.`
+      );
+      rejectPendingRecognitionStart(error);
+      try {
+        recognitionModule?.abort?.();
+      } catch {
+        // The next engine attempt remains authoritative.
+      }
+    }, recognitionStartupTimeoutMs);
+    pendingRecognitionStart = { id, engine, timer, resolve, reject };
+  });
+}
+
+function resolvePendingRecognitionStart() {
+  const pending = pendingRecognitionStart;
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  pendingRecognitionStart = null;
+  suppressRecognitionEndUntil = 0;
+  activeRecognitionEngine = pending.engine;
+  recognitionActive = true;
+  pending.resolve();
+  return true;
+}
+
+function consumeSuppressedRecognitionEnd() {
+  if (Date.now() > suppressRecognitionEndUntil) return false;
+  suppressRecognitionEndUntil = 0;
+  return true;
+}
+
 // 마이크 권한을 확인/요청한다. 이미 있으면 팝업을 띄우지 않는다.
 // 방금 부여됐는지 여부(justGranted)를 함께 돌려줘 start 타이밍 보정에 쓴다.
 export async function ensureMicPermission(): Promise<{ granted: boolean; justGranted: boolean }> {
@@ -105,7 +228,29 @@ export async function ensureMicPermission(): Promise<{ granted: boolean; justGra
   return { granted: Boolean(requested?.granted), justGranted: Boolean(requested?.granted) };
 }
 
-export async function startListening() {
+function recognitionOptions(recognitionEngine: string, audioSourceUri: string | null) {
+  const options: any = {
+    lang: 'ko-KR',
+    interimResults: true,
+    continuous: false,
+    volumeChangeEventOptions: { enabled: true, intervalMillis: 250 }
+  };
+  if (recognitionEngine !== 'platform-default') {
+    options.androidRecognitionServicePackage = recognitionEngine;
+  }
+  if (audioSourceUri) {
+    options.audioSource = {
+      uri: audioSourceUri,
+      audioChannels: 1,
+      audioEncoding: SpeechRecognition?.AudioEncodingAndroid?.ENCODING_PCM_16BIT ?? 2,
+      sampleRate: 16000,
+      chunkDelayMillis: 50
+    };
+  }
+  return options;
+}
+
+async function startRecognition(audioSourceUri: string | null = null): Promise<RecognitionStartResult> {
   if (!voiceSupport.stt) {
     throw new Error('이 빌드는 음성 인식을 지원하지 않습니다. 앱을 업데이트해 주세요.');
   }
@@ -113,19 +258,89 @@ export async function startListening() {
   if (!granted) {
     throw new Error('마이크 권한이 필요합니다. 설정에서 허용해 주세요.');
   }
-  // 권한이 막 부여된 직후에는 마이크 세션이 준비되기 전이라 첫 start가 실패할 수 있다.
-  // 짧게 기다린 뒤 시작하고, 그래도 실패하면 한 번 재시도한다.
   if (justGranted) await sleep(400);
-  const options = { lang: 'ko-KR', interimResults: true, continuous: false };
+
+  const engines = availableRecognitionServices();
+  const failures: RecognitionStartupError[] = [];
+  for (let attempt = 0; attempt < engines.length; attempt += 1) {
+    const recognitionEngine = getRecognitionEngine();
+    activeRecognitionEngine = recognitionEngine;
+    const ready = waitForRecognitionStart(recognitionEngine);
+    try {
+      recognitionModule.start(recognitionOptions(recognitionEngine, audioSourceUri));
+    } catch (error) {
+      rejectPendingRecognitionStart(startupError(
+        errorCode(error),
+        recognitionEngine,
+        String((error as Error)?.message ?? '음성 인식 서비스를 시작하지 못했습니다.')
+      ));
+      try {
+        recognitionModule?.abort?.();
+      } catch {
+        // Continue through the shared startup failure path.
+      }
+    }
+
+    try {
+      await ready;
+      return { engine: recognitionEngine, attempts: attempt + 1, recovered: attempt > 0 };
+    } catch (error) {
+      const failure = error as RecognitionStartupError;
+      if (failure.code === 'aborted') {
+        return { engine: recognitionEngine, attempts: attempt + 1, recovered: attempt > 0, cancelled: true };
+      }
+      failures.push(failure);
+      if (!isRecoverableRecognitionStartError(failure.code) || attempt === engines.length - 1) break;
+      rotateRecognitionEngine();
+      await sleep(450);
+    }
+  }
+
+  const details = failures.map((failure) => `${failure.engine}:${failure.code}`).join(', ');
+  throw startupError(
+    'recognizer-unavailable',
+    getRecognitionEngine(),
+    `음성 인식 서비스를 준비하지 못했습니다. Android 음성 인식 설정을 확인해 주세요.${details ? ` (${details})` : ''}`
+  );
+}
+
+export async function startListening() {
+  if (recognitionActive) return { engine: activeRecognitionEngine, attempts: 0, recovered: false };
+  if (recognitionStartOperation) return recognitionStartOperation;
+  const operation = startRecognition();
+  recognitionStartOperation = operation;
   try {
-    recognitionModule.start(options);
-  } catch (error) {
-    await sleep(500);
-    recognitionModule.start(options);
+    return await operation;
+  } finally {
+    if (recognitionStartOperation === operation) recognitionStartOperation = null;
+  }
+}
+
+export async function startListeningFromAudioFile(uri: string) {
+  const normalized = String(uri ?? '').trim();
+  if (!normalized.startsWith('file://')) throw new Error('로컬 음성 파일 URI가 필요합니다.');
+  if (recognitionActive) return { engine: activeRecognitionEngine, attempts: 0, recovered: false };
+  if (recognitionStartOperation) return recognitionStartOperation;
+  const operation = startRecognition(normalized);
+  recognitionStartOperation = operation;
+  try {
+    return await operation;
+  } finally {
+    if (recognitionStartOperation === operation) recognitionStartOperation = null;
   }
 }
 
 export function stopListening() {
+  if (pendingRecognitionStart) {
+    const engine = pendingRecognitionStart.engine;
+    rejectPendingRecognitionStart(startupError('aborted', engine, '음성 인식 준비를 취소했습니다.'));
+    try {
+      recognitionModule?.abort?.();
+    } catch {
+      // ignore
+    }
+    return;
+  }
   try {
     recognitionModule?.stop();
   } catch {
@@ -139,26 +354,96 @@ const useSpeechRecognitionEvent =
   SpeechRecognition?.useSpeechRecognitionEvent ?? ((_event: string, _handler: unknown) => {});
 
 export type VoiceEventHandlers = {
-  onResult?: (transcript: string, isFinal: boolean) => void;
+  onStart?: (engine: string) => void;
+  onSpeechStart?: () => void;
+  onVolume?: (value: number) => void;
+  onNoSpeech?: () => void;
+  onResult?: (transcript: string, isFinal: boolean, evidence: VoiceRecognitionEvidence) => void;
   onEnd?: () => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, code: string) => void;
+};
+
+export type VoiceRecognitionEvidence = {
+  confidence: number | null;
+  alternativesCount: number;
+  locale: string;
+  engine: string;
+  confirmationMode?: 'repeat-consensus' | 'voice-readback';
+  confirmationReason?: string;
+  confirmationCount?: number;
+  independentEngineCount?: number;
+  confirmationEngine?: string;
+  confirmationConfidence?: number | null;
+  rawAudioStored: false;
+  alternativesStored: false;
 };
 
 export function useVoiceEvents(handlers: VoiceEventHandlers) {
+  const handleRecognitionReady = () => {
+    const startupSettled = resolvePendingRecognitionStart();
+    if (!startupSettled && recognitionActive) return;
+    recognitionActive = true;
+    handlers.onStart?.(activeRecognitionEngine);
+  };
+  // Some Samsung/Android 16 recognizers open the capture pipeline but omit
+  // RecognitionListener.onReadyForSpeech. audiostart is the earliest portable
+  // proof that startListening was accepted; a later start event is deduplicated.
+  useSpeechRecognitionEvent('audiostart', handleRecognitionReady);
+  useSpeechRecognitionEvent('start', () => {
+    handleRecognitionReady();
+  });
+  useSpeechRecognitionEvent('speechstart', () => {
+    handlers.onSpeechStart?.();
+  });
+  useSpeechRecognitionEvent('volumechange', (event: any) => {
+    const value = Number(event?.value);
+    if (Number.isFinite(value)) handlers.onVolume?.(value);
+  });
   useSpeechRecognitionEvent('result', (event: any) => {
-    const transcript = String(event?.results?.[0]?.transcript ?? '').trim();
-    if (transcript) handlers.onResult?.(transcript, Boolean(event?.isFinal));
+    const results = Array.isArray(event?.results) ? event.results : [];
+    const primary = results[0];
+    const transcript = String(primary?.transcript ?? '').trim();
+    const confidence = normalizeVoiceConfidence(primary?.confidence);
+    if (transcript) {
+      handlers.onResult?.(transcript, event?.isFinal === true, {
+        confidence,
+        alternativesCount: results.length,
+        locale: 'ko-KR',
+        engine: activeRecognitionEngine,
+        rawAudioStored: false,
+        alternativesStored: false
+      });
+    }
   });
   useSpeechRecognitionEvent('end', () => {
+    recognitionActive = false;
+    if (consumeSuppressedRecognitionEnd()) return;
+    if (pendingRecognitionStart) {
+      const engine = pendingRecognitionStart.engine;
+      rejectPendingRecognitionStart(startupError(
+        'ended-before-ready',
+        engine,
+        '음성 인식 서비스가 준비되기 전에 종료되었습니다.'
+      ), { expectEnd: false });
+      return;
+    }
     handlers.onEnd?.();
   });
   useSpeechRecognitionEvent('error', (event: any) => {
-    // 'no-speech'는 사용자가 말을 안 한 것 — 오류 표시 없이 종료만 처리한다.
-    if (String(event?.error ?? '') === 'no-speech') {
-      handlers.onEnd?.();
+    const code = String(event?.error ?? 'unknown');
+    const message = String(event?.message ?? event?.error ?? '음성 인식에 실패했습니다.');
+    recognitionActive = false;
+    if (pendingRecognitionStart) {
+      const engine = pendingRecognitionStart.engine;
+      rejectPendingRecognitionStart(startupError(code, engine, message));
       return;
     }
-    handlers.onError?.(String(event?.message ?? event?.error ?? '음성 인식에 실패했습니다.'));
+    // 'no-speech'는 일반 오류와 분리해 입력 신호 진단과 재시도 UX에 사용한다.
+    if (code === 'no-speech') {
+      handlers.onNoSpeech?.();
+      return;
+    }
+    handlers.onError?.(message, code);
   });
 }
 

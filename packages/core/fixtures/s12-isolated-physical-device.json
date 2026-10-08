@@ -1,0 +1,14 @@
+{
+  "fixtureId": "s12-isolated-device-reconciliation-v1",
+  "initialDevices": [
+    { "deviceId": "light.living-room", "kind": "light", "state": "off" },
+    { "deviceId": "thermostat.living-room", "kind": "thermostat", "state": 21 },
+    { "deviceId": "lock.front-door", "kind": "door_lock", "state": "locked" }
+  ],
+  "allowedCommand": { "deviceId": "light.living-room", "command": "turn_on" },
+  "forbiddenCommands": [
+    { "deviceId": "thermostat.living-room", "command": "set_temperature", "value": 28 },
+    { "deviceId": "lock.front-door", "command": "unlock" }
+  ],
+  "conflictState": { "deviceId": "light.living-room", "state": "off" }
+}

@@ -5,15 +5,15 @@ export const routeMeta = {
   },
   PairingScreen: {
     label: '페어링',
-    description: 'D Bridge URL과 pairing code로 PC 브릿지에 연결합니다.'
+    description: 'D 브리지 접속 주소와 페어링 코드로 PC에 연결합니다.'
   },
   CommandScreen: {
     label: '명령',
-    description: '자연어 명령을 TaskRequest로 만들고 D Bridge로 전송합니다.'
+    description: '자연어 명령을 작업 요청으로 만들고 D 브리지로 전송합니다.'
   },
   ApprovalQueueScreen: {
     label: '승인 대기',
-    description: 'A/E가 만든 승인 카드를 확인합니다.'
+    description: '핵심 엔진과 보안 정책이 만든 승인 카드를 확인합니다.'
   },
   ApprovalDetailScreen: {
     label: '승인 상세',
@@ -21,7 +21,7 @@ export const routeMeta = {
   },
   TaskStatusScreen: {
     label: '작업 상태',
-    description: 'B의 실행 상태와 G 검증 단계를 추적합니다.'
+    description: 'PC 에이전트의 실행 상태와 검증 단계를 추적합니다.'
   },
   ResultScreen: {
     label: '결과',
@@ -33,11 +33,11 @@ export const routeMeta = {
   },
   GrowthReviewScreen: {
     label: '성장 리뷰',
-    description: 'F의 반복 작업과 선호 후보를 읽기 전용으로 검토합니다.'
+    description: '기억 시스템의 반복 작업과 선호 후보를 읽기 전용으로 검토합니다.'
   },
   PoisonQueueScreen: {
     label: '격리 큐',
-    description: 'B의 실패/격리 패킷을 모바일에서 검토합니다.'
+    description: 'PC 에이전트에서 실패하거나 격리된 작업을 모바일에서 검토합니다.'
   }
 };
 
@@ -71,14 +71,14 @@ export function createMobileProductState(now = '2026-06-17T10:30:00+09:00') {
     approvalId: 'appr_mobile_001',
     taskId: 'task_mobile_001',
     title: '주간 사역 보고서 엑셀 생성',
-    interpretedIntent: '모바일에서 입력한 자연어 명령을 A가 해석하고, B가 허용된 작업 폴더에 XLSX 파일을 생성합니다.',
+    interpretedIntent: '모바일에서 입력한 자연어 명령을 핵심 엔진이 해석하고, PC 에이전트가 허용된 작업 폴더에 XLSX 파일을 생성합니다.',
     riskTier: 5,
     planSteps: [
-      '요청 문장을 TaskRequest로 정규화',
-      'A Core에서 엑셀 생성 계획 수립',
-      'E Policy에서 낮은 위험 승인 카드 발급',
-      'B PC Agent가 허용 루트 안에 파일 생성',
-      'G Verification이 산출물과 rollback 가능 여부 검증'
+      '요청 문장을 작업 요청으로 정규화',
+      '핵심 엔진에서 엑셀 생성 계획 수립',
+      '보안 정책에서 낮은 위험 승인 카드 발급',
+      'PC 에이전트가 허용된 폴더 안에 파일 생성',
+      '검증 시스템이 산출물과 되돌리기 가능 여부 검증'
     ],
     affectedItems: [
       { type: 'create_file', path: 'C:/Users/user/Documents/Jarvis/workspace/weekly-report.xlsx' },
@@ -105,10 +105,10 @@ export function createMobileProductState(now = '2026-06-17T10:30:00+09:00') {
     },
     device: {
       deviceId: 'mobile_lcb_001',
-      deviceName: 'JARVIS Mobile Console',
+      deviceName: 'JARVIS 모바일 제어기',
       paired: false,
       pairingStatus: 'unpaired',
-      pairingCode: '482913',
+      pairingCode: '',
       authTokenExists: false,
       tokenStorage: {
         exists: false,
@@ -150,7 +150,7 @@ export function createMobileProductState(now = '2026-06-17T10:30:00+09:00') {
             { type: 'create_file', path: 'C:/Users/user/Documents/Jarvis/workspace/notice-draft.docx' },
             { type: 'external_transfer', label: '외부 채널 발송 후보' }
           ],
-          warnings: ['Tier 2 작업은 PC 직접 확인 필요', '외부 전송 포함']
+          warnings: ['위험 2단계 작업은 PC 직접 확인 필요', '외부 전송 포함']
         }
       ],
       selectedApprovalId: approval.approvalId,
@@ -220,7 +220,7 @@ export function createMobileProductState(now = '2026-06-17T10:30:00+09:00') {
       outputPaths: ['C:/Users/user/Documents/Jarvis/workspace/weekly-report.xlsx'],
       changedItems: [
         { type: 'create_file', path: 'C:/Users/user/Documents/Jarvis/workspace/weekly-report.xlsx' },
-        { type: 'write_audit', label: 'UndoJournal + VerificationReport' }
+        { type: 'write_audit', label: '되돌리기 기록 + 검증 보고서' }
       ],
       rollbackAvailable: true,
       verificationStatus: 'passed'
@@ -340,7 +340,7 @@ export function createMobileProductState(now = '2026-06-17T10:30:00+09:00') {
           quarantinedAt: now,
           error: {
             code: 'B_PACKET_SCHEMA_INVALID',
-            message: 'ExecutionPacket payload validation failed.'
+            message: '실행 작업 데이터의 형식 검증에 실패했습니다.'
           }
         },
         {
@@ -377,8 +377,8 @@ export function createMobileProductState(now = '2026-06-17T10:30:00+09:00') {
       startSession: null
     },
     auditTrail: [
-      { eventId: 'audit_mobile_001', label: 'C does not execute PC actions directly.', createdAt: now },
-      { eventId: 'audit_mobile_002', label: 'ApprovalDecision is sent through D Bridge.', createdAt: now }
+      { eventId: 'audit_mobile_001', label: '모바일 앱은 PC 작업을 직접 실행하지 않습니다.', createdAt: now },
+      { eventId: 'audit_mobile_002', label: '승인 결정은 D 브리지를 통해 전송됩니다.', createdAt: now }
     ],
     screenMessage: '모바일은 명령·승인·확인만 담당하고 실제 실행은 B가 수행합니다.'
   };

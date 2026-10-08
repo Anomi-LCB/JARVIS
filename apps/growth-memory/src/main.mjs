@@ -10,6 +10,8 @@ export const growthMemoryRouteContracts = [
   createRouteContract('GET', '/health', 'Read F growth-memory health.'),
   createRouteContract('GET', '/openapi.json', 'Read F growth-memory OpenAPI contract.'),
   createRouteContract('POST', '/events', 'Ingest a memory event.'),
+  createRouteContract('GET', '/events/pending', 'Read pending retry counts without event content.'),
+  createRouteContract('POST', '/events/pending/drain', 'Replay bounded pending memory events.'),
   createRouteContract('POST', '/feedback', 'Record task feedback.'),
   createRouteContract('POST', '/memory/query', 'Query planning memory context.'),
   createRouteContract('POST', '/memory/minimize/preview', 'Preview sensitive-memory minimization.'),
@@ -100,6 +102,11 @@ export const growthMemoryRouteContracts = [
   createRouteContract('POST', '/advanced-learning/product-gate', 'Run advanced learning product readiness gate.'),
   createRouteContract('POST', '/advanced-learning/release-dossier', 'Run advanced learning release dossier checks.'),
   createRouteContract('POST', '/advanced-learning/skill-drafts/:draftId/review', 'Review a skill draft.'),
+  createRouteContract('POST', '/advanced-learning/skill-registry/:skillId/revisions', 'Create a non-executable skill revision draft.'),
+  createRouteContract('POST', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/evaluate', 'Run static contract checks for a skill revision.'),
+  createRouteContract('POST', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/review', 'Record explicit review of an evaluated skill revision.'),
+  createRouteContract('POST', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/promote', 'Promote an explicitly reviewed skill revision while retaining policy gates.'),
+  createRouteContract('POST', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/rollback', 'Restore a prior skill revision with an auditable lifecycle event.'),
   createRouteContract('POST', '/advanced-learning/skill-registry/:skillId/usefulness', 'Record approved skill usefulness feedback.'),
   createRouteContract('GET', '/maturity-score', 'Read maturity score.'),
   createRouteContract('GET', '/maturity-score/trends', 'Read maturity trends.'),
@@ -119,6 +126,7 @@ export const growthMemoryRouteContracts = [
   createRouteContract('POST', '/autonomy/candidates/:candidateId/submit-to-policy', 'Submit autonomy candidate to E policy.'),
   createRouteContract('POST', '/autonomy/candidates/:candidateId/review', 'Review autonomy candidate.'),
   createRouteContract('GET', '/memory/hygiene/report', 'Read memory hygiene report.'),
+  createRouteContract('GET', '/memory/hygiene/follow-up', 'Refresh projection and report status without resubmitting a hygiene decision.'),
   createRouteContract('GET', '/memory/hygiene/trends', 'Read memory hygiene trends.'),
   createRouteContract('GET', '/memory/hygiene/decisions/history', 'Read memory hygiene decision history.'),
   createRouteContract('GET', '/memory/retention/calendar', 'Read retention policy calendar.'),
@@ -129,15 +137,29 @@ export const growthMemoryRouteContracts = [
 ];
 
 export function createGrowthMemoryOpenApiSpec() {
-  return createOpenApiSpecFromRouteContracts({
+  const spec = createOpenApiSpecFromRouteContracts({
     title: 'JARVIS F Growth Memory API',
     moduleId: ModuleId.GROWTH_MEMORY,
     routes: growthMemoryRouteContracts
   });
+  for (const [path, methods] of [
+    ['/preferences/confirmed/{preferenceId}', ['patch', 'post']],
+    ['/preferences/confirmed/{preferenceId}/revoke', ['post']]
+  ]) for (const method of methods) {
+    const operation = spec.paths[path][method];
+    operation.description = 'Supply expectedRevision and expectedGeneration from the observed list to reject stale screens across restore. Legacy omission remains supported for internal callers; Core owner-screen mutations require both.';
+    operation.requestBody.content['application/json'].schema = { type: 'object', additionalProperties: true, properties: {
+      expectedRevision: { type: 'integer', minimum: 1 }, expectedGeneration: { type: 'integer', minimum: 0 }, patch: { type: 'object' }, reason: { type: 'string' }, decidedBy: { type: 'string' }
+    } };
+    operation.responses[400] = { description: 'Invalid memory revision.' };
+    operation.responses[409] = { description: 'Memory revision changed or supporting source retracted; review before retrying.' };
+  }
+  return spec;
 }
 
-export function createGrowthMemoryServer(growthRuntime) {
-  return http.createServer((request, response) => {
+export function createGrowthMemoryServer(growthRuntime, { pendingReplayIntervalMs = 5000 } = {}) {
+  if (!Number.isSafeInteger(pendingReplayIntervalMs) || pendingReplayIntervalMs < 100 || pendingReplayIntervalMs > 60000) throw new TypeError('Invalid pending replay interval.');
+  const server = http.createServer((request, response) => {
     safeHandle(response, async () => {
       const path = routePath(request);
       const url = new URL(request.url, 'http://127.0.0.1');
@@ -147,8 +169,10 @@ export function createGrowthMemoryServer(growthRuntime) {
       if (request.method === 'GET' && path === '/openapi.json') {
         return sendJson(response, 200, createGrowthMemoryOpenApiSpec());
       }
+      if (request.method === 'GET' && path === '/events/pending') return sendJson(response, 200, growthRuntime.memoryStore?.pendingMemoryStatus?.() ?? { pendingCount: 0 });
+      if (request.method === 'POST' && path === '/events/pending/drain') return sendJson(response, 200, growthRuntime.drainPendingMemory(await readJsonBody(request)));
       if (request.method === 'POST' && path === '/events') {
-        return sendJson(response, 200, growthRuntime.ingestor.ingest(await readJsonBody(request)));
+        return sendJson(response, 200, growthRuntime.ingest(await readJsonBody(request)));
       }
       if (request.method === 'POST' && path === '/feedback') {
         return sendJson(response, 200, growthRuntime.recordFeedback(await readJsonBody(request)));
@@ -288,7 +312,11 @@ export function createGrowthMemoryServer(growthRuntime) {
         return sendJson(response, 200, { items: review.preferenceCandidates });
       }
       if (request.method === 'GET' && path === '/preferences/confirmed') {
-        return sendJson(response, 200, { items: growthRuntime.confirmedPreferenceRegistry.all() });
+        if (growthRuntime.ensureMemoryGeneration?.() === false) return sendJson(response, 503, { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } });
+        const memoryGeneration = growthRuntime.memoryGeneration;
+        const items = growthRuntime.confirmedPreferenceRegistry.all();
+        if (growthRuntime.memoryStore?.restoreGeneration && growthRuntime.memoryStore.restoreGeneration() !== memoryGeneration) return sendJson(response, 409, { success: false, error: { code: 'F_MEMORY_GENERATION_CONFLICT' } });
+        return sendJson(response, 200, { items, memoryGeneration });
       }
       if (request.method === 'GET' && path === '/preferences/conflicts') {
         return sendJson(response, 200, growthRuntime.preferenceConflictReport());
@@ -340,11 +368,13 @@ export function createGrowthMemoryServer(growthRuntime) {
       }
       const preferenceUpdateParams = routeParams('/preferences/confirmed/:preferenceId', path);
       if ((request.method === 'PATCH' || request.method === 'POST') && preferenceUpdateParams) {
-        return sendJson(response, 200, growthRuntime.updatePreference(preferenceUpdateParams.preferenceId, await readJsonBody(request)));
+        const result = growthRuntime.updatePreference(preferenceUpdateParams.preferenceId, await readJsonBody(request));
+        return sendJson(response, ['F_MEMORY_REVISION_CONFLICT', 'F_MEMORY_SOURCE_RETRACTED', 'F_MEMORY_GENERATION_CONFLICT'].includes(result.error?.code) ? 409 : result.error?.code === 'F_MEMORY_RESTORE_RELOAD_REQUIRED' ? 503 : ['F_MEMORY_REVISION_INVALID', 'F_MEMORY_GENERATION_INVALID'].includes(result.error?.code) ? 400 : 200, result);
       }
       const preferenceRevokeParams = routeParams('/preferences/confirmed/:preferenceId/revoke', path);
       if (request.method === 'POST' && preferenceRevokeParams) {
-        return sendJson(response, 200, growthRuntime.revokePreference(preferenceRevokeParams.preferenceId, await readJsonBody(request)));
+        const result = growthRuntime.revokePreference(preferenceRevokeParams.preferenceId, await readJsonBody(request));
+        return sendJson(response, ['F_MEMORY_REVISION_CONFLICT', 'F_MEMORY_SOURCE_RETRACTED', 'F_MEMORY_GENERATION_CONFLICT'].includes(result.error?.code) ? 409 : result.error?.code === 'F_MEMORY_RESTORE_RELOAD_REQUIRED' ? 503 : ['F_MEMORY_REVISION_INVALID', 'F_MEMORY_GENERATION_INVALID'].includes(result.error?.code) ? 400 : 200, result);
       }
       if (request.method === 'GET' && path === '/failures') {
         const review = growthRuntime.latestReview();
@@ -378,10 +408,9 @@ export function createGrowthMemoryServer(growthRuntime) {
       }
       const failureGuardrailParams = routeParams('/failures/:failureId/guardrail', path);
       if (request.method === 'POST' && failureGuardrailParams) {
-        return sendJson(response, 200, growthRuntime.reviewFailureGuardrail(
-          failureGuardrailParams.failureId,
-          await readJsonBody(request)
-        ));
+        const result = growthRuntime.reviewFailureGuardrail(failureGuardrailParams.failureId, await readJsonBody(request));
+        return sendJson(response, ['F_MEMORY_GENERATION_CONFLICT', 'F_MEMORY_SOURCE_CHANGED', 'F_MEMORY_SOURCE_RETRACTED'].includes(result.error?.code) ? 409
+          : result.error?.code === 'F_MEMORY_RESTORE_RELOAD_REQUIRED' ? 503 : 200, result);
       }
       if (request.method === 'GET' && path === '/planning-guardrails') {
         return sendJson(response, 200, growthRuntime.planningFailureGuardrails(url.searchParams.get('query') ?? ''));
@@ -460,6 +489,26 @@ export function createGrowthMemoryServer(growthRuntime) {
       if (request.method === 'POST' && skillDraftReviewParams) {
         return sendJson(response, 200, growthRuntime.reviewSkillDraft(skillDraftReviewParams.draftId, await readJsonBody(request)));
       }
+      const skillRevisionCreateParams = routeParams('/advanced-learning/skill-registry/:skillId/revisions', path);
+      if (request.method === 'POST' && skillRevisionCreateParams) {
+        return sendJson(response, 200, growthRuntime.mutateSkillRevision('create', {
+          ...await readJsonBody(request), skillId: skillRevisionCreateParams.skillId
+        }));
+      }
+      const skillRevisionActionRoutes = [
+        ['evaluate', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/evaluate'],
+        ['review', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/review'],
+        ['promote', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/promote'],
+        ['rollback', '/advanced-learning/skill-registry/:skillId/revisions/:revisionId/rollback']
+      ];
+      for (const [action, route] of skillRevisionActionRoutes) {
+        const params = routeParams(route, path);
+        if (request.method === 'POST' && params) {
+          return sendJson(response, 200, growthRuntime.mutateSkillRevision(action, {
+            ...await readJsonBody(request), skillId: params.skillId, revisionId: params.revisionId
+          }));
+        }
+      }
       const skillUsefulnessParams = routeParams('/advanced-learning/skill-registry/:skillId/usefulness', path);
       if (request.method === 'POST' && skillUsefulnessParams) {
         return sendJson(response, 200, growthRuntime.recordSkillUsefulness(skillUsefulnessParams.skillId, await readJsonBody(request)));
@@ -524,6 +573,9 @@ export function createGrowthMemoryServer(growthRuntime) {
         const review = growthRuntime.latestReview();
         return sendJson(response, 200, review.hygiene);
       }
+      if (request.method === 'GET' && path === '/memory/hygiene/follow-up') {
+        return sendJson(response, 200, growthRuntime.hygieneFollowUp());
+      }
       if (request.method === 'GET' && path === '/memory/hygiene/trends') {
         return sendJson(response, 200, growthRuntime.hygieneTrendReport({
           windowDays: Number(url.searchParams.get('windowDays') ?? 30),
@@ -563,6 +615,11 @@ export function createGrowthMemoryServer(growthRuntime) {
       sendJson(response, 404, { success: false, error: { code: 'F_ROUTE_NOT_FOUND' } });
     });
   });
+  let replayTimer, startupReplay;
+  const replay = () => { if (!server.listening) return; try { growthRuntime.drainPendingMemory(); } catch { growthRuntime.auditLog?.write('memory.pending_replay.failed', { code: 'F_MEMORY_PENDING_REPLAY_FAILED' }); } };
+  server.once('listening', () => { replayTimer = setInterval(replay, pendingReplayIntervalMs); replayTimer.unref(); startupReplay = setImmediate(replay); });
+  server.once('close', () => { clearInterval(replayTimer); clearImmediate(startupReplay); });
+  return server;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

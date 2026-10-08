@@ -18,3 +18,7 @@ workspace/
 artifacts/worm-target/
 artifacts/runtime/
 artifacts/runtime-logs/
+artifacts/field-evidence/
+.runtime/
+.local-integrations/
+artifacts/ap2-diagnostic-20261006-sealed.dpapi.json

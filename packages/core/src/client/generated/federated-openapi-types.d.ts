@@ -1,7 +1,7 @@
 // Generated from ContractRegistry.federatedOpenApiBundle
 // a-federated-openapi-client-types-v1
-// generatedAt 2026-07-04T12:11:47.896Z
-export const federatedOpenApiBundleHash = "sha256:04e5361fde8566d8e850574bd3447d3c0130224fdb0788dfb2dc3833063a6e68";
+// generatedAt 2026-10-02T17:26:13.728Z
+export const federatedOpenApiBundleHash = "sha256:09859490e2c201feb1b5fe46cd8af8b613a2eae0e8937cf22f98d7cd17ca54b9";
 export const federatedOpenApiBundleVersion = "a-federated-openapi-contract-bundle-v1";
 export type FederatedOpenApiModuleId =
   | "A_CORE"
@@ -11,12 +11,42 @@ export type FederatedOpenApiModuleId =
   | "F_GROWTH_MEMORY"
   | "G_VERIFICATION";
 export type FederatedOpenApiRouteKey =
+  | "A_CORE:DELETE:/integrations/connections/{connectionId}"
+  | "A_CORE:DELETE:/integrations/handoffs/{handoffId}"
+  | "A_CORE:DELETE:/integrations/mcp/{connectionId}"
+  | "A_CORE:DELETE:/source-revisions/watch/{sourceKey}"
   | "A_CORE:GET:/admin/diagnostics"
+  | "A_CORE:GET:/capability-package-promotions/status"
+  | "A_CORE:GET:/cognition"
+  | "A_CORE:GET:/cognition/decisions/{taskId}"
   | "A_CORE:GET:/health"
+  | "A_CORE:GET:/integrations"
+  | "A_CORE:GET:/integrations/mcp"
+  | "A_CORE:GET:/missions"
+  | "A_CORE:GET:/missions/{missionId}"
   | "A_CORE:GET:/openapi.json"
+  | "A_CORE:GET:/owner-session"
+  | "A_CORE:GET:/pc-nodes"
+  | "A_CORE:GET:/pc-nodes/{deviceId}/command-scope"
+  | "A_CORE:GET:/pc-nodes/{deviceId}/scope"
+  | "A_CORE:GET:/pc-nodes/observations/{requestId}"
+  | "A_CORE:GET:/pc-nodes/task-options"
+  | "A_CORE:GET:/personal-google/connect"
+  | "A_CORE:GET:/personal-inbox"
+  | "A_CORE:GET:/personal-mandates"
+  | "A_CORE:GET:/personal-operations"
+  | "A_CORE:GET:/routines"
+  | "A_CORE:GET:/routines/{routineId}"
   | "A_CORE:GET:/runtime/supervisor"
+  | "A_CORE:GET:/security/managed-agent-egress"
+  | "A_CORE:GET:/security/trust"
+  | "A_CORE:GET:/skill-center/catalog"
+  | "A_CORE:GET:/skill-center/search"
+  | "A_CORE:GET:/skill-center/status"
+  | "A_CORE:GET:/source-revisions"
   | "A_CORE:GET:/tasks"
   | "A_CORE:GET:/tasks/{taskId}"
+  | "A_CORE:GET:/tasks/{taskId}/compensation/plan"
   | "A_CORE:GET:/tasks/{taskId}/plan-artifacts"
   | "A_CORE:GET:/tasks/{taskId}/resume"
   | "A_CORE:GET:/worker/daemon"
@@ -24,8 +54,62 @@ export type FederatedOpenApiRouteKey =
   | "A_CORE:GET:/worker/plan-artifacts"
   | "A_CORE:GET:/worker/queue"
   | "A_CORE:GET:/worker/timeouts"
+  | "A_CORE:PATCH:/routines/{routineId}/timezone"
+  | "A_CORE:POST:/capabilities/external/evaluate"
+  | "A_CORE:POST:/capability-package-promotions/promote"
+  | "A_CORE:POST:/capability-package-promotions/review"
+  | "A_CORE:POST:/capability-package-promotions/rollback"
+  | "A_CORE:POST:/integrations"
+  | "A_CORE:POST:/integrations/handoffs"
+  | "A_CORE:POST:/integrations/handoffs/{handoffId}/complete"
+  | "A_CORE:POST:/integrations/mcp"
+  | "A_CORE:POST:/integrations/mcp/{connectionId}/call"
+  | "A_CORE:POST:/integrations/mcp/{connectionId}/permissions"
+  | "A_CORE:POST:/integrations/mcp/{connectionId}/probe"
+  | "A_CORE:POST:/integrations/model-providers/{provider}/verify"
+  | "A_CORE:POST:/memory/selected-conversations/{operation}"
+  | "A_CORE:POST:/missions"
+  | "A_CORE:POST:/missions/{missionId}/cancel"
+  | "A_CORE:POST:/missions/{missionId}/gates/{gateId}/decision"
+  | "A_CORE:POST:/missions/{missionId}/goal-revisions"
+  | "A_CORE:POST:/missions/{missionId}/managed-agent/session"
+  | "A_CORE:POST:/missions/{missionId}/managed-agent/session/reconcile"
+  | "A_CORE:POST:/missions/{missionId}/run"
+  | "A_CORE:POST:/missions/{missionId}/settings"
+  | "A_CORE:POST:/owner-session/activate"
+  | "A_CORE:POST:/owner-session/revoke"
+  | "A_CORE:POST:/pc-nodes"
+  | "A_CORE:POST:/pc-nodes/{deviceId}/command-scope"
+  | "A_CORE:POST:/pc-nodes/{deviceId}/observations"
+  | "A_CORE:POST:/pc-nodes/{deviceId}/revoke"
+  | "A_CORE:POST:/pc-nodes/certificate"
+  | "A_CORE:POST:/pc-nodes/task-labels"
+  | "A_CORE:POST:/personal-budgets/{operation}"
+  | "A_CORE:POST:/personal-google/connect"
+  | "A_CORE:POST:/personal-google/mandate"
+  | "A_CORE:POST:/personal-google/sync"
+  | "A_CORE:POST:/personal-inbox/accept"
+  | "A_CORE:POST:/personal-mandates/create-mission-quota"
+  | "A_CORE:POST:/personal-mandates/revoke"
+  | "A_CORE:POST:/personal-operations/followups/{followUpId}/{operation}"
+  | "A_CORE:POST:/routines"
+  | "A_CORE:POST:/routines/{routineId}/cancel"
+  | "A_CORE:POST:/routines/command"
   | "A_CORE:POST:/runtime/service-plan"
   | "A_CORE:POST:/runtime/supervisor/tick"
+  | "A_CORE:POST:/security/managed-agent-egress/key/initialize"
+  | "A_CORE:POST:/security/managed-agent-egress/key/recover"
+  | "A_CORE:POST:/security/managed-agent-egress/key/rotate"
+  | "A_CORE:POST:/security/trust/audit/quarantine"
+  | "A_CORE:POST:/security/trust/lockdown"
+  | "A_CORE:POST:/security/trust/product-gate"
+  | "A_CORE:POST:/security/trust/recover"
+  | "A_CORE:POST:/security/trust/recovery/challenge"
+  | "A_CORE:POST:/skill-center/activate"
+  | "A_CORE:POST:/skill-center/compose"
+  | "A_CORE:POST:/skill-center/deactivate"
+  | "A_CORE:POST:/source-revisions/{sourceKey}/mission"
+  | "A_CORE:POST:/source-revisions/watch"
   | "A_CORE:POST:/tasks"
   | "A_CORE:POST:/tasks/{taskId}/approve"
   | "A_CORE:POST:/tasks/{taskId}/compensation"
@@ -41,6 +125,7 @@ export type FederatedOpenApiRouteKey =
   | "A_CORE:POST:/worker/state-product-gate"
   | "B_PC_AGENT:GET:/api/contract-snapshot"
   | "B_PC_AGENT:GET:/api/security/status"
+  | "B_PC_AGENT:GET:/api/trust/status"
   | "B_PC_AGENT:GET:/capability-vault/export"
   | "B_PC_AGENT:GET:/capability-vault/status"
   | "B_PC_AGENT:GET:/evidence/privacy-fixtures"
@@ -56,6 +141,8 @@ export type FederatedOpenApiRouteKey =
   | "B_PC_AGENT:GET:/memory-events/query"
   | "B_PC_AGENT:GET:/memory-events/recent"
   | "B_PC_AGENT:GET:/openapi.json"
+  | "B_PC_AGENT:GET:/outbound/local-task-catalog"
+  | "B_PC_AGENT:GET:/outbound/local-task-scope"
   | "B_PC_AGENT:GET:/rollback/{taskId}/plan"
   | "B_PC_AGENT:GET:/rollback/journal"
   | "B_PC_AGENT:GET:/rollback/transactions"
@@ -64,9 +151,12 @@ export type FederatedOpenApiRouteKey =
   | "B_PC_AGENT:GET:/service/verification"
   | "B_PC_AGENT:GET:/tasks/{taskId}"
   | "B_PC_AGENT:GET:/tasks/{taskId}/evidence"
+  | "B_PC_AGENT:GET:/tasks/{taskId}/publication"
   | "B_PC_AGENT:GET:/tasks/{taskId}/result"
+  | "B_PC_AGENT:GET:/tasks/{taskId}/summary"
   | "B_PC_AGENT:GET:/tray/state"
   | "B_PC_AGENT:POST:/api/product-gate"
+  | "B_PC_AGENT:POST:/api/trust/audit/quarantine"
   | "B_PC_AGENT:POST:/capability-vault/import-recovery"
   | "B_PC_AGENT:POST:/capability-vault/key-rotation-drill"
   | "B_PC_AGENT:POST:/capability-vault/product-gate"
@@ -80,9 +170,17 @@ export type FederatedOpenApiRouteKey =
   | "B_PC_AGENT:POST:/execution-packets/queue/poison/{queueId}/requeue"
   | "B_PC_AGENT:POST:/execution-packets/queue/poison/{queueId}/review"
   | "B_PC_AGENT:POST:/execution-packets/queue/policy"
+  | "B_PC_AGENT:POST:/execution-packets/resume-workflow"
+  | "B_PC_AGENT:POST:/operations/cancel"
+  | "B_PC_AGENT:POST:/operations/execute"
+  | "B_PC_AGENT:POST:/operations/prepare"
+  | "B_PC_AGENT:POST:/operations/read"
   | "B_PC_AGENT:POST:/rollback/{taskId}"
   | "B_PC_AGENT:POST:/rollback/{taskId}/export"
   | "B_PC_AGENT:POST:/rollback/product-gate"
+  | "B_PC_AGENT:POST:/tasks/summaries"
+  | "B_PC_AGENT:PUT:/outbound/local-task-catalog"
+  | "B_PC_AGENT:PUT:/outbound/local-task-scope"
   | "D_BRIDGE:DELETE:/devices/{deviceId}"
   | "D_BRIDGE:GET:/approvals"
   | "D_BRIDGE:GET:/approvals/{approvalId}"
@@ -149,6 +247,11 @@ export type FederatedOpenApiRouteKey =
   | "D_BRIDGE:POST:/growth/hygiene/decisions/batch"
   | "D_BRIDGE:POST:/growth/preferences/{hypothesisId}/decision"
   | "D_BRIDGE:POST:/growth/routing/release-dossier"
+  | "D_BRIDGE:POST:/growth/skills/{skillId}/revisions"
+  | "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/evaluate"
+  | "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/promote"
+  | "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/review"
+  | "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/rollback"
   | "D_BRIDGE:POST:/pairing/confirm"
   | "D_BRIDGE:POST:/pairing/release-dossier"
   | "D_BRIDGE:POST:/pairing/start"
@@ -315,6 +418,11 @@ export type FederatedOpenApiRouteKey =
   | "F_GROWTH_MEMORY:POST:/advanced-learning/product-gate"
   | "F_GROWTH_MEMORY:POST:/advanced-learning/release-dossier"
   | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-drafts/{draftId}/review"
+  | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions"
+  | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/evaluate"
+  | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/promote"
+  | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/review"
+  | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/rollback"
   | "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/usefulness"
   | "F_GROWTH_MEMORY:POST:/autonomy/candidates/{candidateId}/review"
   | "F_GROWTH_MEMORY:POST:/autonomy/candidates/{candidateId}/submit-to-policy"
@@ -471,12 +579,42 @@ export type FederatedOpenApiRouteKey =
   | "G_VERIFICATION:POST:/verify/policy/migration-approval-artifact"
   | "G_VERIFICATION:POST:/verify/policy/product-gate";
 export interface FederatedOpenApiOperationMap {
+  "A_CORE:DELETE:/integrations/connections/{connectionId}": { moduleId: "A_CORE"; method: "DELETE"; path: "/integrations/connections/{connectionId}"; operationId: "removeIntegrationCredentials"; responseCodes: ["200","401","403","503"]; };
+  "A_CORE:DELETE:/integrations/handoffs/{handoffId}": { moduleId: "A_CORE"; method: "DELETE"; path: "/integrations/handoffs/{handoffId}"; operationId: "cancelIntegrationCredentialHandoff"; responseCodes: ["200","401"]; };
+  "A_CORE:DELETE:/integrations/mcp/{connectionId}": { moduleId: "A_CORE"; method: "DELETE"; path: "/integrations/mcp/{connectionId}"; operationId: "removeLocalMcpConnection"; responseCodes: ["200","401"]; };
+  "A_CORE:DELETE:/source-revisions/watch/{sourceKey}": { moduleId: "A_CORE"; method: "DELETE"; path: "/source-revisions/watch/{sourceKey}"; operationId: "removeSourceRevisionWatch"; responseCodes: ["200","401","403","404"]; };
   "A_CORE:GET:/admin/diagnostics": { moduleId: "A_CORE"; method: "GET"; path: "/admin/diagnostics"; operationId: "getCoreAdminDiagnostics"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/capability-package-promotions/status": { moduleId: "A_CORE"; method: "GET"; path: "/capability-package-promotions/status"; operationId: "getCapabilityPackagePromotionStatus"; responseCodes: ["200","401","403","503"]; };
+  "A_CORE:GET:/cognition": { moduleId: "A_CORE"; method: "GET"; path: "/cognition"; operationId: "getCoreCognition"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/cognition/decisions/{taskId}": { moduleId: "A_CORE"; method: "GET"; path: "/cognition/decisions/{taskId}"; operationId: "getCoreDecisionTrace"; responseCodes: ["200","400","401","405","503"]; };
   "A_CORE:GET:/health": { moduleId: "A_CORE"; method: "GET"; path: "/health"; operationId: "getCoreHealth"; responseCodes: ["200"]; };
+  "A_CORE:GET:/integrations": { moduleId: "A_CORE"; method: "GET"; path: "/integrations"; operationId: "getIntegrationReadiness"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/integrations/mcp": { moduleId: "A_CORE"; method: "GET"; path: "/integrations/mcp"; operationId: "listLocalMcpConnections"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/missions": { moduleId: "A_CORE"; method: "GET"; path: "/missions"; operationId: "listAutonomousMissions"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/missions/{missionId}": { moduleId: "A_CORE"; method: "GET"; path: "/missions/{missionId}"; operationId: "getAutonomousMission"; responseCodes: ["200","404"]; };
   "A_CORE:GET:/openapi.json": { moduleId: "A_CORE"; method: "GET"; path: "/openapi.json"; operationId: "getCoreOpenApiSpec"; responseCodes: ["200"]; };
+  "A_CORE:GET:/owner-session": { moduleId: "A_CORE"; method: "GET"; path: "/owner-session"; operationId: "getPersonalOwnerSession"; responseCodes: ["200","401","403"]; };
+  "A_CORE:GET:/pc-nodes": { moduleId: "A_CORE"; method: "GET"; path: "/pc-nodes"; operationId: "listPcOutboundNodes"; responseCodes: ["200","503"]; };
+  "A_CORE:GET:/pc-nodes/{deviceId}/command-scope": { moduleId: "A_CORE"; method: "GET"; path: "/pc-nodes/{deviceId}/command-scope"; operationId: "readPcCommandScope"; responseCodes: ["200","409"]; };
+  "A_CORE:GET:/pc-nodes/{deviceId}/scope": { moduleId: "A_CORE"; method: "GET"; path: "/pc-nodes/{deviceId}/scope"; operationId: "readPcNodeScope"; responseCodes: ["200","409"]; };
+  "A_CORE:GET:/pc-nodes/observations/{requestId}": { moduleId: "A_CORE"; method: "GET"; path: "/pc-nodes/observations/{requestId}"; operationId: "readPcOutboundObservation"; responseCodes: ["200","404"]; };
+  "A_CORE:GET:/pc-nodes/task-options": { moduleId: "A_CORE"; method: "GET"; path: "/pc-nodes/task-options"; operationId: "listPcCoreTaskOptions"; responseCodes: ["200","401","403","409"]; };
+  "A_CORE:GET:/personal-google/connect": { moduleId: "A_CORE"; method: "GET"; path: "/personal-google/connect"; operationId: "getGoogleConnection"; responseCodes: ["200"]; };
+  "A_CORE:GET:/personal-inbox": { moduleId: "A_CORE"; method: "GET"; path: "/personal-inbox"; operationId: "getPersonalInbox"; responseCodes: ["200","401","503"]; };
+  "A_CORE:GET:/personal-mandates": { moduleId: "A_CORE"; method: "GET"; path: "/personal-mandates"; operationId: "listPersonalMandates"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/personal-operations": { moduleId: "A_CORE"; method: "GET"; path: "/personal-operations"; operationId: "getPersonalOperations"; responseCodes: ["200","401","503"]; };
+  "A_CORE:GET:/routines": { moduleId: "A_CORE"; method: "GET"; path: "/routines"; operationId: "listDurableRoutines"; responseCodes: ["200","401","503"]; };
+  "A_CORE:GET:/routines/{routineId}": { moduleId: "A_CORE"; method: "GET"; path: "/routines/{routineId}"; operationId: "getDurableRoutine"; responseCodes: ["200","401","404"]; };
   "A_CORE:GET:/runtime/supervisor": { moduleId: "A_CORE"; method: "GET"; path: "/runtime/supervisor"; operationId: "getCoreRuntimeSupervisor"; responseCodes: ["200"]; };
+  "A_CORE:GET:/security/managed-agent-egress": { moduleId: "A_CORE"; method: "GET"; path: "/security/managed-agent-egress"; operationId: "getManagedAgentEgressStatus"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/security/trust": { moduleId: "A_CORE"; method: "GET"; path: "/security/trust"; operationId: "getRuntimeTrustStatus"; responseCodes: ["200","401","403","503"]; };
+  "A_CORE:GET:/skill-center/catalog": { moduleId: "A_CORE"; method: "GET"; path: "/skill-center/catalog"; operationId: "getNexusSkillCenterCatalog"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/skill-center/search": { moduleId: "A_CORE"; method: "GET"; path: "/skill-center/search"; operationId: "searchNexusSkills"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/skill-center/status": { moduleId: "A_CORE"; method: "GET"; path: "/skill-center/status"; operationId: "getNexusSkillCenterStatus"; responseCodes: ["200","401"]; };
+  "A_CORE:GET:/source-revisions": { moduleId: "A_CORE"; method: "GET"; path: "/source-revisions"; operationId: "getSourceRevisions"; responseCodes: ["200","401","503"]; };
   "A_CORE:GET:/tasks": { moduleId: "A_CORE"; method: "GET"; path: "/tasks"; operationId: "listCoreTasks"; responseCodes: ["200"]; };
   "A_CORE:GET:/tasks/{taskId}": { moduleId: "A_CORE"; method: "GET"; path: "/tasks/{taskId}"; operationId: "getCoreTask"; responseCodes: ["200","404"]; };
+  "A_CORE:GET:/tasks/{taskId}/compensation/plan": { moduleId: "A_CORE"; method: "GET"; path: "/tasks/{taskId}/compensation/plan"; operationId: "previewCoreCompensationReplay"; responseCodes: ["200","503"]; };
   "A_CORE:GET:/tasks/{taskId}/plan-artifacts": { moduleId: "A_CORE"; method: "GET"; path: "/tasks/{taskId}/plan-artifacts"; operationId: "exportCorePlanNodeArtifacts"; responseCodes: ["200","503"]; };
   "A_CORE:GET:/tasks/{taskId}/resume": { moduleId: "A_CORE"; method: "GET"; path: "/tasks/{taskId}/resume"; operationId: "resumeCoreTask"; responseCodes: ["200"]; };
   "A_CORE:GET:/worker/daemon": { moduleId: "A_CORE"; method: "GET"; path: "/worker/daemon"; operationId: "getCoreWorkerDaemon"; responseCodes: ["200","503"]; };
@@ -484,9 +622,63 @@ export interface FederatedOpenApiOperationMap {
   "A_CORE:GET:/worker/plan-artifacts": { moduleId: "A_CORE"; method: "GET"; path: "/worker/plan-artifacts"; operationId: "getCorePlanNodeArtifactRetentionStatus"; responseCodes: ["200","503"]; };
   "A_CORE:GET:/worker/queue": { moduleId: "A_CORE"; method: "GET"; path: "/worker/queue"; operationId: "getCoreWorkerQueue"; responseCodes: ["200","503"]; };
   "A_CORE:GET:/worker/timeouts": { moduleId: "A_CORE"; method: "GET"; path: "/worker/timeouts"; operationId: "getCoreWorkerTimeoutScheduler"; responseCodes: ["200","503"]; };
+  "A_CORE:PATCH:/routines/{routineId}/timezone": { moduleId: "A_CORE"; method: "PATCH"; path: "/routines/{routineId}/timezone"; operationId: "reviseWeeklyRoutineTimezone"; responseCodes: ["200","400","401","404","409"]; };
+  "A_CORE:POST:/capabilities/external/evaluate": { moduleId: "A_CORE"; method: "POST"; path: "/capabilities/external/evaluate"; operationId: "evaluateExternalCapabilityAvailability"; responseCodes: ["200","400","401","403"]; };
+  "A_CORE:POST:/capability-package-promotions/promote": { moduleId: "A_CORE"; method: "POST"; path: "/capability-package-promotions/promote"; operationId: "promoteCapabilityPackage"; responseCodes: ["200","403","409","503"]; };
+  "A_CORE:POST:/capability-package-promotions/review": { moduleId: "A_CORE"; method: "POST"; path: "/capability-package-promotions/review"; operationId: "reviewCapabilityPackagePromotion"; responseCodes: ["200","400","403","503"]; };
+  "A_CORE:POST:/capability-package-promotions/rollback": { moduleId: "A_CORE"; method: "POST"; path: "/capability-package-promotions/rollback"; operationId: "rollbackCapabilityPackage"; responseCodes: ["200","403","409","503"]; };
+  "A_CORE:POST:/integrations": { moduleId: "A_CORE"; method: "POST"; path: "/integrations"; operationId: "storeIntegrationCredentials"; responseCodes: ["202","400","401","403","404","409","413","415","503"]; };
+  "A_CORE:POST:/integrations/handoffs": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/handoffs"; operationId: "createIntegrationCredentialHandoff"; responseCodes: ["201","401","409","429"]; };
+  "A_CORE:POST:/integrations/handoffs/{handoffId}/complete": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/handoffs/{handoffId}/complete"; operationId: "completeIntegrationCredentialHandoff"; responseCodes: ["202","401","404","409","410"]; };
+  "A_CORE:POST:/integrations/mcp": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/mcp"; operationId: "registerLocalMcpConnection"; responseCodes: ["201","401","409"]; };
+  "A_CORE:POST:/integrations/mcp/{connectionId}/call": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/mcp/{connectionId}/call"; operationId: "callLocalMcpTool"; responseCodes: ["200","401","409","503"]; };
+  "A_CORE:POST:/integrations/mcp/{connectionId}/permissions": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/mcp/{connectionId}/permissions"; operationId: "setLocalMcpToolPermissions"; responseCodes: ["200","401","409"]; };
+  "A_CORE:POST:/integrations/mcp/{connectionId}/probe": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/mcp/{connectionId}/probe"; operationId: "probeLocalMcpConnection"; responseCodes: ["200","401","404","409"]; };
+  "A_CORE:POST:/integrations/model-providers/{provider}/verify": { moduleId: "A_CORE"; method: "POST"; path: "/integrations/model-providers/{provider}/verify"; operationId: "verifyModelProviderCredentials"; responseCodes: ["200","401","403","409","413","415","503"]; };
+  "A_CORE:POST:/memory/selected-conversations/{operation}": { moduleId: "A_CORE"; method: "POST"; path: "/memory/selected-conversations/{operation}"; operationId: "selectedConversationArchiveOperation"; responseCodes: ["200","400","401","403","409","413","503"]; };
+  "A_CORE:POST:/missions": { moduleId: "A_CORE"; method: "POST"; path: "/missions"; operationId: "createAutonomousMission"; responseCodes: ["201","401"]; };
+  "A_CORE:POST:/missions/{missionId}/cancel": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/cancel"; operationId: "cancelAutonomousMission"; responseCodes: ["200"]; };
+  "A_CORE:POST:/missions/{missionId}/gates/{gateId}/decision": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/gates/{gateId}/decision"; operationId: "decideAutonomousMissionGate"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/missions/{missionId}/goal-revisions": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/goal-revisions"; operationId: "reviseAutonomousMissionGoal"; responseCodes: ["200","202","400","401","404","409"]; };
+  "A_CORE:POST:/missions/{missionId}/managed-agent/session": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/managed-agent/session"; operationId: "createManagedAgentMissionSession"; responseCodes: ["201","202","400","401","404","409","503"]; };
+  "A_CORE:POST:/missions/{missionId}/managed-agent/session/reconcile": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/managed-agent/session/reconcile"; operationId: "reconcileManagedAgentMissionSessionProvision"; responseCodes: ["200","202","400","401","404","409","503"]; };
+  "A_CORE:POST:/missions/{missionId}/run": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/run"; operationId: "runAutonomousMission"; responseCodes: ["200","401","503"]; };
+  "A_CORE:POST:/missions/{missionId}/settings": { moduleId: "A_CORE"; method: "POST"; path: "/missions/{missionId}/settings"; operationId: "updateAutonomousMissionSettings"; responseCodes: ["200"]; };
+  "A_CORE:POST:/owner-session/activate": { moduleId: "A_CORE"; method: "POST"; path: "/owner-session/activate"; operationId: "activatePersonalOwnerSession"; responseCodes: ["200","400","401"]; };
+  "A_CORE:POST:/owner-session/revoke": { moduleId: "A_CORE"; method: "POST"; path: "/owner-session/revoke"; operationId: "revokePersonalOwnerSession"; responseCodes: ["200","401"]; };
+  "A_CORE:POST:/pc-nodes": { moduleId: "A_CORE"; method: "POST"; path: "/pc-nodes"; operationId: "enrollPcOutboundNode"; responseCodes: ["201","409"]; };
+  "A_CORE:POST:/pc-nodes/{deviceId}/command-scope": { moduleId: "A_CORE"; method: "POST"; path: "/pc-nodes/{deviceId}/command-scope"; operationId: "updatePcCommandScope"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/pc-nodes/{deviceId}/observations": { moduleId: "A_CORE"; method: "POST"; path: "/pc-nodes/{deviceId}/observations"; operationId: "requestPcOutboundObservation"; responseCodes: ["202","409"]; };
+  "A_CORE:POST:/pc-nodes/{deviceId}/revoke": { moduleId: "A_CORE"; method: "POST"; path: "/pc-nodes/{deviceId}/revoke"; operationId: "revokePcOutboundNode"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/pc-nodes/certificate": { moduleId: "A_CORE"; method: "POST"; path: "/pc-nodes/certificate"; operationId: "previewPcCertificate"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/pc-nodes/task-labels": { moduleId: "A_CORE"; method: "POST"; path: "/pc-nodes/task-labels"; operationId: "lookupPcCoreTaskLabels"; responseCodes: ["200","401","403","409"]; };
+  "A_CORE:POST:/personal-budgets/{operation}": { moduleId: "A_CORE"; method: "POST"; path: "/personal-budgets/{operation}"; operationId: "personalBudgetOperation"; responseCodes: ["200","401","409","503"]; };
+  "A_CORE:POST:/personal-google/connect": { moduleId: "A_CORE"; method: "POST"; path: "/personal-google/connect"; operationId: "startGoogleConnection"; responseCodes: ["202","401","409","503"]; };
+  "A_CORE:POST:/personal-google/mandate": { moduleId: "A_CORE"; method: "POST"; path: "/personal-google/mandate"; operationId: "configureGooglePageMandate"; responseCodes: ["200","401","409","503"]; };
+  "A_CORE:POST:/personal-google/sync": { moduleId: "A_CORE"; method: "POST"; path: "/personal-google/sync"; operationId: "runGoogleSourceSync"; responseCodes: ["200","401","409","503"]; };
+  "A_CORE:POST:/personal-inbox/accept": { moduleId: "A_CORE"; method: "POST"; path: "/personal-inbox/accept"; operationId: "acceptPersonalInboxItem"; responseCodes: ["200","401","409"]; };
+  "A_CORE:POST:/personal-mandates/create-mission-quota": { moduleId: "A_CORE"; method: "POST"; path: "/personal-mandates/create-mission-quota"; operationId: "createMissionQuota"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/personal-mandates/revoke": { moduleId: "A_CORE"; method: "POST"; path: "/personal-mandates/revoke"; operationId: "revokePersonalMandate"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/personal-operations/followups/{followUpId}/{operation}": { moduleId: "A_CORE"; method: "POST"; path: "/personal-operations/followups/{followUpId}/{operation}"; operationId: "executePersonalFollowupOperation"; responseCodes: ["200","401","409","503"]; };
+  "A_CORE:POST:/routines": { moduleId: "A_CORE"; method: "POST"; path: "/routines"; operationId: "scheduleDurableRoutine"; responseCodes: ["200","201","400","401","409","503"]; };
+  "A_CORE:POST:/routines/{routineId}/cancel": { moduleId: "A_CORE"; method: "POST"; path: "/routines/{routineId}/cancel"; operationId: "cancelScheduledRoutineExplicit"; responseCodes: ["200","401","404","409"]; };
+  "A_CORE:POST:/routines/command": { moduleId: "A_CORE"; method: "POST"; path: "/routines/command"; operationId: "scheduleDurableRoutineFromKoreanCommand"; responseCodes: ["200","201","400","401","409","503"]; };
   "A_CORE:POST:/runtime/service-plan": { moduleId: "A_CORE"; method: "POST"; path: "/runtime/service-plan"; operationId: "createCoreServiceLifecyclePlan"; responseCodes: ["200","401","403"]; };
   "A_CORE:POST:/runtime/supervisor/tick": { moduleId: "A_CORE"; method: "POST"; path: "/runtime/supervisor/tick"; operationId: "tickCoreRuntimeSupervisor"; responseCodes: ["200"]; };
-  "A_CORE:POST:/tasks": { moduleId: "A_CORE"; method: "POST"; path: "/tasks"; operationId: "createCoreTask"; responseCodes: ["201","400"]; };
+  "A_CORE:POST:/security/managed-agent-egress/key/initialize": { moduleId: "A_CORE"; method: "POST"; path: "/security/managed-agent-egress/key/initialize"; operationId: "initializeManagedAgentEgressKey"; responseCodes: ["201","401","409"]; };
+  "A_CORE:POST:/security/managed-agent-egress/key/recover": { moduleId: "A_CORE"; method: "POST"; path: "/security/managed-agent-egress/key/recover"; operationId: "recoverUnreadableManagedAgentEgressKey"; responseCodes: ["200","401","409"]; };
+  "A_CORE:POST:/security/managed-agent-egress/key/rotate": { moduleId: "A_CORE"; method: "POST"; path: "/security/managed-agent-egress/key/rotate"; operationId: "rotateManagedAgentEgressKey"; responseCodes: ["200","401","409"]; };
+  "A_CORE:POST:/security/trust/audit/quarantine": { moduleId: "A_CORE"; method: "POST"; path: "/security/trust/audit/quarantine"; operationId: "quarantineInvalidRuntimeTrustAuditJournal"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/security/trust/lockdown": { moduleId: "A_CORE"; method: "POST"; path: "/security/trust/lockdown"; operationId: "engageRuntimeTrustLockdown"; responseCodes: ["200","401","403"]; };
+  "A_CORE:POST:/security/trust/product-gate": { moduleId: "A_CORE"; method: "POST"; path: "/security/trust/product-gate"; operationId: "runRuntimeTrustProductGate"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/security/trust/recover": { moduleId: "A_CORE"; method: "POST"; path: "/security/trust/recover"; operationId: "recoverRuntimeTrust"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/security/trust/recovery/challenge": { moduleId: "A_CORE"; method: "POST"; path: "/security/trust/recovery/challenge"; operationId: "createRuntimeTrustRecoveryChallenge"; responseCodes: ["200","409"]; };
+  "A_CORE:POST:/skill-center/activate": { moduleId: "A_CORE"; method: "POST"; path: "/skill-center/activate"; operationId: "activateNexusSkillProfile"; responseCodes: ["200","400","401"]; };
+  "A_CORE:POST:/skill-center/compose": { moduleId: "A_CORE"; method: "POST"; path: "/skill-center/compose"; operationId: "composeNexusSkillRecipe"; responseCodes: ["200","400","401"]; };
+  "A_CORE:POST:/skill-center/deactivate": { moduleId: "A_CORE"; method: "POST"; path: "/skill-center/deactivate"; operationId: "deactivateNexusSkillProfile"; responseCodes: ["200","401"]; };
+  "A_CORE:POST:/source-revisions/{sourceKey}/mission": { moduleId: "A_CORE"; method: "POST"; path: "/source-revisions/{sourceKey}/mission"; operationId: "runReadOnlyMissionForSourceRevision"; responseCodes: ["200","400","401","403","404","409","503"]; };
+  "A_CORE:POST:/source-revisions/watch": { moduleId: "A_CORE"; method: "POST"; path: "/source-revisions/watch"; operationId: "registerSourceRevisionWatch"; responseCodes: ["201","401","403","409","415"]; };
+  "A_CORE:POST:/tasks": { moduleId: "A_CORE"; method: "POST"; path: "/tasks"; operationId: "createCoreTask"; responseCodes: ["201","400","409"]; };
   "A_CORE:POST:/tasks/{taskId}/approve": { moduleId: "A_CORE"; method: "POST"; path: "/tasks/{taskId}/approve"; operationId: "decideCoreApproval"; responseCodes: ["200","404"]; };
   "A_CORE:POST:/tasks/{taskId}/compensation": { moduleId: "A_CORE"; method: "POST"; path: "/tasks/{taskId}/compensation"; operationId: "beginCoreCompensation"; responseCodes: ["200"]; };
   "A_CORE:POST:/tasks/{taskId}/compensation/run": { moduleId: "A_CORE"; method: "POST"; path: "/tasks/{taskId}/compensation/run"; operationId: "runCoreCompensationReplay"; responseCodes: ["200","503"]; };
@@ -501,6 +693,7 @@ export interface FederatedOpenApiOperationMap {
   "A_CORE:POST:/worker/state-product-gate": { moduleId: "A_CORE"; method: "POST"; path: "/worker/state-product-gate"; operationId: "runCoreWorkerStateProductGate"; responseCodes: ["200","503"]; };
   "B_PC_AGENT:GET:/api/contract-snapshot": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/api/contract-snapshot"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/api/security/status": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/api/security/status"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:GET:/api/trust/status": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/api/trust/status"; operationId: null; responseCodes: ["200","401"]; };
   "B_PC_AGENT:GET:/capability-vault/export": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/capability-vault/export"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/capability-vault/status": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/capability-vault/status"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/evidence/privacy-fixtures": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/evidence/privacy-fixtures"; operationId: null; responseCodes: ["200"]; };
@@ -516,6 +709,8 @@ export interface FederatedOpenApiOperationMap {
   "B_PC_AGENT:GET:/memory-events/query": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/memory-events/query"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/memory-events/recent": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/memory-events/recent"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/openapi.json": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/openapi.json"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:GET:/outbound/local-task-catalog": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/outbound/local-task-catalog"; operationId: null; responseCodes: ["200","401","503"]; };
+  "B_PC_AGENT:GET:/outbound/local-task-scope": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/outbound/local-task-scope"; operationId: null; responseCodes: ["200","401","503"]; };
   "B_PC_AGENT:GET:/rollback/{taskId}/plan": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/rollback/{taskId}/plan"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/rollback/journal": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/rollback/journal"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/rollback/transactions": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/rollback/transactions"; operationId: null; responseCodes: ["200"]; };
@@ -524,9 +719,12 @@ export interface FederatedOpenApiOperationMap {
   "B_PC_AGENT:GET:/service/verification": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/service/verification"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/tasks/{taskId}": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/tasks/{taskId}"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/tasks/{taskId}/evidence": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/tasks/{taskId}/evidence"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:GET:/tasks/{taskId}/publication": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/tasks/{taskId}/publication"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/tasks/{taskId}/result": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/tasks/{taskId}/result"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:GET:/tasks/{taskId}/summary": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/tasks/{taskId}/summary"; operationId: "getPcTaskSummary"; responseCodes: ["200"]; };
   "B_PC_AGENT:GET:/tray/state": { moduleId: "B_PC_AGENT"; method: "GET"; path: "/tray/state"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/api/product-gate": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/api/product-gate"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:POST:/api/trust/audit/quarantine": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/api/trust/audit/quarantine"; operationId: null; responseCodes: ["200","401","409"]; };
   "B_PC_AGENT:POST:/capability-vault/import-recovery": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/capability-vault/import-recovery"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/capability-vault/key-rotation-drill": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/capability-vault/key-rotation-drill"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/capability-vault/product-gate": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/capability-vault/product-gate"; operationId: null; responseCodes: ["200"]; };
@@ -540,9 +738,17 @@ export interface FederatedOpenApiOperationMap {
   "B_PC_AGENT:POST:/execution-packets/queue/poison/{queueId}/requeue": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/execution-packets/queue/poison/{queueId}/requeue"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/execution-packets/queue/poison/{queueId}/review": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/execution-packets/queue/poison/{queueId}/review"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/execution-packets/queue/policy": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/execution-packets/queue/policy"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:POST:/execution-packets/resume-workflow": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/execution-packets/resume-workflow"; operationId: null; responseCodes: ["200","400","401"]; };
+  "B_PC_AGENT:POST:/operations/cancel": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/operations/cancel"; operationId: null; responseCodes: ["200","401"]; };
+  "B_PC_AGENT:POST:/operations/execute": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/operations/execute"; operationId: null; responseCodes: ["200","401"]; };
+  "B_PC_AGENT:POST:/operations/prepare": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/operations/prepare"; operationId: null; responseCodes: ["200","401"]; };
+  "B_PC_AGENT:POST:/operations/read": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/operations/read"; operationId: null; responseCodes: ["200","401"]; };
   "B_PC_AGENT:POST:/rollback/{taskId}": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/rollback/{taskId}"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/rollback/{taskId}/export": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/rollback/{taskId}/export"; operationId: null; responseCodes: ["200"]; };
   "B_PC_AGENT:POST:/rollback/product-gate": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/rollback/product-gate"; operationId: null; responseCodes: ["200"]; };
+  "B_PC_AGENT:POST:/tasks/summaries": { moduleId: "B_PC_AGENT"; method: "POST"; path: "/tasks/summaries"; operationId: "getPcTaskSummaries"; responseCodes: ["200","400"]; };
+  "B_PC_AGENT:PUT:/outbound/local-task-catalog": { moduleId: "B_PC_AGENT"; method: "PUT"; path: "/outbound/local-task-catalog"; operationId: null; responseCodes: ["200","400","401","409","503"]; };
+  "B_PC_AGENT:PUT:/outbound/local-task-scope": { moduleId: "B_PC_AGENT"; method: "PUT"; path: "/outbound/local-task-scope"; operationId: null; responseCodes: ["200","400","401","409","503"]; };
   "D_BRIDGE:DELETE:/devices/{deviceId}": { moduleId: "D_BRIDGE"; method: "DELETE"; path: "/devices/{deviceId}"; operationId: "device_revoke"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:GET:/approvals": { moduleId: "D_BRIDGE"; method: "GET"; path: "/approvals"; operationId: "approvals_list"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:GET:/approvals/{approvalId}": { moduleId: "D_BRIDGE"; method: "GET"; path: "/approvals/{approvalId}"; operationId: "approval_read"; responseCodes: ["200","400","401","429"]; };
@@ -609,6 +815,11 @@ export interface FederatedOpenApiOperationMap {
   "D_BRIDGE:POST:/growth/hygiene/decisions/batch": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/hygiene/decisions/batch"; operationId: "growth_hygiene_batch_decision"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:POST:/growth/preferences/{hypothesisId}/decision": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/preferences/{hypothesisId}/decision"; operationId: "growth_preference_decision"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:POST:/growth/routing/release-dossier": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/routing/release-dossier"; operationId: "growth_routing_release_dossier"; responseCodes: ["200","400","401","429"]; };
+  "D_BRIDGE:POST:/growth/skills/{skillId}/revisions": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/skills/{skillId}/revisions"; operationId: "growth_skill_revision_create"; responseCodes: ["200","400","401","429"]; };
+  "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/evaluate": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/skills/{skillId}/revisions/{revisionId}/evaluate"; operationId: "growth_skill_revision_evaluate"; responseCodes: ["200","400","401","429"]; };
+  "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/promote": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/skills/{skillId}/revisions/{revisionId}/promote"; operationId: "growth_skill_revision_promote"; responseCodes: ["200","400","401","429"]; };
+  "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/review": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/skills/{skillId}/revisions/{revisionId}/review"; operationId: "growth_skill_revision_review"; responseCodes: ["200","400","401","429"]; };
+  "D_BRIDGE:POST:/growth/skills/{skillId}/revisions/{revisionId}/rollback": { moduleId: "D_BRIDGE"; method: "POST"; path: "/growth/skills/{skillId}/revisions/{revisionId}/rollback"; operationId: "growth_skill_revision_rollback"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:POST:/pairing/confirm": { moduleId: "D_BRIDGE"; method: "POST"; path: "/pairing/confirm"; operationId: "pairing_confirm"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:POST:/pairing/release-dossier": { moduleId: "D_BRIDGE"; method: "POST"; path: "/pairing/release-dossier"; operationId: "pairing_release_dossier"; responseCodes: ["200","400","401","429"]; };
   "D_BRIDGE:POST:/pairing/start": { moduleId: "D_BRIDGE"; method: "POST"; path: "/pairing/start"; operationId: "pairing_start"; responseCodes: ["200","400","401","429"]; };
@@ -775,6 +986,11 @@ export interface FederatedOpenApiOperationMap {
   "F_GROWTH_MEMORY:POST:/advanced-learning/product-gate": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/product-gate"; operationId: "postAdvancedLearningProductGate"; responseCodes: ["200"]; };
   "F_GROWTH_MEMORY:POST:/advanced-learning/release-dossier": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/release-dossier"; operationId: "postAdvancedLearningReleaseDossier"; responseCodes: ["200"]; };
   "F_GROWTH_MEMORY:POST:/advanced-learning/skill-drafts/{draftId}/review": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-drafts/{draftId}/review"; operationId: "postAdvancedLearningSkillDraftsDraftIdReview"; responseCodes: ["200"]; };
+  "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-registry/{skillId}/revisions"; operationId: "postAdvancedLearningSkillRegistrySkillIdRevisions"; responseCodes: ["200"]; };
+  "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/evaluate": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/evaluate"; operationId: "postAdvancedLearningSkillRegistrySkillIdRevisionsRevisionIdEvaluate"; responseCodes: ["200"]; };
+  "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/promote": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/promote"; operationId: "postAdvancedLearningSkillRegistrySkillIdRevisionsRevisionIdPromote"; responseCodes: ["200"]; };
+  "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/review": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/review"; operationId: "postAdvancedLearningSkillRegistrySkillIdRevisionsRevisionIdReview"; responseCodes: ["200"]; };
+  "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/rollback": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-registry/{skillId}/revisions/{revisionId}/rollback"; operationId: "postAdvancedLearningSkillRegistrySkillIdRevisionsRevisionIdRollback"; responseCodes: ["200"]; };
   "F_GROWTH_MEMORY:POST:/advanced-learning/skill-registry/{skillId}/usefulness": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/advanced-learning/skill-registry/{skillId}/usefulness"; operationId: "postAdvancedLearningSkillRegistrySkillIdUsefulness"; responseCodes: ["200"]; };
   "F_GROWTH_MEMORY:POST:/autonomy/candidates/{candidateId}/review": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/autonomy/candidates/{candidateId}/review"; operationId: "postAutonomyCandidatesCandidateIdReview"; responseCodes: ["200"]; };
   "F_GROWTH_MEMORY:POST:/autonomy/candidates/{candidateId}/submit-to-policy": { moduleId: "F_GROWTH_MEMORY"; method: "POST"; path: "/autonomy/candidates/{candidateId}/submit-to-policy"; operationId: "postAutonomyCandidatesCandidateIdSubmitToPolicy"; responseCodes: ["200"]; };

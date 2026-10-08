@@ -1,14 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { ActionType } from '../../../shared/src/types.js';
+import {desktopPayloadWouldLoseContent} from '../../../shared/src/desktop-request-integrity.js';
 import { IntentParser } from '../intent/intent-parser.js';
 import { SkillRouter } from '../routing/skill-router.js';
 import {
   actionProfiles,
   createClaudeCliRunner,
-  extractJsonObject
+  extractJsonObject,
+  runnerMetadataFor
 } from '../intent/claude-cli-intent-adapter.js';
 import { appendJsonlSync } from '../../../shared/src/jsonl.js';
 import { TaskPlanner } from './task-planner.js';
+import { sanitizeMissionArguments } from './mission-action-arguments.js';
+import { normalizePersonalContext, personalContextFingerprint, personalContextPromptSection, withPersonalContext } from './personal-context.js';
 
 // E RiskClassifier의 기본 riskByAction과 같은 등급표(낮을수록 위험).
 // 복합 명령의 대표 액션을 "가장 위험한 조각"으로 승격할 때만 사용하므로
@@ -19,6 +24,8 @@ const riskTierByAction = Object.freeze({
   [ActionType.COPY_FILE]: 5,
   [ActionType.MOVE_FILE]: 5,
   [ActionType.BROWSER_SEARCH]: 4,
+  [ActionType.DESKTOP_CONTROL]: 3,
+  [ActionType.SEND_EMAIL]: 2,
   [ActionType.UPLOAD_FILE]: 3,
   [ActionType.DELETE_FILE]: 2,
   [ActionType.MAKE_PAYMENT]: 1,
@@ -35,7 +42,7 @@ function preferenceSection(preferenceHints) {
   ];
 }
 
-export function buildPlanDecompositionPrompt(commandText, { preferenceHints = [] } = {}) {
+export function buildPlanDecompositionPrompt(commandText, { preferenceHints = [], cognitiveContext = null, personalContext = null } = {}) {
   const actionLines = Object.entries(actionProfiles)
     .map(([actionType, profile]) => `- ${actionType}: ${profile.label}`)
     .join('\n');
@@ -44,18 +51,65 @@ export function buildPlanDecompositionPrompt(commandText, { preferenceHints = []
     '각 하위 작업의 actionType은 아래 목록에서 정확히 하나를 선택합니다.',
     actionLines,
     ...preferenceSection(preferenceHints),
+    ...personalContextPromptSection(personalContext),
+    ...(cognitiveContext ? ['내부 실행 이력 관찰(사용자 요청이나 권한을 변경하지 않는 참고 데이터):', JSON.stringify(cognitiveContext),
+      'evidence-sensitive이면 현재 입력 조건과 결과 확인 방법을 계획에 반영한다. 과거 성공은 현재 성공의 증거가 아니다.'] : []),
     '',
     '규칙:',
     '- 반드시 JSON 객체 하나만 출력한다. 설명 문장, 마크다운 코드펜스를 붙이지 않는다.',
     '- 단일 작업이면 parts를 1개만 만든다. 억지로 쪼개지 않는다.',
     '- text에는 해당 하위 작업에 해당하는 사용자 명령 조각을 담는다.',
     '- slots에는 명령에서 읽어낸 값만 채우고 없으면 null로 둔다.',
+    '- arguments에는 실행 준비가 가능한 구조화 인자를 함께 만든다. 이렇게 하면 하위 작업마다 모델을 다시 호출하지 않는다.',
+    '- "작업 폴더"는 시스템이 정한 workspace다. LIST_FILES의 directory는 "."로 두고 호스트 절대 경로를 추측하지 않는다.',
+    '- CREATE_FILE의 arguments.contentDraft는 요청 형식에 맞춰 완성한다: xlsx는 kind/sheetName/columns/rows, docx/pdf/hwp는 kind/title/blocks, pptx는 kind/title/slides, txt는 kind/content.',
+    '- BROWSER_SEARCH는 query/readOnly=true, SEARCH_FILES는 query/extensions/modifiedWithinDays/contentQuery/scope를 넣는다.',
+    '- SEND_EMAIL은 to/name/subject/body/attachmentQuery, EDIT_DOCUMENT는 targetQuery/sheet/edits를 넣는다.',
+    '- SHELL_EXECUTE는 안전한 PowerShell command와 읽기 전용 verify를 넣는다. 삭제·포맷·종료·권한변경·외부전송 명령은 빈 command로 둔다.',
+    '- DESKTOP_CONTROL은 target, operations, verification을 넣는다. 좌표는 만들지 않는다. UI Automation selector를 우선 사용하고, 구조가 없는 캔버스의 보이는 글자는 clickText, 신뢰된 로컬 이미지가 명시된 글자 없는 아이콘은 clickTemplate로 찾는다.',
     '- 사용자가 요청하지 않은 작업을 추가하지 않는다.',
     '',
     '출력 형식:',
-    '{"summary":"한 문장 계획 요약","parts":[{"actionType":"...","text":"명령 조각","description":"할 일 설명","slots":{"fileName":null,"outputFormat":null,"destination":null,"directoryHint":null,"query":null,"topic":null,"dateHint":null}}]}',
+    '{"summary":"한 문장 계획 요약","parts":[{"actionType":"...","text":"명령 조각","description":"할 일 설명","slots":{"fileName":null,"outputFormat":null,"destination":null,"directoryHint":null,"query":null,"topic":null,"dateHint":null},"arguments":{}}]}',
     '',
+    `오늘 날짜: ${new Date().toISOString().slice(0, 10)}`,
     `사용자 명령: ${commandText}`
+  ].join('\n');
+}
+
+export function buildDesktopControlPrompt({ text }) {
+  return [
+    '사용자의 Windows 화면 조작 요청을 구조화된 UI Automation 계획 JSON으로 변환하세요.',
+    '임의 PowerShell이나 좌표 클릭을 만들지 말고 아래 허용된 연산만 사용하세요.',
+    '',
+    '대상 창 target 필드:',
+    '- processName, title, titleContains, className 중 확인 가능한 값만 사용한다.',
+    '- 앱 이름만 알면 processName을 사용한다. 창 제목 일부가 명시되면 titleContains를 사용한다.',
+    '',
+    '허용 operations:',
+    '- launch: {"op":"launch","filePath":"notepad.exe","arguments":[]}',
+    '- wait: {"op":"wait","timeoutMs":500}',
+    '- focusWindow: {"op":"focusWindow"}',
+    '- setFocus: selector가 가리키는 요소에 포커스',
+    '- setValue: selector와 value로 입력란 값을 설정',
+    '- sendKeys: selector와 Windows SendKeys 문법의 keys로 단축키 입력',
+    '- invoke 또는 clickElement: 버튼/메뉴 요소의 InvokePattern 실행',
+    '- toggle, select, expand, collapse: 해당 UI Automation 패턴 실행',
+    '- clickText: UI Automation 요소가 없는 캔버스에서만 {"op":"clickText","text":"화면에 보이는 정확한 문구","matchMode":"exact"}. 좌표는 넣지 않는다.',
+    '- clickTemplate: UI Automation 이름과 글자가 없는 아이콘에만 {"op":"clickTemplate","targetLabel":"확인 아이콘","templatePath":"사용자가 제공했거나 작업 문맥에 실제 존재하는 로컬 PNG 경로","minConfidence":0.9}. 경로를 추측하거나 만들지 않는다.',
+    '- inspect: 창 존재와 메타데이터만 관찰',
+    '',
+    'selector 필드: automationId, name, nameContains, className, controlType, index 중 필요한 값만 사용한다.',
+    '모든 조작에는 결과를 확인할 verification을 넣는다.',
+    'verification type: windowExists, windowTitleContains, elementExists, elementValueEquals, elementNameEquals, elementNameContains, elementEnabled.',
+    '비밀번호·인증코드·결제·삭제·전역 권한 버튼은 clickText나 clickTemplate로 계획하지 않는다. 프로그램을 열 때 cmd, powershell, 스크립트 파일은 사용하지 않는다.',
+    '일반 앱 매핑: 메모장=notepad.exe, 계산기=calc.exe, 파일 탐색기=explorer.exe.',
+    '요청에 없는 저장·전송·종료 동작은 추가하지 않는다.',
+    '',
+    'JSON 객체 하나만 출력하고 설명이나 코드펜스를 붙이지 않는다.',
+    '형식: {"target":{"processName":"","titleContains":""},"operations":[{"op":"..."}],"verification":[{"type":"..."}],"timeoutMs":5000}',
+    '',
+    `사용자 요청: ${text}`
   ].join('\n');
 }
 
@@ -75,9 +129,13 @@ const contentStopWords = new Set([
 export function commandHasDraftableContent(text) {
   const raw = String(text ?? '').trim();
   if (!raw) return false;
+  const contentText = raw
+    .replace(/["'“”][^"'“”]+\.(?:xlsx|docx|pptx|ppt|pdf|txt|hwpx?|csv|png|jpe?g|mp4|zip)["'“”]/gi, ' ')
+    .replace(/(?:[a-z]:[\\/])?(?:[^\s"'<>|]+[\\/])*[^\s"'<>|]+\.(?:xlsx|docx|pptx|ppt|pdf|txt|hwpx?|csv|png|jpe?g|mp4|zip)\b/gi, ' ');
   // 수치·기간·비율 등 구체 데이터가 있으면 내용이 있다고 본다.
-  if (/\d/.test(raw)) return true;
-  const tokens = raw
+  // 파일명/경로 안의 버전·날짜 숫자는 문서 본문 데이터가 아니므로 먼저 제거한다.
+  if (/\d/.test(contentText)) return true;
+  const tokens = contentText
     .replace(/[.,!?~…()[\]{}'"'"「」·:/\\-]/g, ' ')
     .split(/\s+/)
     .map((token) => token.replace(/(으로|로|를|을|이|가|는|은|의|에|와|과|도|만)$/u, ''))
@@ -94,7 +152,7 @@ export function buildSearchCriteriaPrompt({ text }) {
     '- extensions: 확장자 배열(예 ["xlsx","pdf"]). 특정 안 하면 빈 배열',
     '- modifiedWithinDays: "어제/최근/이번주" 같은 표현을 일수로(없으면 null)',
     '- contentQuery: 파일 "내용"에서 찾아야 하면 그 문자열(파일명 검색이면 빈 문자열)',
-    '- scope: "home"(사용자 폴더 전체) | "desktop" | "documents" | "downloads" 중 하나(모르면 "home")',
+    '- scope: "workspace"(작업 폴더) | "home"(사용자 폴더 전체) | "desktop" | "documents" | "downloads" 중 하나(작업 폴더가 명시되면 "workspace", 그 밖에 모르면 "home")',
     '',
     'JSON 객체 하나만 출력한다. 설명/코드펜스 금지.',
     '형식: {"query":"","extensions":[],"modifiedWithinDays":null,"contentQuery":"","scope":"home"}',
@@ -203,13 +261,14 @@ const contentSchemaByFamily = {
   txt: '- txt 형식: {"kind":"txt","content":"문서 본문"} — 제목·섹션 구분·항목을 갖춘 완성된 본문. 간결하게, 보통 1500자 이내(최대 8000자).'
 };
 
-export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [] }) {
+export function buildContentDraftPrompt({ text, outputFormat, fileName, locale = 'ko-KR', preferenceHints = [], personalContext = null }) {
   const family = contentFamilyOf(outputFormat);
   const formatLabel = { xlsx: 'xlsx(엑셀)', doc: `${outputFormat}(워드/문서)`, slides: `${outputFormat}(프레젠테이션)`, txt: 'txt' }[family];
   return [
     '당신은 실무 문서를 작성하는 전문 어시스턴트입니다. 사용자 명령이 요구하는 문서를 실제 업무에 바로 쓸 수 있는 프로 수준으로 완성하세요.',
     '초안이 아니라 완성본을 목표로 합니다. 형식적이거나 뼈대만 있는 결과는 금지합니다.',
     ...preferenceSection(preferenceHints),
+    ...personalContextPromptSection(personalContext),
     '',
     '품질 기준:',
     '- 실무에서 통용되는 구조와 항목을 갖춘다(적절한 섹션/슬라이드, 표 머리글, 요약/합계, 단위 표기 등).',
@@ -246,10 +305,15 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     clarifyConfidenceThreshold = 0.7,
     runner = null,
     contentRunner = null,
+    apiKey = process.env.JARVIS_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY,
+    openAiApiKey = process.env.JARVIS_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY,
+    openAiApi = process.env.JARVIS_OPENAI_API ?? 'chat-completions',
+    openAiModel = process.env.JARVIS_OPENAI_MODEL,
+    workspaceRoot = './workspace',
     clock = () => new Date(),
     adapterId = 'claude-cli-task-planner-v1'
   } = {}) {
-    super();
+    super({ workspaceRoot });
     this.parser = parser;
     this.skillRouter = skillRouter;
     this.model = model;
@@ -261,9 +325,17 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     this.clarifyConfidenceThreshold = clarifyConfidenceThreshold;
     this.clock = clock;
     this.adapterId = adapterId;
-    this.runner = runner ?? createClaudeCliRunner({ command, model, timeoutMs });
+    this.runner = runner ?? createClaudeCliRunner({ command, model, timeoutMs, apiKey, openAiApiKey, openAiApi, openAiModel });
     // 콘텐츠 작성은 프로 품질을 위해 더 강한 모델(기본 sonnet)과 긴 타임아웃을 쓴다.
-    this.contentRunner = contentRunner ?? runner ?? createClaudeCliRunner({ command, model: contentModel, timeoutMs: contentTimeoutMs });
+    this.contentRunner = contentRunner ?? runner ?? createClaudeCliRunner({ command, model: contentModel, timeoutMs: contentTimeoutMs, apiKey, openAiApiKey, openAiApi, openAiModel });
+    const runnerMetadata = runnerMetadataFor(this.runner, model ?? 'cli-default');
+    const contentRunnerMetadata = runnerMetadataFor(this.contentRunner, contentModel ?? model ?? 'cli-default');
+    this.runnerProvider = runnerMetadata.provider;
+    this.runnerExternalService = runnerMetadata.externalService;
+    this.runnerModel = runnerMetadata.model;
+    this.contentRunnerProvider = contentRunnerMetadata.provider;
+    this.contentRunnerExternalService = contentRunnerMetadata.externalService;
+    this.contentRunnerModel = contentRunnerMetadata.model;
     this.contentDraftCache = new Map();
     // 콘텐츠 초안도 파일에 남겨 재시작 후에도 같은 요청이면 즉시 재현한다.
     // 키에 날짜가 들어가므로(초안 본문에 오늘 날짜가 박힘) 하루 단위로만 재사용된다.
@@ -274,8 +346,26 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     this.shellCommandCache = new Map();
     this.shellCachePath = process.env.JARVIS_SHELL_CACHE_PATH
       ?? (process.env.JARVIS_BRIDGE_STATE_DIR ? `${process.env.JARVIS_BRIDGE_STATE_DIR}/shell-command-cache.jsonl` : 'logs/shell-command-cache.jsonl');
+    this.decompositionCache = new Map();
+    this.decompositionCachePath = process.env.JARVIS_PLAN_CACHE_PATH
+      ?? (process.env.JARVIS_BRIDGE_STATE_DIR ? `${process.env.JARVIS_BRIDGE_STATE_DIR}/plan-decomposition-cache.jsonl` : 'logs/plan-decomposition-cache.jsonl');
     this.loadShellCache();
     this.loadContentCache();
+    this.loadDecompositionCache();
+  }
+
+  loadDecompositionCache() {
+    try {
+      if (!existsSync(this.decompositionCachePath)) return;
+      for (const line of readFileSync(this.decompositionCachePath, 'utf8').split(/\r?\n/).filter(Boolean)) {
+        try {
+          const record = JSON.parse(line);
+          if (record?.key && this.isValidDecomposition(record.decomposition)) {
+            this.decompositionCache.set(record.key, record.decomposition);
+          }
+        } catch { /* skip bad line */ }
+      }
+    } catch { /* cache is optional */ }
   }
 
   loadContentCache() {
@@ -304,12 +394,66 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
 
   createPlan(taskRequest, intent, options = {}) {
     this.pendingPreferenceHints = this.preferenceHintsFrom(options.planningContext);
+    this.pendingCognitiveContext = options.planningContext?.cognition ?? null;
+    this.pendingPersonalContext = normalizePersonalContext(options.personalContext);
     try {
+      if (this.canUseTrustedDeterministicRoute(taskRequest, intent, options)) {
+        const plan = super.createPlan(taskRequest, intent, {
+          ...options,
+          deterministicArgumentsOnly: true
+        });
+        return {
+          ...plan,
+          planExplanation: `상위 임무 계획에서 확정한 ${options.route.skill.toolName} 경로를 로컬 규칙으로 계획했습니다.`,
+          clarification: {
+            adapterId: this.adapterId,
+            ambiguous: false,
+            confidence: Number(intent.confidence ?? 1),
+            questions: [],
+            resolvedBy: 'trusted-mission-route'
+          },
+          llmPlanning: {
+            adapterId: this.adapterId,
+            mode: 'trusted-deterministic-route',
+            model: 'local-rules',
+            modelRoundTrips: 0,
+            rawCommandSharedWithModel: false,
+            trustedToolName: options.trustedRouteHint.toolName
+          }
+        };
+      }
       const plan = this.createPlanWithLlm(taskRequest, intent, options);
       return this.attachClarification(plan, taskRequest, intent);
     } finally {
       this.pendingPreferenceHints = null;
+      this.pendingCognitiveContext = null;
+      this.pendingPersonalContext = null;
     }
+  }
+
+  canUseTrustedDeterministicRoute(taskRequest, intent, options) {
+    const hint = options.trustedRouteHint;
+    const routedToolName = options.route?.skill?.toolName;
+    if (hint?.source !== 'mission-executive'
+      || hint?.skipExternalPlanning !== true
+      || !hint.toolName
+      || hint.toolName !== routedToolName) {
+      return false;
+    }
+    // Mission supplies a tool-bound atomic action. If its arguments pass the
+    // registered capability schema, a second semantic model call cannot improve
+    // the dispatch contract and would only add latency or reinterpret the action.
+    if (sanitizeMissionArguments(routedToolName, options.preparedMissionArguments)) return true;
+    // Without prepared arguments, only routes whose full arguments can be
+    // recovered from local parser slots or safe defaults qualify.
+    if (intent.actionType === ActionType.LIST_FILES && routedToolName === 'filesystem.listFiles') return true;
+    if (intent.actionType === ActionType.SEARCH_FILES) {
+      return typeof intent.slots?.fileName === 'string' && intent.slots.fileName.trim().length > 0;
+    }
+    if (intent.actionType === ActionType.BROWSER_SEARCH) {
+      return typeof intent.slots?.query === 'string' && intent.slots.query.trim().length > 0;
+    }
+    return false;
   }
 
   // 계획을 어떻게 세웠는지 사람이 읽을 설명 + 애매하면 물어볼 질문을 붙인다.
@@ -323,7 +467,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const isShell = plan.action?.actionType === ActionType.SHELL_EXECUTE;
     // 단, 미분류 폴백(unknown)으로 셸에 온 모호한 명령은 첫 실행에 한해 확인 질문을 한다.
     // 결정화 캐시에 있는 반복 요청은 즉시 실행 경로이므로 다시 묻지 않는다.
-    const shellCacheKey = String(taskRequest.command?.rawText ?? '').trim().slice(0, this.maxCommandLength).toLowerCase().replace(/\s+/g, ' ');
+    const shellCacheKey = this.shellCacheKey(taskRequest.command?.rawText);
     const shellSkipsClarify = isShell && (intent.unknown !== true || this.shellCommandCache.has(shellCacheKey));
     const ambiguous = !isCompound && !shellSkipsClarify && (
       intent.unknown === true
@@ -357,7 +501,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     ].join('\n');
     let stdout;
     try {
-      stdout = this.runner(prompt);
+      stdout = this.runner(withPersonalContext(prompt, this.pendingPersonalContext));
     } catch {
       return [];
     }
@@ -394,18 +538,26 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const riskiest = [...decomposition.parts].sort(
       (a, b) => (riskTierByAction[a.actionType] ?? 4) - (riskTierByAction[b.actionType] ?? 4)
     )[0];
-    const escalated = riskiest.actionType !== intent.actionType;
-    const primaryIntent = escalated
+    const actionRerouted = riskiest.actionType !== intent.actionType;
+    const riskEscalated = actionRerouted
+      && (riskTierByAction[riskiest.actionType] ?? 4) < (riskTierByAction[intent.actionType] ?? 4);
+    const primaryIntent = actionRerouted
       ? {
           ...intent,
           actionType: riskiest.actionType,
+          title: actionProfiles[riskiest.actionType].label,
+          label: actionProfiles[riskiest.actionType].label,
           category: actionProfiles[riskiest.actionType].category,
           riskHint: actionProfiles[riskiest.actionType].riskHint,
           slots: { ...intent.slots, ...riskiest.slots },
-          reasons: [...(intent.reasons ?? []), `llm_plan_risk_escalation:${riskiest.actionType}`]
+          reasons: [
+            ...(intent.reasons ?? []),
+            `llm_plan_action_reroute:${intent.actionType}->${riskiest.actionType}`,
+            ...(riskEscalated ? [`llm_plan_risk_escalation:${riskiest.actionType}`] : [])
+          ]
         }
       : intent;
-    const route = escalated ? this.skillRouter.route(primaryIntent) : options.route;
+    const route = actionRerouted ? this.skillRouter.route(primaryIntent) : options.route;
     this.pendingDecomposition = decomposition;
     try {
       const plan = super.createPlan(taskRequest, primaryIntent, { ...options, route });
@@ -416,22 +568,35 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
           : plan.interpretedIntent,
         riskNotes: [
           ...plan.riskNotes,
-          ...(escalated
+          ...(actionRerouted && !riskEscalated
+            ? [`[LLM 계획] 명령 맥락에 맞게 대표 작업을 ${actionProfiles[riskiest.actionType].label}(으)로 조정했습니다.`]
+            : []),
+          ...(riskEscalated
             ? [`[LLM 계획] 복합 명령에 더 위험한 하위 작업(${actionProfiles[riskiest.actionType].label})이 있어 대표 위험도를 승격했습니다.`]
             : []),
           ...decomposition.parts.map((part, index) => `[LLM 계획 ${index + 1}/${decomposition.parts.length}] ${actionProfiles[part.actionType].label}: ${part.description}`)
         ],
         llmPlanning: {
           adapterId: this.adapterId,
-          model: this.model ?? 'cli-default',
+          model: decomposition.model ?? this.runnerModel,
           summary: decomposition.summary ?? null,
           latencyMs: decomposition.latencyMs,
           partCount: decomposition.parts.length,
           heterogeneous: new Set(decomposition.parts.map((part) => part.actionType)).size > 1,
-          riskEscalated: escalated,
+          actionRerouted,
+          riskEscalated,
           preferenceHintsApplied: this.pendingPreferenceHints?.length ?? 0,
-          externalService: 'anthropic-claude-cli',
-          rawCommandSharedWithModel: true
+          externalService: decomposition.externalService ?? this.runnerExternalService,
+          runnerProvider: decomposition.runnerProvider ?? this.runnerProvider,
+          providerChain: decomposition.providerChain ?? [this.runnerProvider],
+          providerFallbackCount: decomposition.providerFallbackCount ?? 0,
+          providerUsage: decomposition.providerUsage ?? null,
+          providerCostUsd: decomposition.providerCostUsd ?? null,
+          rawCommandSharedWithModel: decomposition.rawCommandSharedWithModel !== false,
+          fromCache: decomposition.fromCache === true,
+          modelRoundTrips: decomposition.fromCache === true ? 0 : 1,
+          preparedArgumentCount: decomposition.preparedArgumentCount ?? 0,
+          avoidedFollowupModelCalls: decomposition.preparedArgumentCount ?? 0
         }
       };
     } finally {
@@ -442,12 +607,35 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
   decomposeWithLlm(rawText, intent) {
     const text = String(rawText ?? '').trim().slice(0, this.maxCommandLength);
     if (!text) return null;
+    // 한 데스크톱 작업 안의 여러 클릭/입력은 desktop.control 전용 계획기가 한 번에 구조화한다.
+    // 일반 복합 작업 분해까지 먼저 호출하면 같은 명령이 모델을 두 번 왕복한다.
+    if (intent?.actionType === ActionType.DESKTOP_CONTROL) return null;
     // 단순 명령은 LLM 왕복 지연을 만들지 않는다. 접속어/복수 액션이 감지된 복합 명령만 분해한다.
     if (intent?.complexity?.needsPlanDecomposition !== true) return null;
+    const cacheKey = this.decompositionCacheKey(text);
+    const cached = this.decompositionCache.get(cacheKey);
+    if (cached) {
+      return {
+        ...structuredClone(cached),
+        latencyMs: 0,
+        runnerProvider: 'local-plan-cache',
+        externalService: 'local-cache',
+        model: 'cached-result',
+        providerChain: ['local-plan-cache'],
+        providerFallbackCount: 0,
+        providerUsage: null,
+        providerCostUsd: null,
+        rawCommandSharedWithModel: false,
+        fromCache: true
+      };
+    }
     const startedAt = Date.now();
     let stdout;
     try {
-      stdout = this.runner(buildPlanDecompositionPrompt(text, { preferenceHints: this.pendingPreferenceHints ?? [] }));
+      stdout = this.runner(buildPlanDecompositionPrompt(text, {
+        preferenceHints: this.pendingPreferenceHints ?? [], cognitiveContext: this.pendingCognitiveContext,
+        personalContext: this.pendingPersonalContext
+      }));
     } catch {
       return null;
     }
@@ -463,14 +651,49 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
           ? part.description.trim().slice(0, 200)
           : `${actionProfiles[part.actionType].label} 실행`,
         slots: this.sanitizeSlots(part.slots),
+        arguments: this.sanitizePreparedArguments(part.actionType, part.arguments),
         sequenceIndex: index
       }));
     if (parts.length === 0 || parts.length !== rawParts.length) return null;
-    return {
+    const decomposition = {
       parts,
       summary: typeof payload.summary === 'string' ? payload.summary.trim().slice(0, 300) : null,
-      latencyMs: Date.now() - startedAt
+      preparedArgumentCount: parts.filter((part) => part.arguments).length
     };
+    this.decompositionCache.set(cacheKey, decomposition);
+    try {
+      appendJsonlSync(this.decompositionCachePath, {
+        key: cacheKey,
+        decomposition,
+        at: this.clock().toISOString()
+      });
+    } catch { /* optional */ }
+    return {
+      ...structuredClone(decomposition),
+      latencyMs: Date.now() - startedAt,
+      runnerProvider: this.runner.lastProvider ?? this.runnerProvider,
+      externalService: this.runner.lastExternalService ?? this.runnerExternalService,
+      model: this.runner.lastModel ?? this.runnerModel,
+      providerChain: (this.runner.providerChain ?? [{ provider: this.runnerProvider }]).map((item) => item.provider),
+      providerFallbackCount: this.runner.lastFailures?.length ?? 0,
+      providerUsage: this.runner.lastUsage ?? null,
+      providerCostUsd: this.runner.lastCostUsd ?? null,
+      rawCommandSharedWithModel: true,
+      fromCache: false
+    };
+  }
+
+  decompositionCacheKey(text) {
+    const preferences = (this.pendingPreferenceHints ?? []).map((hint) => hint.statement).join('|');
+    const normalized = `${this.clock().toISOString().slice(0, 10)}|${String(text).toLowerCase().replace(/\s+/g, ' ')}|${preferences}|${JSON.stringify(this.pendingCognitiveContext ?? null)}|${personalContextFingerprint(this.pendingPersonalContext)}`;
+    return createHash('sha256').update(normalized).digest('hex');
+  }
+
+  isValidDecomposition(value) {
+    return Array.isArray(value?.parts)
+      && value.parts.length > 0
+      && value.parts.length <= 5
+      && value.parts.every((part) => actionProfiles[part?.actionType] && typeof part?.text === 'string');
   }
 
   argumentsFor(intent, taskRequest, contextSnapshot) {
@@ -478,6 +701,16 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     // 매크로 저장: 원문만 넘기면 어댑터가 규칙으로 이름·명령을 뽑는다(LLM 불필요).
     if (intent.actionType === ActionType.MACRO_SAVE) {
       return { ...base, rawText: taskRequest.command.rawText };
+    }
+    if (intent.actionType === ActionType.DESKTOP_CONTROL) {
+      const drafted = this.draftJsonFor(buildDesktopControlPrompt, {
+        text: intent.slots?.rawCommand ?? taskRequest.command.rawText
+      });
+      const plan = this.sanitizeDesktopControlPlan(drafted);
+      return {
+        rawText: taskRequest.command.rawText,
+        ...(plan ?? { target: base.target ?? {}, operations: [], verification: [] })
+      };
     }
     // 셸 실행: 자연어를 안전한 PowerShell 한 줄 명령으로 LLM 변환한다. 실제 명령은 승인 카드에 노출된다.
     if (intent.actionType === ActionType.SHELL_EXECUTE) {
@@ -548,7 +781,7 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     if (!trimmed) return null;
     let stdout;
     try {
-      stdout = this.runner(promptBuilder({ ...args, text: trimmed }));
+      stdout = this.runner(withPersonalContext(promptBuilder({ ...args, text: trimmed }), this.pendingPersonalContext));
     } catch {
       return null;
     }
@@ -561,13 +794,13 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     const trimmed = String(text ?? '').trim().slice(0, this.maxCommandLength);
     if (!trimmed) return null;
     // 결정화 캐시: 같은 요청이면 LLM을 부르지 않고 이전에 만든 명령을 즉시 재현한다.
-    const key = trimmed.toLowerCase().replace(/\s+/g, ' ');
+    const key = this.shellCacheKey(trimmed);
     if (this.shellCommandCache.has(key)) {
       return { ...this.shellCommandCache.get(key), fromCache: true };
     }
     let stdout;
     try {
-      stdout = this.runner(buildShellCommandPrompt({ text: trimmed, locale }));
+      stdout = this.runner(withPersonalContext(buildShellCommandPrompt({ text: trimmed, locale }), this.pendingPersonalContext));
     } catch {
       return null;
     }
@@ -591,11 +824,18 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     if (!trimmed) return null;
     const preferenceHints = this.pendingPreferenceHints ?? [];
     const today = this.clock().toISOString().slice(0, 10);
-    const cacheKey = `${today}:${outputFormat}:${trimmed}:${preferenceHints.map((hint) => hint.statement).join('|')}`;
+    const cacheKey = createHash('sha256').update(JSON.stringify({
+      today, outputFormat, fileName, locale, text: trimmed,
+      preferences: preferenceHints.map(hint => hint.statement),
+      personalContext: personalContextFingerprint(this.pendingPersonalContext)
+    })).digest('hex');
     if (this.contentDraftCache.has(cacheKey)) return this.contentDraftCache.get(cacheKey);
     let stdout;
     try {
-      stdout = this.contentRunner(buildContentDraftPrompt({ text: trimmed, outputFormat, fileName, locale, preferenceHints }));
+      stdout = this.contentRunner(buildContentDraftPrompt({
+        text: trimmed, outputFormat, fileName, locale, preferenceHints,
+        personalContext: this.pendingPersonalContext
+      }));
     } catch {
       this.contentDraftCache.set(cacheKey, null);
       return null;
@@ -609,6 +849,13 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
       try { appendJsonlSync(this.contentCachePath, { key: cacheKey, draft, at: this.clock().toISOString() }); } catch { /* optional */ }
     }
     return draft;
+  }
+
+  shellCacheKey(rawText) {
+    const text = String(rawText ?? '').trim().slice(0, this.maxCommandLength).toLowerCase().replace(/\s+/g, ' ');
+    return createHash('sha256').update(JSON.stringify({ text,
+      personalContext: personalContextFingerprint(this.pendingPersonalContext)
+    })).digest('hex');
   }
 
   sanitizeContentDraft(payload) {
@@ -637,12 +884,142 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
     if (payload?.kind === 'txt' && typeof payload.content === 'string' && payload.content.trim()) {
       return { kind: 'txt', content: payload.content.trim().slice(0, 20000) };
     }
+    if (payload?.kind === 'doc') {
+      const title = this.sanitizeText(payload.title, 200);
+      const blocks = (Array.isArray(payload.blocks) ? payload.blocks : [])
+        .slice(0, 40)
+        .map((block) => this.sanitizeDocumentBlock(block))
+        .filter(Boolean);
+      if (!title && blocks.length === 0) return null;
+      return { kind: 'doc', title, blocks };
+    }
+    if (payload?.kind === 'slides') {
+      const title = this.sanitizeText(payload.title, 200);
+      const slides = (Array.isArray(payload.slides) ? payload.slides : [])
+        .slice(0, 20)
+        .map((slide) => {
+          const slideTitle = this.sanitizeText(slide?.title, 200);
+          const bullets = (Array.isArray(slide?.bullets) ? slide.bullets : [])
+            .slice(0, 10)
+            .map((item) => this.sanitizeText(item, 500))
+            .filter(Boolean);
+          const notes = this.sanitizeText(slide?.notes, 2000);
+          return slideTitle || bullets.length ? { title: slideTitle, bullets, ...(notes ? { notes } : {}) } : null;
+        })
+        .filter(Boolean);
+      if (!title && slides.length === 0) return null;
+      return { kind: 'slides', title, slides };
+    }
     return null;
+  }
+
+  sanitizeDocumentBlock(block) {
+    if (!block || typeof block !== 'object') return null;
+    const type = String(block.type ?? '').toLowerCase();
+    if (type === 'heading') {
+      const text = this.sanitizeText(block.text, 500);
+      return text ? { type, level: Math.min(3, Math.max(1, Number(block.level) || 1)), text } : null;
+    }
+    if (type === 'paragraph') {
+      const text = this.sanitizeText(block.text, 4000);
+      return text ? { type, text } : null;
+    }
+    if (type === 'bullets') {
+      const items = (Array.isArray(block.items) ? block.items : [])
+        .slice(0, 30)
+        .map((item) => this.sanitizeText(item, 1000))
+        .filter(Boolean);
+      return items.length ? { type, items } : null;
+    }
+    if (type === 'table') {
+      const columns = (Array.isArray(block.columns) ? block.columns : [])
+        .slice(0, 20)
+        .map((item) => this.sanitizeText(item, 200))
+        .filter(Boolean);
+      const rows = (Array.isArray(block.rows) ? block.rows : [])
+        .slice(0, 100)
+        .filter(Array.isArray)
+        .map((row) => row.slice(0, columns.length || 20).map((cell) => this.sanitizeText(cell, 1000)));
+      return columns.length && rows.length ? { type, columns, rows } : null;
+    }
+    return null;
+  }
+
+  sanitizeText(value, maxLength) {
+    if (value === undefined || value === null) return '';
+    return String(value).trim().slice(0, maxLength);
+  }
+
+  sanitizePreparedArguments(actionType, value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const text = (key, max = 1000) => this.sanitizeText(value[key], max);
+    if (actionType === ActionType.CREATE_FILE) {
+      const contentDraft = this.sanitizeContentDraft(value.contentDraft ?? value.draft);
+      const result = {
+        fileName: text('fileName', 240) || undefined,
+        outputFormat: text('outputFormat', 16).toLowerCase() || undefined,
+        path: text('path', 1000) || undefined,
+        outputPath: text('outputPath', 1000) || undefined,
+        contentDraft
+      };
+      return Object.values(result).some(Boolean) ? result : null;
+    }
+    if (actionType === ActionType.MOVE_FILE) {
+      const sanitizeMove = (move) => {
+        if (!move || typeof move !== 'object' || Array.isArray(move)) return null;
+        const from = this.sanitizeText(move.from ?? move.source ?? move.sourcePath, 1000);
+        const to = this.sanitizeText(move.to ?? move.destination ?? move.target ?? move.targetPath, 1000);
+        return from && to ? { from, to } : null;
+      };
+      const moves = (Array.isArray(value.moves) ? value.moves : [])
+        .slice(0, 20)
+        .map(sanitizeMove)
+        .filter(Boolean);
+      if (moves.length) return { moves };
+      return sanitizeMove(value);
+    }
+    if (actionType === ActionType.BROWSER_SEARCH) {
+      return { query: text('query', 500), searchEngine: ['duckduckgo', 'bing'].includes(text('searchEngine', 30).toLowerCase()) ? text('searchEngine', 30).toLowerCase() : 'duckduckgo', maxResults: Math.min(10, Math.max(1, Number(value.maxResults) || 5)), readOnly: true };
+    }
+    if (actionType === ActionType.SEARCH_FILES) {
+      return {
+        query: text('query', 300),
+        extensions: (Array.isArray(value.extensions) ? value.extensions : []).slice(0, 12).map((item) => this.sanitizeText(item, 16).replace(/^\./, '')).filter(Boolean),
+        modifiedWithinDays: Number.isFinite(Number(value.modifiedWithinDays)) ? Math.min(3650, Math.max(0, Number(value.modifiedWithinDays))) : null,
+        contentQuery: text('contentQuery', 500),
+        scope: ['workspace', 'home', 'desktop', 'documents', 'downloads'].includes(text('scope', 30).toLowerCase()) ? text('scope', 30).toLowerCase() : 'home'
+      };
+    }
+    if (actionType === ActionType.SEND_EMAIL) {
+      return { to: text('to', 320), name: text('name', 200), subject: text('subject', 500), body: text('body', 10000), attachmentQuery: text('attachmentQuery', 500) };
+    }
+    if (actionType === ActionType.EDIT_DOCUMENT) {
+      const edits = (Array.isArray(value.edits) ? value.edits : []).slice(0, 100).map((edit) => ({
+        ...(this.sanitizeText(edit?.cell, 30) ? { cell: this.sanitizeText(edit.cell, 30) } : {}),
+        ...(this.sanitizeText(edit?.findText, 500) ? { findText: this.sanitizeText(edit.findText, 500) } : {}),
+        value: edit?.value === null || edit?.value === undefined ? '' : String(edit.value).slice(0, 2000),
+        scope: ['first', 'all', 'ask'].includes(String(edit?.scope ?? '').toLowerCase()) ? String(edit.scope).toLowerCase() : 'ask'
+      })).filter((edit) => edit.cell || edit.findText);
+      return { targetQuery: text('targetQuery', 500), targetPath: text('targetPath', 1000), sheet: text('sheet', 200) || null, edits };
+    }
+    if (actionType === ActionType.SHELL_EXECUTE) {
+      const command = text('command', 8000);
+      return command ? { command, verifyCommand: text('verify', 1000), shell: 'powershell' } : null;
+    }
+    if (actionType === ActionType.DESKTOP_CONTROL) {
+      return this.sanitizeDesktopControlPlan(value);
+    }
+    const allowed = {};
+    for (const key of ['path', 'directory', 'destination', 'source', 'target']) {
+      const item = text(key, 1000);
+      if (item) allowed[key] = item;
+    }
+    return Object.keys(allowed).length ? allowed : null;
   }
 
   sanitizeSlots(slots) {
     const sanitized = {};
-    for (const key of ['fileName', 'outputFormat', 'destination', 'directoryHint', 'query', 'topic', 'dateHint']) {
+    for (const key of ['fileName', 'outputFormat', 'destination', 'directoryHint', 'query', 'topic', 'dateHint', 'appName', 'windowTitle']) {
       const value = slots?.[key];
       if (typeof value === 'string' && value.trim()) sanitized[key] = value.trim().slice(0, 200);
     }
@@ -670,13 +1047,19 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
         title: part.description,
         category: actionProfiles[part.actionType].category,
         riskHint: actionProfiles[part.actionType].riskHint,
-        slots: { ...this.parser.extractSlots(part.text, part.actionType), ...part.slots, llmPartText: part.text }
+        slots: {
+          ...this.parser.extractSlots(part.text, part.actionType),
+          ...part.slots,
+          ...(part.arguments?.fileName ? { fileName: part.arguments.fileName } : {}),
+          ...(part.arguments?.outputFormat ? { outputFormat: part.arguments.outputFormat } : {}),
+          llmPartText: part.text
+        }
       };
       const partRoute = part.actionType === action.actionType
         ? { skill: { skillId: action.skillId, toolName: action.toolName, version: action.skillVersion } }
         : this.skillRouter.route(partIntent);
       const partSkill = partRoute?.skill ?? skill;
-      const partArguments = this.argumentsFor(partIntent, taskRequest, null);
+      const partArguments = this.argumentsForDecomposedPart(part, partIntent, taskRequest);
       // 파일을 만드는 노드면 그 이름을 기억한다.
       if (part.actionType === ActionType.CREATE_FILE) {
         lastProducedFile = partArguments.fileName ?? partArguments.path ?? null;
@@ -701,10 +1084,11 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
         skillId: partSkill.skillId ?? action.skillId,
         description: part.description,
         llmPlanned: true,
+        argumentsPreparedInDecomposition: Boolean(part.arguments),
         arguments: {
           ...partArguments,
           rawText: part.text,
-          sequenceIndex: index
+          ...(['source.readSelectedInbox','case.readLocalRecord','source.collectMicrosoftMetadata'].includes(partSkill.toolName ?? action.toolName) ? {} : { sequenceIndex: index })
         },
         affectedItems: partAffected,
         preconditions: ['ApprovalDecision.approved', 'CapabilityToken.valid'],
@@ -715,15 +1099,191 @@ export class ClaudeCliTaskPlanner extends TaskPlanner {
       };
     });
   }
+
+  argumentsForDecomposedPart(part, partIntent, taskRequest) {
+    const prepared = part.arguments;
+    if (!prepared) return this.argumentsFor(partIntent, taskRequest, null);
+    const base = super.argumentsFor(partIntent, taskRequest, null);
+    if (part.actionType === ActionType.LIST_FILES) {
+      return {
+        ...base,
+        ...prepared,
+        directory: this.workspaceDirectoryFor(prepared.directory ?? base.directory)
+      };
+    }
+    if (part.actionType === ActionType.DESKTOP_CONTROL) {
+      return {
+        rawText: part.text,
+        ...(prepared ?? this.argumentsFor(partIntent, taskRequest, null))
+      };
+    }
+    if (part.actionType === ActionType.MOVE_FILE) {
+      const moves = prepared.moves ?? (prepared.from && prepared.to ? [{ from: prepared.from, to: prepared.to }] : []);
+      return {
+        moves: moves.map((move) => ({
+          from: this.workspacePathFor(move.from),
+          to: this.workspacePathFor(move.to)
+        }))
+      };
+    }
+    if (part.actionType !== ActionType.CREATE_FILE) return { ...base, ...prepared };
+    const draft = prepared.contentDraft;
+    const outputFormat = prepared.outputFormat ?? base.outputFormat ?? partIntent.slots?.outputFormat ?? 'txt';
+    const merged = {
+      ...base,
+      ...(prepared.fileName ? { fileName: prepared.fileName } : {}),
+      ...(prepared.outputFormat ? { outputFormat: prepared.outputFormat } : {})
+    };
+    const preparedPath = prepared.path ?? prepared.outputPath;
+    if (preparedPath) {
+      const safePath = this.workspacePathFor(preparedPath);
+      if (contentFamilyOf(outputFormat) === 'xlsx') merged.outputPath = safePath;
+      else merged.path = safePath;
+    }
+    if (!draft && this.contentEnabled && commandHasDraftableContent(part.text)) {
+      return this.argumentsFor(partIntent, taskRequest, null);
+    }
+    if (!draft || !this.contentEnabled) return merged;
+    const family = contentFamilyOf(outputFormat);
+    const marker = {
+      contentDraft: {
+        adapterId: this.adapterId,
+        kind: draft.kind,
+        draftedByLlm: true,
+        preparedInDecomposition: true,
+        appliedPreferences: (this.pendingPreferenceHints ?? []).map((hint) => hint.preferenceId).filter(Boolean)
+      }
+    };
+    if (draft.kind === 'xlsx' && family === 'xlsx') return { ...merged, sheetName: draft.sheetName ?? base.sheetName, columns: draft.columns, rows: draft.rows, ...marker };
+    if (draft.kind === 'doc' && family === 'doc') return { ...merged, docTitle: draft.title ?? null, blocks: draft.blocks, ...marker };
+    if (draft.kind === 'slides' && family === 'slides') return { ...merged, deckTitle: draft.title ?? null, slides: draft.slides, ...marker };
+    if (draft.kind === 'txt' && family !== 'xlsx') return { ...merged, content: draft.content, ...marker };
+    return this.argumentsFor(partIntent, taskRequest, null);
+  }
+
+  sanitizeDesktopControlPlan(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (desktopPayloadWouldLoseContent(value) || !Array.isArray(value.operations) || value.operations.length>16
+      || value.verification !== undefined && (!Array.isArray(value.verification) || value.verification.length>12)) return null;
+    const target = this.sanitizeDesktopTarget(value.target);
+    const operations = (Array.isArray(value.operations) ? value.operations : [])
+      .slice(0, 16)
+      .map((operation) => this.sanitizeDesktopOperation(operation))
+      .filter(Boolean);
+    if (operations.length === 0 || operations.length !== value.operations.length) return null;
+    const verification = (Array.isArray(value.verification) ? value.verification : [])
+      .slice(0, 12)
+      .map((check) => this.sanitizeDesktopVerification(check))
+      .filter(Boolean);
+    if (verification.length !== (value.verification?.length ?? 0)) return null;
+    return {
+      target,
+      operations,
+      verification,
+      timeoutMs: Math.min(15000, Math.max(500, Number(value.timeoutMs) || 5000))
+    };
+  }
+
+  sanitizeDesktopTarget(value = {}) {
+    const target = {};
+    const processId = Number(value?.processId);
+    if (Number.isInteger(processId) && processId > 0) target.processId = processId;
+    for (const [key, max] of [['processName', 120], ['title', 300], ['titleContains', 300], ['className', 200]]) {
+      const item = this.sanitizeText(value?.[key], max);
+      if (item) target[key] = item;
+    }
+    return target;
+  }
+
+  sanitizeDesktopSelector(value = {}) {
+    const selector = {};
+    for (const [key, max] of [['automationId', 240], ['name', 500], ['nameContains', 500], ['className', 200], ['controlType', 80]]) {
+      const item = this.sanitizeText(value?.[key], max);
+      if (item) selector[key] = item;
+    }
+    const index = Number(value?.index);
+    if (Number.isInteger(index) && index >= 0) selector.index = Math.min(index, 100);
+    return selector;
+  }
+
+  sanitizeDesktopOperation(value = {}) {
+    const operationNames = new Map([
+      ['launch', 'launch'], ['wait', 'wait'], ['inspect', 'inspect'], ['focuswindow', 'focusWindow'],
+      ['setfocus', 'setFocus'], ['setvalue', 'setValue'], ['sendkeys', 'sendKeys'], ['invoke', 'invoke'],
+      ['clickelement', 'clickElement'], ['toggle', 'toggle'], ['select', 'select'], ['expand', 'expand'], ['collapse', 'collapse'],
+      ['clicktext', 'clickText'], ['clicktemplate', 'clickTemplate']
+    ]);
+    const op = operationNames.get(this.sanitizeText(value?.op, 40).toLowerCase());
+    if (!op) return null;
+    const operation = { op };
+    const target = this.sanitizeDesktopTarget(value?.target);
+    if (Object.keys(target).length) operation.target = target;
+    const selector = this.sanitizeDesktopSelector(value?.selector);
+    if (Object.keys(selector).length) operation.selector = selector;
+    const filePath = this.sanitizeText(value?.filePath, 500);
+    if (filePath) operation.filePath = filePath;
+    if (Array.isArray(value?.arguments)) {
+      operation.arguments = value.arguments.slice(0, 16).map((item) => this.sanitizeText(item, 500)).filter(Boolean);
+    }
+    if (value?.value !== undefined && value?.value !== null) operation.value = String(value.value).slice(0, 8000);
+    const keys = this.sanitizeText(value?.keys, 2000);
+    if (keys) operation.keys = keys;
+    const visualText = this.sanitizeText(value?.text, 500);
+    if (visualText) operation.text = visualText;
+    const targetLabel = this.sanitizeText(value?.targetLabel, 300);
+    if (targetLabel) operation.targetLabel = targetLabel;
+    const templatePath = this.sanitizeText(value?.templatePath, 1000);
+    if (templatePath) operation.templatePath = templatePath;
+    const minConfidence = Number(value?.minConfidence);
+    if (Number.isFinite(minConfidence)) operation.minConfidence = Math.min(0.995, Math.max(0.8, minConfidence));
+    const scaleTolerance = Number(value?.scaleTolerance);
+    if (Number.isFinite(scaleTolerance)) operation.scaleTolerance = Math.min(0.35, Math.max(0, scaleTolerance));
+    const ambiguityGap = Number(value?.ambiguityGap);
+    if (Number.isFinite(ambiguityGap)) operation.ambiguityGap = Math.min(0.25, Math.max(0.01, ambiguityGap));
+    const matchMode = this.sanitizeText(value?.matchMode, 20).toLowerCase();
+    if (['exact', 'contains'].includes(matchMode)) operation.matchMode = matchMode;
+    const occurrence = Number(value?.occurrence);
+    if (Number.isInteger(occurrence) && occurrence >= 0) operation.occurrence = Math.min(occurrence, 20);
+    const timeoutMs = Number(value?.timeoutMs);
+    if (Number.isFinite(timeoutMs)) operation.timeoutMs = Math.min(15000, Math.max(0, timeoutMs));
+    return operation;
+  }
+
+  sanitizeDesktopVerification(value = {}) {
+    const types = new Map([
+      ['windowexists', 'windowExists'], ['windowtitlecontains', 'windowTitleContains'],
+      ['elementexists', 'elementExists'], ['elementvalueequals', 'elementValueEquals'],
+      ['elementnameequals', 'elementNameEquals'], ['elementnamecontains', 'elementNameContains'],
+      ['elementenabled', 'elementEnabled']
+    ]);
+    const type = types.get(this.sanitizeText(value?.type, 60).toLowerCase());
+    if (!type) return null;
+    const check = { type };
+    const target = this.sanitizeDesktopTarget(value?.target);
+    if (Object.keys(target).length) check.target = target;
+    const selector = this.sanitizeDesktopSelector(value?.selector);
+    if (Object.keys(selector).length) check.selector = selector;
+    if (value?.expected !== undefined && value?.expected !== null) check.expected = String(value.expected).slice(0, 8000);
+    const timeoutMs = Number(value?.timeoutMs);
+    if (Number.isFinite(timeoutMs)) check.timeoutMs = Math.min(15000, Math.max(0, timeoutMs));
+    return check;
+  }
 }
 
-export function createTaskPlannerFromEnv({ env = process.env, runner = null, clock = () => new Date() } = {}) {
+export function createTaskPlannerFromEnv({ env = process.env, runner = null, workspaceRoot = './workspace', clock = () => new Date() } = {}) {
   const enabled = env.JARVIS_LLM_PLANNER === '1' || env.JARVIS_LLM_PLANNER === 'true';
   if (!enabled) return null;
+  const anthropicApiKey = env.JARVIS_ANTHROPIC_API_KEY ?? env.ANTHROPIC_API_KEY ?? '';
+  const openAiApiKey = env.JARVIS_OPENAI_API_KEY ?? env.OPENAI_API_KEY ?? '';
   return new ClaudeCliTaskPlanner({
     command: env.JARVIS_LLM_PLANNER_COMMAND ?? env.JARVIS_LLM_INTENT_COMMAND ?? 'claude',
     model: env.JARVIS_LLM_PLANNER_MODEL ?? env.JARVIS_LLM_INTENT_MODEL ?? 'haiku',
     timeoutMs: Number(env.JARVIS_LLM_PLANNER_TIMEOUT_MS ?? 45000),
+    apiKey: anthropicApiKey,
+    openAiApiKey,
+    openAiApi: env.JARVIS_OPENAI_API ?? 'chat-completions',
+    openAiModel: env.JARVIS_OPENAI_MODEL ?? null,
+    workspaceRoot,
     contentEnabled: env.JARVIS_LLM_CONTENT === '1' || env.JARVIS_LLM_CONTENT === 'true',
     // 콘텐츠 모델 기본 haiku(프로 프롬프트로 이미 실무 품질, ~35s로 폰 타임아웃 안전).
     // 최고 품질을 원하면 JARVIS_LLM_CONTENT_MODEL=sonnet (지연 편차 큼, 타임아웃도 함께 늘릴 것).

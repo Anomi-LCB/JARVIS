@@ -4,11 +4,11 @@ import { colors } from '../theme/colors';
 import { createRiskAccessibility } from '../accessibility/approval-accessibility.js';
 
 const labels: Record<number, string> = {
-  5: 'Tier 5 / 낮음',
-  4: 'Tier 4 / 주의',
-  3: 'Tier 3 / 높음',
-  2: 'Tier 2 / 매우 높음',
-  1: 'Tier 1 / 치명적'
+  5: '위험 5단계 / 낮음',
+  4: '위험 4단계 / 주의',
+  3: '위험 3단계 / 높음',
+  2: '위험 2단계 / 매우 높음',
+  1: '위험 1단계 / 치명적'
 };
 
 export function RiskBadge({ tier }: { tier: 1 | 2 | 3 | 4 | 5 }) {

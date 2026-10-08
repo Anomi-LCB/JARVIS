@@ -1,0 +1,38 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {GrowthRuntime} from '../apps/growth-memory/src/growth-runtime.js';import {SqliteMemoryStore} from '../apps/growth-memory/src/db/sqlite-store.js';
+import {CoreFacade} from '../packages/core/src/core-facade.js';import {createCoreServer} from '../packages/core/src/main.mjs';
+test('confirmed preference expiry, safe history and scope survive Core HTTP and durable reopen',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'jarvis-preference-expiry-'));let now=new Date('2026-09-01T00:00:00.000Z');
+ const options={dbPath:join(root,'f.sqlite'),reviewDir:join(root,'reviews'),backupDir:join(root,'backups'),clock:()=>now};
+ let store=new SqliteMemoryStore(options);const open=()=>new GrowthRuntime({memoryStore:store,auditRoot:root,clock:()=>now});let growth=open();
+ const scope={userId:'local_user',workspaceRoot:root,conversationId:null};
+ for(let i=0;i<3;i++)growth.ingest({eventId:`source-${i}`,taskId:`task-${i}`,eventType:'approval.edited',source:{module:'CORE',memoryScope:scope},
+  payload:{editRequest:'회의자료는 표로 작성'},learningFlags:{canBeUsedForPreference:true},trustBoundary:{userProvided:true}});
+ const candidate=growth.query('회의자료',{scope}).find(x=>x.hypothesisId);const confirmed=growth.decidePreference({hypothesisId:candidate.hypothesisId});assert.equal(confirmed.success,true);
+ const id=confirmed.item.preferenceId,core=new CoreFacade({workspaceRoot:root,memoryStore:growth});
+ const server=createCoreServer(core,{adminToken:'synthetic-admin'});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));store.close();core.cognition?.close();rmSync(root,{recursive:true,force:true});});
+ const url=`http://127.0.0.1:${server.address().port}/memory/preferences`;
+ const call=(method='GET',body)=>fetch(url+(body?'/'+encodeURIComponent(id):''),{method,headers:{authorization:'Bearer synthetic-admin','content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+ for(const validUntil of ['invalid','2026-09-02',1])assert.equal((await call('PATCH',{expectedGeneration:0,expectedRevision:1,statement:'회의자료는 표로 작성',validUntil})).status,400);
+ const response=await call('PATCH',{expectedGeneration:0,expectedRevision:1,statement:'회의자료는 표로 작성',validUntil:'2026-09-02T00:00:00.000Z'});assert.equal(response.status,200);
+ const item=(await response.json()).item;assert.equal(item.revision,2);assert.equal(item.revisionHistory.length,2);
+ assert.deepEqual(item.scopePolicy,growth.confirmedPreferenceRegistry.all()[0].scopePolicy);
+ assert.ok(item.revisionHistory.every(x=>Object.keys(x).sort().join(',')==='action,at'));
+ const task=core.createTask('회의자료 파일 확인');const ref=task.contextSnapshot.userPreferences[0];assert.ok(ref);
+ assert.equal(ref.validity.validUntil,item.validUntil);assert.equal(ref.revisionHistory.length,2);assert.equal(ref.scopePolicy.userScope,'local_user');
+ now=new Date('2026-09-02T00:00:00.000Z');
+ assert.equal(growth.confirmedPreferenceRegistry.all().length,0);assert.deepEqual(core.createTask('회의자료 파일 확인').contextSnapshot.userPreferences,[]);
+ assert.equal((await (await call()).json()).items[0].status,'expired');
+ const cleared=await call('PATCH',{expectedGeneration:0,expectedRevision:2,statement:'회의자료는 표로 작성',validUntil:null});assert.equal(cleared.status,200);
+ assert.equal(core.createTask('회의자료 파일 확인').contextSnapshot.userPreferences.length,1);
+ const reexpiry=await call('PATCH',{expectedGeneration:0,expectedRevision:3,statement:'회의자료는 표로 작성',validUntil:'2026-09-02T00:00:00.000Z'});assert.equal(reexpiry.status,200);
+ store.close();store=new SqliteMemoryStore(options);growth=open();
+ assert.equal(growth.confirmedPreferenceRegistry.all().length,0);
+ const expired=growth.confirmedPreferenceRegistry.all({includeInactive:true})[0];assert.equal(expired.status,'expired');assert.equal(expired.history.length,4);
+ assert.equal(expired.validUntil,'2026-09-02T00:00:00.000Z');
+ assert.equal(growth.updatePreference(id,{expectedRevision:4,patch:{validUntil:'bad'}}).error.code,'F_MEMORY_EXPIRY_INVALID');
+ growth.decideHygiene({targetId:'source-0',action:'delete'});
+ assert.equal(JSON.stringify(growth.confirmedPreferenceRegistry.all({includeInactive:true})).includes('회의자료는 표로 작성'),false);
+});

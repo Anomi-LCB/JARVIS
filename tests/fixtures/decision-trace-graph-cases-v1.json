@@ -1,0 +1,196 @@
+{
+  "version": "jarvis-decision-trace-graph-cases-v1",
+  "protocol": {
+    "purpose": "Independent desired-behavior cases for request-to-verified-composite-execution continuity.",
+    "syntheticOnly": true,
+    "authoredBeforeCandidateImplementationReview": true,
+    "authoredBeforeCandidateExecution": true,
+    "expectationsAreDesiredBehaviorNotBaselineClaims": true,
+    "scope": ["userId", "workspaceRoot", "conversationId"],
+    "projectMeaning": "The resolved workspace is the project boundary. Display names confer no identity or authority.",
+    "graphMeaning": "One current PlanGraph with all required action nodes actually dispatched and verified in the same base execution attempt.",
+    "commonExpect": {
+      "sourceBodiesStored": false,
+      "sourceIdsStoredVerbatim": false,
+      "executionAuthorityGranted": false,
+      "additionalModelCalls": 0,
+      "requiredActionCoverageMustBeExact": true
+    },
+    "bodyMarkers": ["GRAPH_TRACE_PRIVATE_REQUEST_MARKER", "GRAPH_TRACE_PRIVATE_NODE_MARKER", "GRAPH_TRACE_PRIVATE_RESULT_MARKER"],
+    "unsupportedFeatures": ["historical recovered-node attestation", "cross-restart resumption attestation", "separate durable per-node experience table", "F-wide historical erasure propagation", "natural-language life-decision extraction", "other ChatGPT conversation synchronization"]
+  },
+  "cases": [
+    {
+      "id": "dtg1-two-actions-pass",
+      "split": "development",
+      "scenario": "current-two-actions-current-g-pass",
+      "setup": "Create one synthetic request with two required action nodes in owner-a/workspace-a/conversation-a. Actually dispatch both actions against isolated local resources through the configured worker. Obtain each node's actual G report for its own current execution, then aggregate and persist the completed graph result.",
+      "expect": {
+        "aggregateVerifiedPassCount": 1,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 2,
+        "requiredFacts": ["request-reference", "current-plan-reference", "current-base-attempt-reference", "aggregate-g-reference", "each-required-node-exactly-once", "node-packet-and-g-and-evidence-references-match-actual-source", "node-proof-passed-status", "source-and-recording-time"],
+        "forbiddenFacts": ["aggregate-status-alone-as-proof", "invented-node-completion", "raw-source-body"]
+      },
+      "rationale": "A composite success needs the current evidence of every required action. One successful aggregate message is insufficient."
+    },
+    {
+      "id": "dtg1-partial-execution-failure",
+      "split": "development",
+      "scenario": "partial-execution-failure-before-all-node-g",
+      "setup": "Create three dependent required actions. The first really completes, the second execution fails before its G report is available, and the third is skipped by the existing failure path. Observe the real partial execution result.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "requiredFacts": ["request-reference", "partial-failure-distinguished-from-g-verified-outcome", "undispatched-required-node-not-completed"],
+        "forbiddenFacts": ["partial-success-promoted-to-whole-goal-success", "execution-status-promoted-to-g-failure", "raw-source-body"]
+      },
+      "rationale": "The execution failure remains a real failure in the existing run record. This thin trace must not invent a verified aggregate failure when some required G evidence does not exist."
+    },
+    {
+      "id": "dtg1-missing-node-g",
+      "split": "holdout",
+      "scenario": "required-node-g-absent",
+      "setup": "Both required actions complete in an isolated current attempt. Suppress one node's actual G response so that no accepted current report for it exists; provide success-shaped summary or metadata for that node before attempting the aggregate trace.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "requiredFacts": ["request-reference"],
+        "forbiddenFacts": ["missing-node-g-filled-from-metadata", "subset-promoted-to-full-coverage", "raw-source-body"]
+      },
+      "rationale": "A missing or not-yet-returned G report is not a successful verification, even when the action status says completed."
+    },
+    {
+      "id": "dtg1-wrong-node-g",
+      "split": "holdout",
+      "scenario": "different-node-execution-g-rejected",
+      "setup": "Obtain real distinct current G reports for action-a and action-b of the same task and plan. In the aggregate candidate, pair action-b's packet/execution with action-a's real G report; omit action-b's own accepted report from that pairing.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "forbiddenFacts": ["same-task-g-treated-as-any-node-g", "wrong-node-evidence-linked", "raw-source-body"]
+      },
+      "rationale": "Matching task and plan IDs does not prove that a report verified this specific node execution."
+    },
+    {
+      "id": "dtg1-stale-plan-node-g",
+      "split": "holdout",
+      "scenario": "same-task-previous-plan-or-base-attempt-g-rejected",
+      "setup": "First persist a legitimate completed two-node graph. Create a new current plan/base packet for the same task, using the same human-readable node names. Present the previous graph's execution/report pairs as current evidence without performing the new attempt's corresponding dispatch and G calls.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "queryTarget": "current-plan-and-current-base-attempt",
+        "requiredFacts": ["prior-verified-graph-history-preserved"],
+        "forbiddenFacts": ["old-node-evidence-linked-to-new-attempt", "matching-node-name-treated-as-fresh-proof", "raw-source-body"]
+      },
+      "rationale": "The zero counts apply to the attacked new attempt. Legitimate past experience remains available under its original references."
+    },
+    {
+      "id": "dtg1-duplicate-node-proof",
+      "split": "holdout",
+      "scenario": "duplicate-one-node-does-not-cover-another",
+      "setup": "A graph requires action-a and action-b. Provide two entries carrying action-a's same legitimate current proof, while action-b has no included proof. Preserve a success-shaped aggregate and a misleading entry count of two.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "forbiddenFacts": ["duplicate-entry-count-treated-as-required-node-coverage", "missing-node-proof-invented", "raw-source-body"]
+      },
+      "rationale": "Coverage means exactly the required distinct nodes with corresponding execution evidence, not the number of entries."
+    },
+    {
+      "id": "dtg1-empty-success-aggregate",
+      "split": "holdout",
+      "scenario": "empty-proof-set-with-success-summary",
+      "setup": "Create a task whose PlanGraph has two required actions. Attempt to attach an aggregate containing zero node proofs, no actual dispatch/G binding, and an explicit passed/COMPLETED/success claim with a synthetic aggregate verification ID.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "requiredFacts": ["request-reference"],
+        "forbiddenFacts": ["empty-set-treated-as-vacuous-success", "arbitrary-aggregate-id-treated-as-proof", "raw-source-body"]
+      },
+      "rationale": "Every predicate over an empty array being true cannot establish that the user's required actions happened."
+    },
+    {
+      "id": "dtg1-preview-node",
+      "split": "holdout",
+      "scenario": "any-required-node-preview-excludes-real-aggregate",
+      "setup": "Prepare a success-shaped two-action graph in which at least one required node is explicitly preview/dry-run on its canonical packet or execution evidence. The other node may be a real isolated action. Attempt aggregate tracing with actual configured verification behavior.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "requiredFacts": ["request-reference"],
+        "forbiddenFacts": ["preview-node-promoted-to-real-action", "mixed-real-and-preview-promoted-to-whole-goal-success", "raw-source-body"]
+      },
+      "rationale": "A successful simulated constituent does not establish execution of the complete requested goal."
+    },
+    {
+      "id": "dtg1-scope-isolation",
+      "split": "holdout",
+      "scenario": "owner-workspace-and-conversation-queries-isolated",
+      "setup": "Persist a legitimate graph in owner-a/workspace-a/conversation-a. Make three separate queries for the same task and display name, changing only owner, only workspace, or only conversation respectively.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "visibleDecisionCount": 0,
+        "queryTarget": "each-of-the-three-nonmatching-scopes",
+        "requiredFacts": ["original-scope-graph-remains-available"],
+        "forbiddenFacts": ["other-scope-decision-reference", "other-scope-node-proof", "display-name-treated-as-identity", "raw-source-body"]
+      },
+      "rationale": "Every scope dimension independently limits access to the derived trace. This assertion does not equate query partitioning with a complete multi-tenant authorization system."
+    },
+    {
+      "id": "dtg1-dedup-restart",
+      "split": "holdout",
+      "scenario": "same-graph-redelivery-and-restart",
+      "setup": "Persist a legitimate two-node graph. Redeliver its unchanged decision and aggregate result, close the store, reopen it, query the exact same scope, and attempt delivery of the same structural event again. Do not claim fresh verification of a different execution after restart.",
+      "expect": {
+        "aggregateVerifiedPassCount": 1,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 2,
+        "duplicateDoesNotGrow": true,
+        "consistentAfterRestart": true,
+        "requiredFacts": ["stable-decision-reference", "stable-aggregate-reference", "stable-node-proof-references-and-statuses"],
+        "forbiddenFacts": ["duplicate-decision", "duplicate-aggregate-outcome", "duplicate-node-proof", "raw-source-body"]
+      },
+      "rationale": "At-least-once delivery is one experience. Persistence preserves an existing attestation; it does not recreate an absent ephemeral verification binding."
+    },
+    {
+      "id": "dtg1-nonfinal-node-do-not-remember",
+      "split": "holdout",
+      "scenario": "any-node-structured-opt-out-excludes-task-projection",
+      "setup": "Run two synthetic required actions. The first, nonfinal node carries the existing structured memoryEvent.learningFlags.doNotRemember=true policy before the aggregate is traced. The final node has an ordinary remembering-allowed event. Both can execute and obtain actual G results. Reopen the store and query the task.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "visibleDecisionCount": 0,
+        "consistentAfterRestart": true,
+        "forbiddenFacts": ["nonfinal-node-opt-out-overwritten-by-last-event", "opted-out-task-projection-retained", "raw-source-body"]
+      },
+      "rationale": "The last node's memory policy must not hide an earlier node's explicit opt-out. This slice conservatively excludes the current task projection and does not assert deletion of existing F or audit source logs."
+    },
+    {
+      "id": "dtg1-cached-node-without-binding",
+      "split": "holdout",
+      "scenario": "historical-completed-node-without-current-attestation",
+      "setup": "Use the current recovery/resume representation to mark one required node already completed from a previous run, while its original trusted dispatch/G binding is unavailable in the current process. Complete the remaining action now. Present the reused node's serialized success/report fields when constructing a whole-graph result.",
+      "expect": {
+        "aggregateVerifiedPassCount": 0,
+        "aggregateVerifiedFailCount": 0,
+        "nodeProofCount": 0,
+        "requiredFacts": ["request-reference", "historical-node-attestation-unavailable-distinguished-from-new-proof"],
+        "forbiddenFacts": ["cached-completed-status-promoted-to-current-attestation", "unattested-recovery-promoted-to-whole-goal-success", "raw-source-body"]
+      },
+      "rationale": "Historical recovery can still be useful operationally. Without an implemented, trustworthy recovery attestation contract, this new projection must defer the aggregate claim rather than fabricate continuity."
+    }
+  ]
+}

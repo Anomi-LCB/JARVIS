@@ -1,0 +1,6 @@
+import {writeFileSync} from 'node:fs';import {performance} from 'node:perf_hooks';import assert from 'node:assert/strict';
+import {projectPersonalKnowledge} from '../apps/growth-memory/src/personal-knowledge-projection.js';
+const output=process.argv[2];if(!output)throw new Error('Output path required');
+const now=new Date('2026-02-25T00:00:00.000Z');const items=Array.from({length:2000},(_,i)=>({eventId:'revision-'+i,taskId:'synthetic-task',createdAt:new Date(Date.parse('2026-02-20T00:00:00.000Z')+i).toISOString(),trustBoundary:{userProvided:true,systemGenerated:false},payload:{knowledge:{kind:'fact',subject:'합성 프로젝트',predicate:'위치',value:'값-'+i,...(i?{supersedesEventId:'revision-'+(i-1)}:{})}}}));
+const times=[];for(let i=0;i<10;i++){const start=performance.now(),result=projectPersonalKnowledge(items,{now});times.push(performance.now()-start);assert.equal(result.filter(x=>x.status==='active').length,1);assert.equal(result.at(-1).value,'값-1999');assert.equal(result.slice(0,-1).every(x=>x.status==='superseded'),true);}
+times.sort((a,b)=>a-b);writeFileSync(output,JSON.stringify({observedAt:new Date().toISOString(),revisions:2000,iterations:10,oracleMatches:10,p50Ms:times[5],p95Ms:times[9],paidCalls:0,operatingCost:'unmeasured'},null,2),{flag:'wx'});

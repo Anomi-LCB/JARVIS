@@ -1,0 +1,43 @@
+import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';import {join,resolve,sep} from 'node:path';
+import {spawn} from 'node:child_process';import {createServer} from 'node:http';
+import {createConfiguredCoreServiceRuntime} from '../../scripts/core-service-runtime.mjs';
+const root=await mkdtemp(join(tmpdir(),'jarvis-clarification-live-')),workspace=join(root,'workspace');
+const env={JARVIS_TEST_MODE:'0',JARVIS_CORE_ROOT:root,JARVIS_CORE_AUDIT_ROOT:join(root,'audit'),JARVIS_CORE_ALLOWED_ROOTS:'workspace',
+ JARVIS_CORE_PORT:'0',JARVIS_CORE_WORKER_DAEMON_ENABLED:'0',JARVIS_CORE_WORKER_DAEMON_AUTOSTART:'0',JARVIS_CORE_REMOTE_PC_EXECUTION_ENABLED:'0',
+ JARVIS_PERSONAL_IMPORT_ENABLED:'0',JARVIS_GOOGLE_SYNC_ENABLED:'0',JARVIS_PERSONAL_OPERATIONS_DB:join(root,'operations.sqlite'),
+ JARVIS_CORE_MISSION_STORE_BACKEND:'sqlite',JARVIS_CORE_MISSION_AUTHORITY_ENABLED:'1',JARVIS_CORE_MISSION_AUTHORITY_EXPECTED_TOKEN:'0',
+ JARVIS_CORE_ADMIN_TOKEN:'synthetic-clarification-admin',JARVIS_LLM_INTENT:'0',JARVIS_LLM_PLANNER:'0',JARVIS_LLM_CONTENT:'0'};
+const service=await createConfiguredCoreServiceRuntime({env});
+await writeFile(join(workspace,'source.txt'),'합성 자료: 관측 3건');let reads=0,writes=0;
+const execute=service.orchestrationWorker.runTask.bind(service.orchestrationWorker);
+service.orchestrationWorker.runTask=(id,...rest)=>{const tool=service.coreFacade.getTask(id)?.plan.action.toolName;if(tool==='filesystem.readText')reads++;if(tool==='filesystem.createTextFile')writes++;return execute(id,...rest);};
+const questions=['최종 결과에 포함할 항목은 무엇인가요?','보고서 제목은 무엇인가요?'];
+service.missionRuntime.planner={async planNextWave(context){
+ const reqs=context.mission.goalContract.requirements,observed=context.observations.find(o=>o.toolName==='filesystem.readText'&&o.outcome==='success');
+ const gate=service.missionRuntime.missions.get(context.mission.missionId).gates.find(g=>g.type==='clarification'&&g.status==='approved'&&g.goalRevision===context.mission.goalContract.revision);
+ if(!gate)return {decision:'ask_user',questions,actions:observed?[]:[{id:'read',command:"'source.txt'를 읽어",expectedToolName:'filesystem.readText',
+  arguments:{path:join(workspace,'source.txt')},requirementIds:[reqs[0].requirementId],dependencies:[],clarificationIndependent:true}]};
+ if(!context.observations.some(o=>o.toolName==='filesystem.createTextFile'&&o.outcome==='success')){
+  const source=observed?.data?.textRead?.content;if(typeof source!=='string')throw Error('FIXTURE_SOURCE_NOT_OBSERVED');
+  return {decision:'continue',actions:[{id:'write',command:"'result.txt'를 저장해",expectedToolName:'filesystem.createTextFile',
+   arguments:{path:join(workspace,'result.txt'),content:gate.answers[1]+'\n'+gate.answers[0]+'\n'+source,allowOverwrite:false},requirementIds:[reqs[1].requirementId],dependencies:[]}]};}
+ return {decision:'complete',actions:[],criteriaAssessment:context.mission.successCriteria.map(c=>({criterionId:c.criterionId,status:'satisfied',
+  evidenceActionIds:context.observations.filter(o=>o.outcome==='success'&&o.actionId).map(o=>o.actionId)}))};
+}};
+const m=service.missionRuntime.createMission({objective:"'source.txt'를 읽어; 'result.txt'를 저장해",metadata:{longTermMemory:false},
+ authorization:{grants:['read_only','local_reversible']},successCriteria:[{statement:'actual requested text',verificationSpec:{version:1,kind:'text.equals',path:'result.txt',equals:'검증 보고\n항목 전체\n합성 자료: 관측 3건'}}]});
+const waiting=await service.missionRuntime.runMission(m.missionId);if(waiting.status!=='WAITING_APPROVAL')throw Error(JSON.stringify({status:waiting.status,reason:waiting.stopReason,error:waiting.lastError}));
+await new Promise(r=>service.server.listen(0,'127.0.0.1',r));
+const control=createServer(async(req,res)=>{const current=service.missionRuntime.getMission(m.missionId);let content=null;try{content=await readFile(join(workspace,'result.txt'),'utf8');}catch{}
+ res.setHeader('content-type','application/json');res.end(JSON.stringify({mission:current,reads,writes,content}));});
+await new Promise(r=>control.listen(0,'127.0.0.1',r));
+const reservation=createServer();await new Promise(r=>reservation.listen(0,'127.0.0.1',r));const port=reservation.address().port;await new Promise(r=>reservation.close(r));
+const childEnv=Object.fromEntries(Object.entries(process.env).filter(([k])=>/^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|USERPROFILE|APPDATA|LOCALAPPDATA|COMSPEC)$/iu.test(k)));
+const ui=spawn(process.execPath,['scripts/dev-server.mjs'],{cwd:process.cwd(),windowsHide:true,env:{...childEnv,PORT:String(port),JARVIS_CORE_API_URL:`http://127.0.0.1:${service.server.address().port}`,JARVIS_CORE_ADMIN_TOKEN:env.JARVIS_CORE_ADMIN_TOKEN,
+ ...(process.argv[2]?{JARVIS_UI_PACKAGE_DIR:resolve(process.argv[2])}:{})},stdio:['ignore','pipe','ignore']});
+await new Promise((done,reject)=>{ui.stdout.once('data',done);ui.once('exit',c=>reject(Error('UI_EXIT:'+c)));});
+console.log(JSON.stringify({status:'ready',url:`http://127.0.0.1:${port}`,control:`http://127.0.0.1:${control.address().port}`,missionId:m.missionId}));
+let stopped=false;async function stop(){if(stopped)return;stopped=true;ui.kill();service.server.closeAllConnections();control.closeAllConnections();await new Promise(r=>control.close(r));await service.close();
+ const target=resolve(root);if(!target.startsWith(resolve(tmpdir())+sep)||!target.includes('jarvis-clarification-live-'))throw Error('CLEANUP_BOUNDARY');await rm(target,{recursive:true,force:true});process.exit(0);}
+process.stdin.once('data',stop);process.stdin.once('end',stop);

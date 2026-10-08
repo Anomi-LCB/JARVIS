@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,mkdir,writeFile,readFile,readdir} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {WordCreateToolAdapter} from '../apps/pc-agent/src/pc-agent-runtime.js';
+import {sanitizeMissionArguments} from '../packages/core/src/planning/mission-action-arguments.js';
+for(const format of ['docx','pdf'])test(`Word ${format} preflight fixes the entire document/render manifest and preserves an occupied evidence directory`,async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-word-manifest-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const adapter=new WordCreateToolAdapter({allowedRoots:[root]}),args={path:join(root,'document.'+format),title:'합성 문서',blocks:[{type:'paragraph',text:'원래 내용'}]};
+ const plan=await adapter.preparePublication(args);
+ assert.deepEqual(await adapter.preparePublication(structuredClone(args)),plan);
+ assert.deepEqual(await adapter.preparePublication(sanitizeMissionArguments('word.create',{...args,outputFormat:format})),plan);
+ await assert.rejects(adapter.preparePublication({...args,outputFormat:format==='pdf'?'docx':'pdf'}),/word-output-format-conflict/);
+ assert.equal(plan.paths.length,3);assert.equal(plan.paths[0],args.path);
+ assert.equal(plan.paths[1],join(plan.renderDirectory,'native-report.json'));
+ assert.equal(plan.paths[2],join(plan.renderDirectory,format==='pdf'?'document.docx':'document.pdf'));
+ const changed=await adapter.preparePublication({...args,title:'정정된 문서'});assert.notEqual(changed.renderDirectory,plan.renderDirectory);
+ await mkdir(plan.renderDirectory);await writeFile(plan.paths[1],'unrelated original');
+ const result=await adapter.execute(args);assert.equal(result.status,'failed');assert.deepEqual(result.outputPaths,[]);
+ assert.equal(await readFile(plan.paths[1],'utf8'),'unrelated original');
+ assert.deepEqual(await readdir(root),[plan.renderDirectory.split(/[\\/]/u).at(-1)]);
+});
+test('Word manifest refuses unsupported output format and paths outside allowed roots',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-word-manifest-scope-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const adapter=new WordCreateToolAdapter({allowedRoots:[root]});
+ await assert.rejects(adapter.preparePublication({path:join(root,'document.exe')}),/word-output-format-unsupported/);
+ await assert.rejects(adapter.preparePublication({path:join(root,'..','escape.docx')}),/outside-allowed-roots/);
+ assert.deepEqual(await readdir(root),[]);
+});

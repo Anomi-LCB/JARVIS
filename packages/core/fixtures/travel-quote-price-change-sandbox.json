@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "query": {
+    "origin": "서울",
+    "destination": "부산",
+    "departureDate": "2026-10-12",
+    "passengers": 1,
+    "bags": 1
+  },
+  "offers": [
+    {
+      "offerId": "flight-a",
+      "provider": "synthetic-air-a",
+      "currency": "KRW",
+      "origin": "서울",
+      "destination": "부산",
+      "departureLocal": "2026-10-12T09:00+09:00",
+      "arrivalLocal": "2026-10-12T10:05+09:00",
+      "passengers": 1,
+      "bags": 1,
+      "conditions": {
+        "refund": "출발 24시간 전까지 20,000원 수수료 후 환불",
+        "change": "출발 전 15,000원 수수료와 운임 차액"
+      },
+      "currentVersion": 1,
+      "priceHistory": [
+        { "version": 1, "fees": [
+          { "label": "운임", "amountMinor": 122000 },
+          { "label": "세금", "amountMinor": 8000 },
+          { "label": "수하물", "amountMinor": 16000 },
+          { "label": "서비스 수수료", "amountMinor": 4000 }
+        ] }
+      ]
+    },
+    {
+      "offerId": "flight-b",
+      "provider": "synthetic-air-b",
+      "currency": "KRW",
+      "origin": "서울",
+      "destination": "부산",
+      "departureLocal": "2026-10-12T08:40+09:00",
+      "arrivalLocal": "2026-10-12T09:55+09:00",
+      "passengers": 1,
+      "bags": 1,
+      "conditions": {
+        "refund": "환불 불가",
+        "change": "변경 불가"
+      },
+      "currentVersion": 1,
+      "priceHistory": [
+        { "version": 1, "fees": [
+          { "label": "운임", "amountMinor": 105000 },
+          { "label": "세금", "amountMinor": 10000 },
+          { "label": "수하물", "amountMinor": 12000 },
+          { "label": "좌석", "amountMinor": 5000 },
+          { "label": "서비스 수수료", "amountMinor": 3000 }
+        ] },
+        { "version": 2, "fees": [
+          { "label": "운임", "amountMinor": 130000 },
+          { "label": "세금", "amountMinor": 10000 },
+          { "label": "수하물", "amountMinor": 12000 },
+          { "label": "좌석", "amountMinor": 5000 },
+          { "label": "서비스 수수료", "amountMinor": 3000 }
+        ] }
+      ]
+    }
+  ]
+}

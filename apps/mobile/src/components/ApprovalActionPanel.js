@@ -13,7 +13,7 @@ export function createApprovalActionState({ card, safety, approveReadiness } = {
   const blockedReason = expired
     ? expiry.blockedReason
     : requiresPcConfirmation
-      ? 'Tier 3 이상은 PC에서 직접 확인해야 합니다.'
+      ? '위험 3단계 이상은 PC에서 직접 확인해야 합니다.'
       : sessionLocked
         ? '모바일 세션 잠금 해제가 필요합니다.'
         : null;

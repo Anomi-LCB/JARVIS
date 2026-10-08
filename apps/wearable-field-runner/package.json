@@ -1,0 +1,6 @@
+{
+  "name": "@jarvis/wearable-field-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secure loopback-only Android WebView host for JARVIS wearable field validation."
+}

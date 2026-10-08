@@ -1,0 +1,10 @@
+import {PersonalOperationsStore} from '../../packages/core/src/personal-operations/operations-store.js';
+import {SqliteMissionStore} from '../../packages/core/src/mission/sqlite-mission-store.js';
+const [path,boundary]=process.argv.slice(2);
+const operations=new PersonalOperationsStore({dbPath:path}),store=new SqliteMissionStore({operationsStore:operations});
+const missions=store.load(),mission=missions[0],save=store._save.bind(store);
+const stop=()=>{process.send({pid:process.pid,boundary});Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);};
+store._save=(...args)=>{if(boundary==='before-snapshot')stop();const result=save(...args);if(boundary==='after-snapshot')stop();return result;};
+store.saveWithMissionQuota(missions,{missionId:mission.missionId,phase:'begin'});
+if(boundary==='after-commit')stop();
+operations.close();

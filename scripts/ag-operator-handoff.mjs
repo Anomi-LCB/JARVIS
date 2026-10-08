@@ -10,6 +10,9 @@ const defaultArtifacts = [
   'dist/mobile-verification-report.json',
   'dist/mobile-device-smoke-report.json',
   'dist/mobile-live-bridge-e2e-report.json',
+  'dist/wearable-hud-verification-report.json',
+  'dist/wearable-physical-field-gate.json',
+  'dist/wearable-field-chaos-report.json',
   'dist/windows-admin-install-attempts.json',
   'dist/field-validation-kit-report.json',
   'dist/field-validation-kit/run-field-validation.ps1',
@@ -52,6 +55,8 @@ export async function runAgOperatorHandoff({
     mobileVerification,
     mobileDevice,
     mobileLiveBridge,
+    wearablePhysicalField,
+    wearableChaos,
     windowsAdminInstall,
     fieldValidationKit,
     fieldEvidenceImport,
@@ -69,6 +74,8 @@ export async function runAgOperatorHandoff({
     readJson('dist/mobile-verification-report.json'),
     readJson('dist/mobile-device-smoke-report.json'),
     readJson('dist/mobile-live-bridge-e2e-report.json'),
+    readJson('dist/wearable-physical-field-gate.json'),
+    readJson('dist/wearable-field-chaos-report.json'),
     readJson('dist/windows-admin-install-attempts.json'),
     readJson('dist/field-validation-kit-report.json'),
     readJson('dist/field-evidence-import-report.json'),
@@ -143,13 +150,19 @@ export async function runAgOperatorHandoff({
       id: 'mobile-physical-device-smoke',
       title: 'C Android physical device or emulator smoke',
       status: mobileDevice?.actualDeviceVerified === true ? 'verified' : 'pending-field-validation',
-      localEvidenceStatus: mobileDevice?.status ?? 'missing',
+      localEvidenceStatus: [
+        mobileDevice?.status ?? 'missing',
+        `source:${mobileDevice?.evidenceSource ?? 'unknown'}`
+      ].join(' / '),
       requiredEnvironment: 'ADB plus a ready Android device or emulator with the app installed',
       command: 'npm run mobile:device',
       evidenceToAttach: [
         'dist/mobile-device/*.png',
         'dist/mobile-device/*.xml',
-        'dist/mobile-device-smoke-report.json'
+        'dist/mobile-device-smoke-report.json',
+        'artifacts/field-evidence/mobile-device/last-passed.json',
+        'artifacts/field-evidence/mobile-device/runs/*/report.json',
+        'artifacts/field-evidence/mobile-device/runs/*/*-screen.png'
       ]
     },
     {
@@ -163,6 +176,27 @@ export async function runAgOperatorHandoff({
         'dist/mobile-live-bridge-e2e-report.json',
         'SecureStore restore evidence',
         'device revoke cleanup evidence'
+      ]
+    },
+    {
+      id: 'wearable-physical-field-validation',
+      title: 'C/D AI glasses physical display, voice, and Bridge validation',
+      status: wearablePhysicalField?.status === 'passed'
+        && wearablePhysicalField?.physicalValidationPassed === true
+        && wearablePhysicalField?.integrity?.passed === true
+        && wearableChaos?.status === 'passed'
+        ? 'verified'
+        : 'pending-field-validation',
+      localEvidenceStatus: [
+        `physical-gate:${wearablePhysicalField?.status ?? 'missing'}`,
+        `chaos:${wearableChaos?.status ?? 'missing'}`
+      ].join(' / '),
+      requiredEnvironment: 'Target AI glasses, its production browser/display mode, microphone, and the local Bridge network',
+      command: 'npm run wearable:field-kit; node dist/wearable-hud-field-kit/field-server.mjs --host 0.0.0.0 --port 4176; npm run wearable:physical-gate',
+      evidenceToAttach: [
+        'dist/wearable-physical-field-gate.json',
+        'dist/wearable-field-chaos-report.json',
+        'dist/wearable-hud-field-kit/field-evidence/latest-field-evidence.json'
       ]
     },
     {
@@ -211,7 +245,8 @@ export async function runAgOperatorHandoff({
       wormPromotionStatus: wormPromotion?.status ?? 'missing',
       wormTargetStatus: wormTarget?.status ?? 'missing',
       externalWormSyncStatus: externalWormSyncProof?.status ?? 'missing',
-      actualDeviceVerified: mobileVerification?.deviceProbe?.actualDeviceVerified === true || mobileDevice?.actualDeviceVerified === true
+      actualDeviceVerified: mobileVerification?.deviceProbe?.actualDeviceVerified === true || mobileDevice?.actualDeviceVerified === true,
+      wearablePhysicalValidationPassed: wearablePhysicalField?.physicalValidationPassed === true
     },
     lanes: lanes.map((lane) => ({
       laneId: lane.laneId,

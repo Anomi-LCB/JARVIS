@@ -19,6 +19,8 @@
       "COPY_FILE": 5,
       "MOVE_FILE": 5,
       "BROWSER_SEARCH": 4,
+      "DESKTOP_CONTROL": 3,
+      "SEND_EMAIL": 2,
       "UPLOAD_FILE": 3,
       "DELETE_FILE": 2,
       "MAKE_PAYMENT": 1,
@@ -29,7 +31,7 @@
   "dataRules": [
     {
       "id": "secret",
-      "pattern": "api[_-]?key|password|token|비밀번호|secret",
+      "pattern": "(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|token|password|passwd|secret|비밀번호|토큰|비밀키)\\s*(?::|=|은|는)\\s*['\\\"]?[A-Z0-9_./+\\-]{6,}|(?<![A-Z0-9_])(?:sk|ghp|github_pat|xox[baprs]|AIza)[_\\-][A-Z0-9_\\-]{8,}|AKIA[A-Z0-9]{16}|Bearer\\s+[A-Z0-9_./+\\-]{12,}",
       "dataClass": "D4",
       "ministryDataClass": "M4",
       "flags": ["secret"]
@@ -118,11 +120,15 @@
   },
   "promptInjection": {
     "blockedPatterns": [
-      { "id": "ignore_previous", "pattern": "ignore previous|이전 지시.*무시", "severity": "high" },
-      { "id": "secret_exfiltration", "pattern": "token|api[_-]?key|secret|비밀번호|토큰.*업로드", "severity": "high" },
-      { "id": "local_file_access", "pattern": "로컬 파일.*읽|read.*local file|C:[/\\\\]+Users|/etc/passwd", "severity": "high" },
-      { "id": "policy_bypass", "pattern": "승인 없이|without approval|bypass policy|정책.*우회", "severity": "high" },
-      { "id": "system_prompt_probe", "pattern": "system prompt|시스템 프롬프트|developer message", "severity": "medium" }
+      { "id": "ignore_previous", "pattern": "ignore previous|이전 지시.*무시", "severity": "high", "scope": "all" },
+      { "id": "instruction_override_synonyms", "pattern": "(?:disregard|forget|override|cancel)[\\s\\S]{0,40}(?:prior|previous|earlier|above)[\\s\\S]{0,40}(?:instruction|direction|rule|prompt)|(?:앞선|기존|이전|위의|모든)[\\s\\S]{0,30}(?:지시|명령|규칙)[\\s\\S]{0,30}(?:무시|취소|잊|덮어|따르지)", "severity": "high", "scope": "all" },
+      { "id": "secret_exfiltration", "pattern": "(?:(?:upload|send|post|exfiltrate|leak|reveal|print|return|copy|steal|read|extract)[\\s\\S]{0,48}(?:token|api[_ -]?key|secret|password|credential))|(?:(?:token|api[_ -]?key|secret|password|credential)[\\s\\S]{0,48}(?:upload|send|post|exfiltrate|leak|reveal|print|return|copy|steal|read|extract))|(?:(?:토큰|비밀번호|비밀키|api[ _-]?키|자격 증명)[\\s\\S]{0,36}(?:업로드|전송|보내|노출|출력|읽|복사|탈취))|(?:(?:업로드|전송|보내|노출|출력|읽|복사|탈취)[\\s\\S]{0,36}(?:토큰|비밀번호|비밀키|api[ _-]?키|자격 증명))", "severity": "high", "scope": "untrusted_only" },
+      { "id": "local_file_access", "pattern": "로컬 파일.*읽|read.*local file|C:[/\\\\]+Users|/etc/passwd", "severity": "high", "scope": "untrusted_only" },
+      { "id": "policy_bypass", "pattern": "승인 없이|without approval|bypass policy|정책.*우회", "severity": "high", "scope": "all" },
+      { "id": "system_prompt_probe", "pattern": "system prompt|시스템 프롬프트|developer message", "severity": "medium", "scope": "all" },
+      { "id": "role_override", "pattern": "(?:^|[<\\[(\\s])(?:system|developer|assistant)[>\\]):\\s-]*(?:you are|act as|new instruction|override|disable)|<(?:system|developer|assistant)>[\\s\\S]{0,80}(?:disable|ignore|override|execute)", "severity": "high", "scope": "untrusted_only" },
+      { "id": "safety_disable", "pattern": "(?:disable|remove|turn off|bypass|ignore)[\\s\\S]{0,40}(?:safety|security|guardrail|policy|approval|restriction)|(?:안전|보안|보호|승인|정책|제한)[\\s\\S]{0,30}(?:해제|비활성|우회|무시|끄기)", "severity": "high", "scope": "all" },
+      { "id": "hidden_instruction_markup", "pattern": "\\[//\\]:\\s*#\\s*\\([^)]*(?:ignore|execute|override|bypass)|<!--[^>]*(?:ignore|execute|override|bypass)|<(?:system|developer|assistant)>", "severity": "high", "scope": "untrusted_only" }
     ],
     "quotedContentNonExecutable": true,
     "untrustedSourceTypes": ["WEB_CONTENT", "PDF_CONTENT", "EMAIL_CONTENT", "OCR_CONTENT", "CLIPBOARD_CONTENT", "TOOL_OUTPUT", "TOOL_METADATA"],

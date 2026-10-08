@@ -1,0 +1,209 @@
+{
+  "version": "jarvis-decision-trace-cases-v1",
+  "protocol": {
+    "purpose": "Independent desired-behavior cases for a thin current-request to task to verified-result trace.",
+    "syntheticOnly": true,
+    "authoredBeforeCandidateExecution": true,
+    "expectationsAreDesiredBehaviorNotBaselineClaims": true,
+    "scope": ["userId", "workspaceRoot", "conversationId"],
+    "projectMeaning": "The workspace is the project boundary in this first slice. Display names are not identifiers.",
+    "commonExpect": {
+      "sourceBodiesStored": false,
+      "sourceIdsStoredVerbatim": false,
+      "executionAuthorityGranted": false,
+      "additionalModelCalls": 0
+    },
+    "bodyMarkers": ["TRACE_PRIVATE_REQUEST_MARKER", "TRACE_PRIVATE_REASON_MARKER", "TRACE_PRIVATE_RESULT_MARKER"],
+    "unsupportedFeatures": ["natural-language life-decision extraction", "late historical statement reconciliation", "retroactive erasure of existing source logs", "project progress inference", "other ChatGPT conversation synchronization", "graph database retrieval"]
+  },
+  "cases": [
+    {
+      "id": "dt1-current-request-pass",
+      "split": "development",
+      "scenario": "current-request-current-g-pass",
+      "setup": "Create a synthetic request and its task/plan in owner-a, workspace-a and conversation-a. Complete a real isolated tool action and pass the configured G verifier for that same execution.",
+      "expect": {
+        "verifiedPassCount": 1,
+        "verifiedFailCount": 0,
+        "requiredFacts": ["request-reference", "task-reference", "plan-reference", "current-execution-reference", "current-g-verification-reference", "source-and-recording-time"],
+        "forbiddenFacts": ["inferred-life-decision", "raw-source-body", "automatic-authority"]
+      },
+      "rationale": "A positive case must connect a real current verification to the request that caused this task. A passed status or a remembered preference alone is insufficient."
+    },
+    {
+      "id": "dt1-unverified-success",
+      "split": "development",
+      "scenario": "success-without-g",
+      "setup": "The current execution claims COMPLETED/success. No current G report exists. Request metadata additionally claims a passed result and supplies a synthetic verification identifier.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "requiredFacts": ["request-reference", "task-reference"],
+        "forbiddenFacts": ["metadata-promoted-to-verification", "unverified-success-promoted", "raw-source-body"]
+      },
+      "rationale": "Task status, user metadata and arbitrary verification identifiers do not establish a verified outcome. The source trace may exist while verified outcomes remain absent."
+    },
+    {
+      "id": "dt1-applied-approval",
+      "split": "holdout",
+      "scenario": "applied-approval-current-g-pass",
+      "setup": "Apply a matching, current synthetic user approval to the task and complete its isolated action with current G passing. In a separate task, submit an approval with a different approvalId and observe its rejection by Core.",
+      "expect": {
+        "verifiedPassCount": 1,
+        "verifiedFailCount": 0,
+        "requiredFacts": ["applied-approval-reference", "approval-linked-to-current-plan", "user-approval-distinguished-from-worker-approval", "current-g-verification-reference"],
+        "forbiddenFacts": ["rejected-submission-recorded-as-applied-approval", "raw-source-body"]
+      },
+      "rationale": "The trace follows an actually applied decision. An approval event or attempted submission that fails Core validation is not evidence of user authorization taking effect."
+    },
+    {
+      "id": "dt1-replan-reason",
+      "split": "holdout",
+      "scenario": "explicit-replan-preserves-source-chain",
+      "setup": "Create a request and plan, then apply an explicit user edit with a reason marker to produce a different requestId and planId for the same task. Execute only the revised plan and pass its actual current G verification.",
+      "expect": {
+        "verifiedPassCount": 1,
+        "verifiedFailCount": 0,
+        "requiredFacts": ["original-request-reference", "revised-request-reference", "reason-reference", "previous-decision-preserved", "supersession-reference", "outcome-linked-to-revised-plan"],
+        "forbiddenFacts": ["outcome-linked-to-abandoned-plan", "raw-reason-body", "raw-source-body"]
+      },
+      "rationale": "The new explicit instruction changes the task's operative plan without rewriting why the original plan existed. A reason reference does not duplicate the reason text."
+    },
+    {
+      "id": "dt1-rejected-task",
+      "split": "holdout",
+      "scenario": "applied-rejection-no-execution",
+      "setup": "Apply a valid user rejection to the current task. Do not dispatch a tool or ask G to verify a fabricated execution.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "requiredFacts": ["applied-rejection-reference", "task-reference"],
+        "forbiddenFacts": ["rejection-promoted-to-execution-failure", "rejection-promoted-to-success", "raw-source-body"]
+      },
+      "rationale": "A user declining a task is a decision, not a completed or failed real execution."
+    },
+    {
+      "id": "dt1-verified-failure",
+      "split": "holdout",
+      "scenario": "execution-failure-current-g-fail",
+      "setup": "An isolated current execution fails. The actual configured G verifier returns failed checks for that execution, with execution evidence present.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 1,
+        "requiredFacts": ["request-reference", "current-execution-reference", "current-g-verification-reference", "failed-outcome"],
+        "forbiddenFacts": ["failure-promoted-to-success", "raw-source-body"]
+      },
+      "rationale": "Failure is retained as evidence about this attempt rather than omitted or converted into success."
+    },
+    {
+      "id": "dt1-preview",
+      "split": "holdout",
+      "scenario": "preview-is-not-real-outcome",
+      "setup": "Run the preview/dry-run path with success-shaped execution and verification data. At least one canonical dryRun flag on run, packet or execution is true.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "requiredFacts": ["request-reference"],
+        "forbiddenFacts": ["preview-promoted-to-real-outcome", "raw-source-body"]
+      },
+      "rationale": "A successful simulation does not demonstrate that the user's intended external action took place."
+    },
+    {
+      "id": "dt1-other-task-g",
+      "split": "holdout",
+      "scenario": "different-task-g-rejected",
+      "setup": "Create two synthetic tasks in the same scope. Obtain a real passed G report for task-a, then try to attach it as the verification for task-b without task-b's own current G result.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "queryTarget": "task-b",
+        "forbiddenFacts": ["different-task-verification-linked", "raw-source-body"]
+      },
+      "rationale": "A real G report is still invalid evidence for a different task. The expected counts apply to the attacked task-b, not the legitimate task-a."
+    },
+    {
+      "id": "dt1-stale-plan-g",
+      "split": "holdout",
+      "scenario": "same-task-stale-plan-g-rejected",
+      "setup": "Obtain a real G pass for task-a plan-a/packet-a. Replan task-a into plan-b with a new current approval/packet. Present plan-a's prior execution/report pair as if it were the current plan-b result.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "queryTarget": "task-a-current-plan-b",
+        "requiredFacts": ["prior-verified-history-preserved"],
+        "forbiddenFacts": ["stale-plan-verification-promoted", "old-packet-linked-to-new-plan", "raw-source-body"]
+      },
+      "rationale": "Matching taskId alone cannot bind an old result to a revised request. A legitimate prior result remains historical and must not establish current completion."
+    },
+    {
+      "id": "dt1-dedup-restart",
+      "split": "holdout",
+      "scenario": "same-event-redelivery-and-restart",
+      "setup": "Record a synthetic request/decision and a real verified current result. Deliver the identical structural source event and result again, close the store, reopen it, query, and redeliver the same pair again.",
+      "expect": {
+        "verifiedPassCount": 1,
+        "verifiedFailCount": 0,
+        "duplicateDoesNotGrow": true,
+        "consistentAfterRestart": true,
+        "requiredFacts": ["stable-source-reference", "stable-outcome-reference"],
+        "forbiddenFacts": ["duplicate-decision", "duplicate-outcome", "raw-source-body"]
+      },
+      "rationale": "At-least-once delivery and reopening persistence must not turn one decision or one result into additional experience."
+    },
+    {
+      "id": "dt1-owner-isolation",
+      "split": "holdout",
+      "scenario": "other-owner-query-isolated",
+      "setup": "Record an owner-a request and verified result in workspace-a/conversation-a. Query the same display names, workspace and conversation as owner-b.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "queryTarget": "owner-b",
+        "visibleDecisionCount": 0,
+        "forbiddenFacts": ["other-owner-source-reference", "other-owner-outcome-reference", "raw-source-body"]
+      },
+      "rationale": "Shared names and local infrastructure cannot make another owner's decision or outcome visible."
+    },
+    {
+      "id": "dt1-project-isolation",
+      "split": "holdout",
+      "scenario": "same-name-other-workspace-query-isolated",
+      "setup": "Record a request and verified result under owner-a/workspace-a/conversation-a with a synthetic project display name. Query as the same owner/conversation and display name under workspace-b.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "queryTarget": "workspace-b",
+        "visibleDecisionCount": 0,
+        "forbiddenFacts": ["other-project-source-reference", "other-project-outcome-reference", "raw-source-body"]
+      },
+      "rationale": "Project identity is the workspace boundary for this first slice, never the human-readable project title."
+    },
+    {
+      "id": "dt1-do-not-remember",
+      "split": "holdout",
+      "scenario": "structured-do-not-remember",
+      "setup": "Before tracing the request, set the existing structured learningFlags.doNotRemember=true policy on the synthetic task/request context. Complete a real isolated action with G passing, then reopen the trace store.",
+      "expect": {
+        "verifiedPassCount": 0,
+        "verifiedFailCount": 0,
+        "visibleDecisionCount": 0,
+        "consistentAfterRestart": true,
+        "forbiddenFacts": ["opted-out-source-reference", "opted-out-outcome-reference", "raw-source-body"]
+      },
+      "rationale": "Opting out before collection must prevent the new experience trace. This does not assert deletion of pre-existing task/audit logs or natural-language opt-out recognition."
+    },
+    {
+      "id": "dt1-fail-then-pass",
+      "split": "holdout",
+      "scenario": "failed-attempt-then-verified-retry",
+      "setup": "For one explicit task, retain a current isolated attempt with actual G failing. After the existing Core retry/approval path permits another attempt, complete a new execution/packet and obtain its own real G pass.",
+      "expect": {
+        "verifiedPassCount": 1,
+        "verifiedFailCount": 1,
+        "requiredFacts": ["distinct-attempt-references", "prior-failure-preserved", "current-g-verification-reference", "success-linked-to-new-attempt"],
+        "forbiddenFacts": ["failure-overwritten-by-success", "old-g-reused-for-retry", "raw-source-body"]
+      },
+      "rationale": "Learning requires both the failed attempt and the later verified success. A changed status does not retroactively make the failed attempt successful."
+    }
+  ]
+}

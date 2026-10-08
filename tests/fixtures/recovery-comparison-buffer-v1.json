@@ -1,0 +1,61 @@
+{
+  "version": "jarvis-recovery-cases-v1",
+  "cases": [
+    {
+      "id": "rcbuf1-small",
+      "split": "development",
+      "scenario": "hash-small",
+      "expect": { "status": "recovered", "fileBytesRead": 4096 },
+      "rationale": "단일 행동의 실제 완료 영수증과 현재 내용이 일치하는 4 KiB 파일은 유효한 복구 대상이다. 해시 읽기 버퍼의 변경이 작은 정상 파일을 부당하게 차단해서는 안 되며 도구를 다시 실행하지 않는다."
+    },
+    {
+      "id": "rcbuf1-tail-mismatch",
+      "split": "development",
+      "scenario": "hash-tail-mismatch",
+      "expect": { "status": "blocked", "fileBytesRead": 1048593 },
+      "rationale": "1 MiB + 17 B 파일의 마지막 바이트가 원래 완료 영수증의 내용과 다르면 현재 산출물 완료 조건은 성립하지 않는다. 첫 버퍼만 확인하거나 마지막 잔여 구간을 누락한 성공 판정과 재실행은 금지한다."
+    },
+    {
+      "id": "rcbuf1-empty",
+      "split": "holdout",
+      "scenario": "hash-empty",
+      "expect": { "status": "recovered", "fileBytesRead": 0 },
+      "rationale": "빈 파일 생성이 허용된 단일 행동에서 현재 존재하는 0 B 파일, 빈 내용에 대한 정상 해시, 완료 영수증 및 G 검증이 일치하면 복구해야 한다. 빈 내용은 파일 부재나 증거 부재와 다르다."
+    },
+    {
+      "id": "rcbuf1-boundary",
+      "split": "holdout",
+      "scenario": "hash-boundary",
+      "expect": { "status": "recovered", "fileBytesRead": 1048593 },
+      "rationale": "현재 내용과 영수증이 일치하는 1 MiB + 17 B 파일은 마지막 17 B까지 포함한 전체 해시로 검증하여 복구해야 한다. 버퍼 경계의 나머지 길이를 잘못 처리해 정상 완료를 차단하거나 부분 내용만으로 통과시키면 안 된다."
+    },
+    {
+      "id": "rcbuf1-large",
+      "split": "holdout",
+      "scenario": "hash-large",
+      "expect": { "status": "recovered", "fileBytesRead": 16777216 },
+      "rationale": "허용된 파일 크기 안의 16 MiB 실제 산출물이 원래 완료 영수증과 일치하고 G 검증을 통과하면 전체 파일을 확인하여 복구해야 한다. 호출 수 절감을 위해 읽기를 생략하거나 정상 큰 파일을 차단해서는 안 된다."
+    },
+    {
+      "id": "rcbuf1-over-budget",
+      "split": "holdout",
+      "scenario": "hash-over-budget",
+      "expect": { "status": "blocked", "fileBytesRead": 0 },
+      "rationale": "파일 하나의 검증 상한이 128 MiB인 평가 계약에서 논리 크기 129 MiB 파일은 처리 범위를 초과한다. sparse 또는 truncate로 물리 사용량이 작아도 논리 크기 제한을 완화하거나 일부 내용만 확인해 완료로 판정해서는 안 된다."
+    },
+    {
+      "id": "rcbuf1-input-evidence",
+      "split": "holdout",
+      "scenario": "hash-input-evidence",
+      "expect": { "status": "recovered", "fileBytesRead": 4194304 },
+      "rationale": "변경되지 않은 2 MiB readText 입력이 파일 증거 목록과 읽기 결과 해시에 각각 대응하면 두 독립 검증을 모두 수행하고 기존 읽기 결과를 복구해야 한다. 중복 경로처럼 보인다는 이유로 검증 하나를 생략하거나 새 도구 실행으로 대신하면 안 된다."
+    },
+    {
+      "id": "rcbuf1-mutation-during-read",
+      "split": "holdout",
+      "scenario": "hash-mutation-during-read",
+      "expect": { "status": "blocked" },
+      "rationale": "4 MiB 파일의 첫 청크를 읽은 뒤 마지막 부분과 파일 크기가 바뀌면 한 시점의 일관된 현재 파일 증거를 얻지 못한 것이다. 변경 전후 상태 및 읽은 길이의 불일치를 검출해 차단하고 혼합 내용의 해시나 이전 영수증을 근거로 성공 처리하지 않는다."
+    }
+  ]
+}

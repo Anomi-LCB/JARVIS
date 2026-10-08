@@ -1,0 +1,41 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {mkdtemp,readFile,writeFile,unlink,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,relative} from 'node:path';
+import {renderDirectTasks} from '../src/ui/workspace/direct-task-panel.js';
+import {observeSuccessfulTask,validateSuccessObservations,readArchivedTextArtifact} from '../packages/core/src/runtime/task-success-observation.js';
+import {CoreOrchestrationWorker} from '../packages/core/src/orchestration/core-orchestration-worker.js';
+import {FileWorkerQueueStore} from '../packages/core/src/runtime/worker-queue-store.js';
+const exec=promisify(execFile);
+test('successful artifact survives a new process and changed/missing/revoked bytes never become a current semantic pass',{timeout:45000},async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-success-restart-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const invoke=async(mode,id)=>JSON.parse((await exec(process.execPath,['tests/fixtures/task-success-restart.mjs',mode,root,...(id?[id]:[])],{env:{...process.env,JARVIS_TEST_MODE:'1',JARVIS_LLM_INTENT:'0',JARVIS_LLM_PLANNER:'0',JARVIS_LLM_CONTENT:'0'}})).stdout.trim());
+ const saved=await invoke('write');assert.equal(saved.success,true,JSON.stringify(saved));assert.equal(saved.status,'COMPLETED');assert.equal(saved.outputPaths.length,1);assert.ok(!relative(root,saved.outputPaths[0]).startsWith('..'));
+ const original=await readFile(saved.outputPaths[0],'utf8');assert.equal(original,'실행 검증 결과');
+ const read=await invoke('read',saved.taskId);assert.equal(read.liveTaskCount,0);assert.equal(read.unauthorized,401);assert.equal(read.runStatus,404);assert.equal(read.previewStatus,200);assert.equal(read.preview.text,original);assert.equal(read.preview.currentSemanticVerification,false);
+ assert.equal(read.detail.executionVerification,null);assert.equal(read.detail.artifactObservations[0].state,'unchanged');assert.match(renderDirectTasks({active:read.detail}),/저장 당시 실행 검증 통과/);
+ const revoked=await invoke('read-revoked',saved.taskId);assert.equal(revoked.previewStatus,409);assert.equal(revoked.detail.artifactObservations[0].state,'unavailable');
+ await writeFile(saved.outputPaths[0],'changed');const changed=await invoke('read',saved.taskId);assert.equal(changed.previewStatus,409);assert.equal(changed.detail.artifactObservations[0].state,'changed');assert.doesNotMatch(renderDirectTasks({active:changed.detail,preview:{taskId:saved.taskId,index:0,text:original}}),/data-artifact-task/);
+ await unlink(saved.outputPaths[0]);const missing=await invoke('read',saved.taskId);assert.equal(missing.previewStatus,409);assert.equal(missing.detail.artifactObservations[0].state,'unavailable');
+ console.log(JSON.stringify({realProcessRestart:true,previewMatched:true,changedDenied:true,missingDenied:true,revokedRootDenied:true,executionNotRestored:true}));
+});
+test('duplicate store of the same verified run cannot rebase a changed artifact fingerprint',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-success-duplicate-'));t.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'result.txt');await writeFile(path,'original');
+ const task={taskId:'test-success',status:'COMPLETED',plan:{action:{toolName:'filesystem.createTextFile'}},executionVerification:{status:'passed',verificationId:'verification-1'},executionResult:{executionResult:{outputPaths:[path]}}};
+ const queueStore=new FileWorkerQueueStore({filePath:join(root,'queue.json')});const worker=new CoreOrchestrationWorker({coreFacade:{getTask:()=>task},queueStore,allowedPaths:[root]});
+ worker.storeRun({taskId:task.taskId,status:'COMPLETED'});await writeFile(path,'changed');worker.storeRun({taskId:task.taskId,status:'COMPLETED'});
+ assert.equal(worker.archivedTask(task.taskId).artifactObservations[0].state,'changed');assert.throws(()=>worker.archivedTextArtifact(task.taskId,0));
+});
+test('oversized and invalid UTF-8 text, arbitrary indices and credential-shaped archive fields are not readable',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-success-bounds-'));t.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'invalid.txt');await writeFile(path,Buffer.from([0xff]));
+ const task={taskId:'bounded',status:'COMPLETED',plan:{action:{toolName:'filesystem.createTextFile'}},executionVerification:{status:'passed',verificationId:'verification-bounded'},executionResult:{executionResult:{outputPaths:[path]}}};
+ let record=observeSuccessfulTask(task,'2026-10-03T00:00:00.000Z',[root]);assert.throws(()=>readArchivedTextArtifact(record,0,[root]));assert.throws(()=>readArchivedTextArtifact(record,-1,[root]));
+ assert.throws(()=>validateSuccessObservations([{...record,ownerAuthorization:{token:'must-reject'}}]));
+ const store=new FileWorkerQueueStore({filePath:join(root,'queue.json')});
+ assert.throws(()=>store.save({successObservations:[record],failureObservations:[{version:1,taskId:record.taskId,status:'FAILED',observedAt:record.observedAt,toolName:null,nativeRecovery:null}]}),{code:'A_WORKER_QUEUE_STORE_SNAPSHOT_INVALID'});
+ await writeFile(path,Buffer.alloc(65537));record=observeSuccessfulTask(task,'2026-10-03T00:00:00.000Z',[root]);assert.equal(record.artifacts[0].sha256,null);assert.throws(()=>readArchivedTextArtifact(record,0,[root]));
+ const escaped=renderDirectTasks({active:{taskId:'t',status:'COMPLETED',artifactObservations:[{index:0,name:'<script>.txt',state:'unchanged'}]},preview:{taskId:'t',index:0,text:'<script>alert(1)</script>'}});assert.doesNotMatch(escaped,/<script>/);assert.match(escaped,/&lt;script&gt;/);
+});

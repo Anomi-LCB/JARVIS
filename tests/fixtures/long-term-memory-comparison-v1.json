@@ -1,0 +1,67 @@
+{
+  "version": "long-term-memory-comparison-v1",
+  "command": "파일 목록 보여줘",
+  "fileName": "000-actual-input.txt",
+  "fileContent": "독립 파일 확인 자료.",
+  "sourceStatement": "파일 목록을 표로 정리해줘",
+  "cases": [
+    {
+      "id": "confirmed",
+      "seed": "confirmed",
+      "owner": "synthetic-owner",
+      "conversation": "session-a",
+      "expectedStatement": "파일 목록은 표로 정리한다.",
+      "expectedRevision": 2
+    },
+    {
+      "id": "corrected",
+      "seed": "corrected",
+      "owner": "synthetic-owner",
+      "conversation": "session-a",
+      "expectedStatement": "파일 목록은 상세한 문장으로 정리한다.",
+      "expectedRevision": 3
+    },
+    {
+      "id": "withdrawn",
+      "seed": "withdrawn",
+      "owner": "synthetic-owner",
+      "conversation": "session-a",
+      "expectedStatement": null
+    },
+    {
+      "id": "other-owner",
+      "seed": "confirmed",
+      "owner": "synthetic-other",
+      "conversation": "session-a",
+      "expectedStatement": null
+    },
+    {
+      "id": "other-session",
+      "seed": "confirmed",
+      "owner": "synthetic-owner",
+      "conversation": "session-b",
+      "expectedStatement": null
+    },
+    {
+      "id": "other-workspace",
+      "seed": "other-workspace",
+      "owner": "synthetic-owner",
+      "conversation": "session-a",
+      "expectedStatement": null
+    },
+    {
+      "id": "unconfirmed",
+      "seed": "unconfirmed",
+      "owner": "synthetic-owner",
+      "conversation": "session-a",
+      "expectedStatement": null
+    },
+    {
+      "id": "empty",
+      "seed": "empty",
+      "owner": "synthetic-owner",
+      "conversation": "session-a",
+      "expectedStatement": null
+    }
+  ]
+}

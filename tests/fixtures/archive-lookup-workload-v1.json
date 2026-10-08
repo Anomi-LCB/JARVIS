@@ -1,0 +1,10 @@
+{
+  "version": "archive-lookup-workload-v1",
+  "counts": [100, 1000, 5000],
+  "repetitions": 5,
+  "matchingRows": 5,
+  "queries": [
+    {"id": "late-match", "query": "오늘 자료를 정리해줘", "expectedCount": 5},
+    {"id": "absent", "query": "존재하지않음", "expectedCount": 0}
+  ]
+}

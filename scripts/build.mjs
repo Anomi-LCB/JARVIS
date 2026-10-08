@@ -1,4 +1,5 @@
 import { cp, mkdir, rm } from 'node:fs/promises';
+import {staticAppSourceFilter} from './static-app-source-filter.mjs';
 
 await mkdir('dist', { recursive: true });
 for (const target of ['dist/index.html', 'dist/src', 'dist/apps', 'dist/packages']) {
@@ -6,6 +7,6 @@ for (const target of ['dist/index.html', 'dist/src', 'dist/apps', 'dist/packages
 }
 await cp('index.html', 'dist/index.html');
 await cp('src', 'dist/src', { recursive: true });
-await cp('apps', 'dist/apps', { recursive: true });
+await cp('apps', 'dist/apps', { recursive: true,filter:staticAppSourceFilter });
 await cp('packages', 'dist/packages', { recursive: true });
 console.log('Built static JARVIS executive console into dist/.');

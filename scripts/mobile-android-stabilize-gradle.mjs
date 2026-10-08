@@ -5,6 +5,17 @@ import { pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const defaultAppDir = 'apps/mobile';
+const foojayResolverPluginPattern = /^plugins\s*\{\s*id\("org\.gradle\.toolchains\.foojay-resolver-convention"\)\.version\("[^"]+"\)\s*\}\s*$/m;
+
+export function prepareReactNativeGradleSettings(source, { offline = false } = {}) {
+  const text = String(source ?? '');
+  if (!offline) return { text, patched: false };
+  const next = text.replace(
+    foojayResolverPluginPattern,
+    '// JARVIS offline build: use the installed JDK without the Foojay download resolver.'
+  );
+  return { text: next, patched: next !== text };
+}
 
 function sdkRoot(env = process.env) {
   return env.ANDROID_HOME
@@ -137,6 +148,7 @@ async function fileCount(path) {
 export async function stabilizeAndroidGradle({
   appDir = defaultAppDir,
   env = process.env,
+  offline = env.JARVIS_GRADLE_OFFLINE === '1',
   jsonPath = 'dist/mobile-android-gradle-stabilize-report.json'
 } = {}) {
   const androidDir = resolve(appDir, 'android');
@@ -164,6 +176,8 @@ export async function stabilizeAndroidGradle({
     targets,
     sourceState,
     copied: false,
+    offline,
+    offlineToolchainResolverPatched: false,
     settingsPatched: false,
     localPropertiesPatched: false,
     autolinkingOutputsCleared: [],
@@ -183,6 +197,13 @@ export async function stabilizeAndroidGradle({
     target: targets.reactNativeGradlePlugin,
     includeRoot
   });
+  const reactNativeSettingsPath = join(targets.reactNativeGradlePlugin, 'settings.gradle.kts');
+  const reactNativeSettings = await readFile(reactNativeSettingsPath, 'utf8');
+  const preparedSettings = prepareReactNativeGradleSettings(reactNativeSettings, { offline });
+  if (preparedSettings.patched) {
+    await writeFile(reactNativeSettingsPath, preparedSettings.text, 'utf8');
+    report.offlineToolchainResolverPatched = true;
+  }
   report.autolinkingOutputsCleared = await clearGeneratedAutolinking({ androidDir });
 
   const nextSettings = stableSettingsGradle();
@@ -222,6 +243,7 @@ function cliOptions(argv) {
     const arg = argv[index];
     if (arg === '--app-dir') options.appDir = argv[index + 1];
     if (arg === '--json') options.jsonPath = argv[index + 1];
+    if (arg === '--offline') options.offline = true;
   }
   return options;
 }
@@ -234,6 +256,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(`Expo Gradle plugin copied: ${report.targetFileCounts.expoGradlePlugin ?? 0} files`);
   console.log(`Settings patched: ${report.settingsPatched}`);
   console.log(`Local properties patched: ${report.localPropertiesPatched}`);
+  console.log(`Offline toolchain resolver patched: ${report.offlineToolchainResolverPatched}`);
   console.log(`Autolinking outputs cleared: ${report.autolinkingOutputsCleared.length}`);
   console.log(`Report: ${report.jsonPath}`);
   if (report.status !== 'stabilized') process.exitCode = 1;

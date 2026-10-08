@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/google/artemis.git",
+  "revision": "371aa6df56880643da57b30da936e9812fb0ec66",
+  "checkout": ".local-integrations/artemis",
+  "runtimeDirectory": ".runtime/artemis",
+  "host": "127.0.0.1",
+  "port": 41731,
+  "entryModule": "apps.admin_console.server"
+}

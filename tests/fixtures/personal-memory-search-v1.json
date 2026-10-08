@@ -1,0 +1,37 @@
+{
+ "version": "personal-memory-search-v1",
+ "frozenAt": "2026-10-06T05:55:00.000Z",
+ "now": "2026-10-06T00:00:00.000Z",
+ "limit": 3,
+ "limitations": "Synthetic owner assertions and author-defined relevance labels, not a blind expert assessment. All routes receive identical eligible records, dates, query and output budget. Each route may fail relevance; do not tune labels after observing results.",
+ "records": [
+  {"id":"r01","subject":"프로젝트:본문 연구","predicate":"자료","value":"자료:헬라어 문법과 구문 분석","at":"2026-09-20T00:00:00.000Z"},
+  {"id":"r02","subject":"프로젝트:본문 연구","predicate":"판단","value":"결정:역사 문화 배경을 원문과 대조","at":"2026-09-21T00:00:00.000Z"},
+  {"id":"r03","subject":"프로젝트:가계 관리","predicate":"자료","value":"자료:이번 달 소비 내역과 예산 초과 기록","at":"2026-10-01T00:00:00.000Z"},
+  {"id":"r04","subject":"프로젝트:여행 준비","predicate":"작업","value":"작업:기차표 취소 수수료와 환불 조건 비교","at":"2026-10-02T00:00:00.000Z"},
+  {"id":"r05","subject":"프로젝트:메일 정리","predicate":"작업","value":"작업:회의 약속과 참석자에게 보낼 준비 목록","at":"2026-10-03T00:00:00.000Z"},
+  {"id":"r06","subject":"프로젝트:파일 보호","predicate":"판단","value":"결정:삭제 전에 원본 백업을 별도 보관","at":"2026-09-22T00:00:00.000Z"},
+  {"id":"r07","subject":"프로젝트:수면 기록","predicate":"관측","value":"자료:야간 휴식 시간과 자주 깨는 횟수","at":"2026-10-04T00:00:00.000Z"},
+  {"id":"r08","subject":"프로젝트:앱 연결","predicate":"판단","value":"결정:OAuth 만료 때 다시 로그인하고 최소 권한만 허용","at":"2026-10-05T00:00:00.000Z"},
+  {"id":"r09","subject":"사람:합성 연구자","predicate":"목표","value":"목표:출처 기반 연구","at":"2026-09-23T00:00:00.000Z"},
+  {"id":"r10","subject":"목표:출처 기반 연구","predicate":"프로젝트","value":"프로젝트:본문 연구","at":"2026-09-24T00:00:00.000Z"},
+  {"id":"r11","subject":"프로젝트:가격 조사","predicate":"자료","value":"자료:장바구니 배송비와 상품 가격 비교","at":"2026-09-25T00:00:00.000Z"},
+  {"id":"r12","subject":"프로젝트:실행 복구","predicate":"판단","value":"결정:응답이 사라지면 먼저 영수증을 조회해 중복 발송 방지","at":"2026-09-26T00:00:00.000Z"},
+  {"id":"expired","subject":"프로젝트:파일 보호","predicate":"옛 규칙","value":"결정:백업 없이 원본 삭제","at":"2026-09-01T00:00:00.000Z","validUntil":"2026-09-02T00:00:00.000Z"},
+  {"id":"other-owner","subject":"프로젝트:본문 연구","predicate":"비공개","value":"자료:PRIVATE_OTHER_OWNER","at":"2026-09-21T00:00:00.000Z","otherOwner":true}
+ ],
+ "cases": [
+  {"id":"keyword-language","query":"헬라어 문법","entity":"자료:헬라어 문법과 구문 분석","gold":["r01"]},
+  {"id":"keyword-refund","query":"기차표 환불","entity":"프로젝트:여행 준비","gold":["r04"]},
+  {"id":"semantic-budget","query":"생활비를 너무 많이 썼는지 확인한 근거","entity":"프로젝트:가계 관리","gold":["r03"]},
+  {"id":"semantic-preserve","query":"실수로 지워도 다시 살릴 수 있도록 정한 규칙","entity":"프로젝트:파일 보호","gold":["r06"]},
+  {"id":"semantic-sleep","query":"밤에 얼마나 잘 쉬었는지 남긴 관측","entity":"프로젝트:수면 기록","gold":["r07"]},
+  {"id":"semantic-auth","query":"서비스 접속 허가가 끝났을 때 대응 방법","entity":"프로젝트:앱 연결","gold":["r08"]},
+  {"id":"time-october","query":"","from":"2026-10-03T00:00:00.000Z","to":"2026-10-05T00:00:00.000Z","entity":"프로젝트:메일 정리","gold":["r05","r07","r08"]},
+  {"id":"time-single-day","query":"예산","from":"2026-10-01T00:00:00.000Z","to":"2026-10-01T00:00:00.000Z","entity":"프로젝트:가계 관리","gold":["r03"]},
+  {"id":"relationship-person","query":"합성 연구자 출처 기반 연구","entity":"사람:합성 연구자","depth":1,"gold":["r09"]},
+  {"id":"relationship-goal","query":"출처 기반 연구 본문 연구","entity":"목표:출처 기반 연구","depth":1,"gold":["r09","r10"]},
+  {"id":"semantic-duplicate","query":"통신이 끊긴 뒤 같은 연락을 두 번 보내지 않는 규칙","entity":"프로젝트:실행 복구","gold":["r12"]},
+  {"id":"keyword-cart","query":"장바구니 배송비","entity":"프로젝트:가격 조사","gold":["r11"]}
+ ]
+}

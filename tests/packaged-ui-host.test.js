@@ -1,0 +1,40 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp,rm,readFile,writeFile,access} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {writeInstallerPackage} from '../apps/pc-agent/src/install/installer-packager.js';
+import {loadPcAgentInstallConfig} from '../apps/pc-agent/src/install/service-planner.js';
+import {listenOnFetchSafePort} from '../packages/shared/src/http.js';
+test('packaged launcher serves UI without repository runtime and retains credential-managed Core proxy',{timeout:30000},async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-packaged-ui-host-')),packageDir=join(root,'package');let child;
+ const upstream=createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({module:'A_CORE',status:'running',authenticated:req.headers.authorization==='Bearer isolated-ui-proxy-token'}));});
+ t.after(async()=>{if(child&&child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGKILL');await exited;}upstream.closeAllConnections();await new Promise(r=>upstream.close(r));await rm(root,{recursive:true,force:true});});
+ await listenOnFetchSafePort(upstream,{host:'127.0.0.1',port:0});
+ const config=await loadPcAgentInstallConfig();await writeInstallerPackage({...config,cwd:process.cwd(),outputDir:packageDir});
+ const reservation=createServer();await listenOnFetchSafePort(reservation,{host:'127.0.0.1',port:0});const port=reservation.address().port;await new Promise(r=>reservation.close(r));
+ child=spawn(process.execPath,[join(packageDir,'control-center-host/launch.mjs')],{cwd:root,windowsHide:true,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,LOCALAPPDATA:root,HOST:'0.0.0.0',PORT:String(port),JARVIS_UI_PACKAGE_DIR:'ignored-unsafe-override',JARVIS_CORE_API_URL:`http://127.0.0.1:${upstream.address().port}`,JARVIS_CORE_ADMIN_TOKEN:'isolated-ui-proxy-token'},stdio:['ignore','pipe','pipe']});
+ await new Promise((resolve,reject)=>{let output='',errors='';const timer=setTimeout(()=>reject(new Error('Host readiness timeout')),10000);child.stderr.on('data',data=>{errors+=data;});child.stdout.on('data',data=>{output+=data;if(output.includes('available at')){clearTimeout(timer);resolve();}});child.once('exit',code=>{clearTimeout(timer);reject(new Error(`Host exit ${code}: ${errors}`));});});
+ const base=`http://127.0.0.1:${port}`;
+ for(const path of ['/','/src/ui/connections/runtime.html','/src/ui/connections/runtime-status.js','/src/ui/workspace/client.js']){
+  const response=await fetch(base+path);assert.equal(response.status,200);assert.equal(await response.text(),await readFile(join(packageDir,'control-center-ui',path==='/'?'index.html':path.slice(1)),'utf8'));
+  assert.match(response.headers.get('content-security-policy'),/script-src 'self'/);
+ }
+ assert.equal((await fetch(base+'/package/package-manifest.json')).status,404);
+ const api=await fetch(base+'/api/core/health');assert.equal(api.status,200);assert.equal((await api.json()).authenticated,true);
+ const capabilities=await fetch(base+'/api/local/capabilities').then(r=>r.json());assert.equal(capabilities.credentialsExposed,false);assert.equal(capabilities.coreAdminProxyConfigured,true);assert.doesNotMatch(JSON.stringify(capabilities),/isolated-ui-proxy-token/);
+ const setup=await fetch(base+'/api/local/duffel-setup').then(r=>r.json());assert.equal(setup.available,process.platform==='win32');
+ if(process.platform==='win32')assert.equal(typeof setup.nonce,'string');else assert.equal(setup.nonce,undefined);
+ await assert.rejects(access(join(root,'JARVIS','connections','duffel-test')),'status inspection must not create default storage');
+ const blockedSetup=await fetch(base+'/api/local/duffel-setup',{method:'POST',headers:{origin:base,'content-type':'application/json'},body:'{}'});assert.equal(blockedSetup.status,401);
+ assert.equal((await fetch(base+'/api/local/duffel-setup?apiKey=never-send')).status,403);
+ assert.equal((await fetch(base+'/api/local/duffel-setup',{headers:{origin:'https://untrusted.example'}})).status,403);
+ const exit=once(child,'exit');child.kill('SIGKILL');await exit;
+ await writeFile(join(packageDir,'control-center-host/scripts/dev-server.mjs'),'throw new Error("TAMPER_EXECUTED");');
+ const damaged=spawn(process.execPath,[join(packageDir,'control-center-host/launch.mjs')],{cwd:root,windowsHide:true,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},stdio:['ignore','ignore','pipe']});
+ child=damaged;let stderr='';damaged.stderr.on('data',data=>{stderr+=data;});
+ const [code]=await once(damaged,'exit');assert.notEqual(code,0);assert.match(stderr,/PC_UI_HOST_INTEGRITY_FAILED/);assert.doesNotMatch(stderr,/TAMPER_EXECUTED/);
+});

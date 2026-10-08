@@ -1,3 +1,10 @@
+import {
+  WearableVoiceSession,
+  createHttpAudioFallbackTranscriber,
+  createWearableVoiceCapabilityReport,
+  wearableVoiceSessionVersion
+} from './voice-session.js';
+
 export const wearableHudBrowserClientVersion = 'c-d-wearable-hud-browser-client-v1';
 export const wearableHudFieldFrameVersion = 'c-d-wearable-field-frame-v1';
 
@@ -7,7 +14,10 @@ export const defaultWearableHudBrowserConfig = {
   requestTimeoutMs: 6000,
   maxLines: 5,
   maxCharsPerLine: 30,
-  wakeWords: ['자비스', 'jarvis', 'hey jarvis']
+  wakeWords: ['자비스', 'jarvis', 'hey jarvis'],
+  voiceContinuous: true,
+  voiceFeedback: true,
+  transcriptionEndpoint: '/voice/transcribe'
 };
 
 export const wearableHudQuickCommands = Object.freeze([
@@ -42,6 +52,8 @@ export function createWearableHudBrowserState(options = {}) {
     currentApproval: null,
     lastVoiceIntent: null,
     lastActionPlan: null,
+    voiceSession: null,
+    voiceCapability: null,
     rawTranscriptStored: false,
     rawBridgeTokenStored: false
   };
@@ -286,7 +298,7 @@ export function createWearableQuickCommandPlan({
 export function createWearablePairingConfirmBody({
   pairing,
   deviceId = 'wearable_hud_browser',
-  deviceName = 'JARVIS Wearable HUD'
+  deviceName = 'JARVIS 웨어러블 HUD'
 } = {}) {
   return {
     deviceId: sanitizeWearableDeviceId(deviceId),
@@ -299,7 +311,7 @@ export function createWearablePairingConfirmBody({
 export async function pairWearableHudBrowser({
   request,
   deviceId = 'wearable_hud_browser',
-  deviceName = 'JARVIS Wearable HUD'
+  deviceName = 'JARVIS 웨어러블 HUD'
 } = {}) {
   if (typeof request !== 'function') {
     return {
@@ -515,7 +527,7 @@ export function createWearableBrowserFrame({
   if (approvalState) {
     pushLine('approval-summary', approvalState.summary, 80);
     pushLine('approval-action', approvalState.actions.approve.enabled ? '말해요: 승인' : approvalState.actions.pcHandoff.enabled ? 'PC 확인 필요 · 말해요: PC 확인' : '말해요: 거절', 90);
-    pushLine('approval-risk', `위험 T${approvalState.riskTier} ${toneLabelKo(approvalState.tone)}`, 70);
+    pushLine('approval-risk', `위험 ${approvalState.riskTier}단계 ${toneLabelKo(approvalState.tone)}`, 70);
   } else if (task) {
     pushLine('task-title', task.title ?? task.command ?? task.taskId ?? '작업 진행 중', 70);
     pushLine('task-status', `${taskStatusLabelKo(task.status)} ${task.progressLabel ?? ''}`, 80);
@@ -623,6 +635,7 @@ export function installWearableHudBrowserApp({
   let timer = null;
   let state = createWearableHudBrowserState(config);
   let currentFrame = createWearableBrowserFrame({ connection: { connected: false }, limits: config });
+  let voiceSession = null;
   root.innerHTML = browserHudMarkup(config);
   const bridgeInput = root.querySelector('[data-bridge-url]');
   const tokenInput = root.querySelector('[data-token]');
@@ -630,13 +643,20 @@ export function installWearableHudBrowserApp({
   const pairButton = root.querySelector('[data-pair]');
   const micButton = root.querySelector('[data-mic]');
   const quietButton = root.querySelector('[data-quiet]');
+  const restoreControlsButton = root.querySelector('[data-restore-controls]');
   const statusNode = root.querySelector('[data-hud-status]');
   const memoryDeviceId = createWearableDeviceId(windowRef);
-  const request = (path, options) => createBrowserBridgeRequester({
-    config,
-    fetchImpl: windowRef.fetch?.bind(windowRef),
-    tokenProvider: () => memoryOnlyToken
-  })(path, options);
+  const request = (path, options) => {
+    config = createWearableHudBrowserConfig({
+      ...config,
+      bridgeUrl: bridgeInput?.value || config.bridgeUrl
+    });
+    return createBrowserBridgeRequester({
+      config,
+      fetchImpl: windowRef.fetch?.bind(windowRef),
+      tokenProvider: () => memoryOnlyToken
+    })(path, options);
+  };
   const sync = async () => {
     config = createWearableHudBrowserConfig({
       ...config,
@@ -688,11 +708,24 @@ export function installWearableHudBrowserApp({
     });
     renderBrowserHudFrame(currentFrame, root);
     if (plan.action === 'quiet') root.dataset.controls = 'hidden';
-    if (plan.action === 'sync') await sync();
+    if (plan.action === 'sync') {
+      await sync();
+      if (config.voiceFeedback) voiceSession?.speak('상태를 갱신했습니다.');
+    }
     if (['approval_decision', 'request_pc_confirmation', 'stage_task'].includes(plan.action)) {
       const execution = await executeWearableVoiceAction({ plan, request, rawTranscript: transcript });
-      if (statusNode) statusNode.textContent = execution.status === 'sent' ? '전송됨' : '전송 실패';
+      const executionLabel = execution.status === 'sent' ? '전송됨' : '전송 실패';
+      if (statusNode) statusNode.textContent = executionLabel;
+      if (config.voiceFeedback) {
+        const feedback = execution.status !== 'sent'
+          ? '전송하지 못했습니다.'
+          : plan.action === 'request_pc_confirmation'
+            ? 'PC에서 확인해 주세요.'
+            : '전송했습니다.';
+        voiceSession?.speak(feedback);
+      }
       await sync();
+      if (statusNode) statusNode.textContent = executionLabel;
     }
     return { intent, plan };
   };
@@ -711,8 +744,10 @@ export function installWearableHudBrowserApp({
     renderBrowserHudFrame(currentFrame, root);
     if (statusNode) statusNode.textContent = '전송 중';
     const execution = await executeWearableVoiceAction({ plan, request, rawTranscript: command });
-    if (statusNode) statusNode.textContent = execution.status === 'sent' ? '전송됨' : '전송 실패';
+    const executionLabel = execution.status === 'sent' ? '전송됨' : '전송 실패';
+    if (statusNode) statusNode.textContent = executionLabel;
     await sync();
+    if (statusNode) statusNode.textContent = executionLabel;
     return { plan, execution };
   };
   const handleHudAction = async (trigger) => {
@@ -730,12 +765,47 @@ export function installWearableHudBrowserApp({
     }
     if (['approval_decision', 'request_pc_confirmation', 'stage_task'].includes(plan.action)) {
       const execution = await executeWearableVoiceAction({ plan, request, rawTranscript: trigger.dataset.actionCommand ?? '' });
-      if (statusNode) statusNode.textContent = execution.status === 'sent' ? '전송됨' : '전송 실패';
+      const executionLabel = execution.status === 'sent' ? '전송됨' : '전송 실패';
+      if (statusNode) statusNode.textContent = executionLabel;
       await sync();
+      if (statusNode) statusNode.textContent = executionLabel;
       return { plan, execution };
     }
     return { plan };
   };
+  const updateVoiceUi = (voiceState) => {
+    state = {
+      ...state,
+      voiceSession: voiceState,
+      voiceCapability: createWearableVoiceCapabilityReport({ windowRef })
+    };
+    if (statusNode) statusNode.textContent = voicePhaseLabelKo(voiceState.phase);
+    if (micButton) {
+      const active = voiceState.desiredActive === true;
+      micButton.setAttribute('aria-pressed', String(active));
+      micButton.dataset.active = active ? 'true' : 'false';
+      micButton.textContent = active ? '듣기 중지' : '음성';
+    }
+  };
+  voiceSession = new WearableVoiceSession({
+    windowRef,
+    config: {
+      lang: 'ko-KR',
+      continuous: config.voiceContinuous,
+      interimResults: true
+    },
+    fallbackTranscriber: createHttpAudioFallbackTranscriber({
+      windowRef,
+      endpoint: config.transcriptionEndpoint
+    }),
+    sanitizeText: redactBrowserHudText,
+    onFinalTranscript: handleTranscript,
+    onInterim: ({ preview }) => {
+      if (statusNode) statusNode.textContent = preview ? `듣는 중 · ${preview}` : '듣는 중';
+    },
+    onStateChange: updateVoiceUi
+  });
+  updateVoiceUi(voiceSession.snapshot());
   const pair = async () => {
     config = createWearableHudBrowserConfig({
       ...config,
@@ -745,7 +815,7 @@ export function installWearableHudBrowserApp({
     const result = await pairWearableHudBrowser({
       request,
       deviceId: memoryDeviceId,
-      deviceName: 'JARVIS Wearable HUD'
+      deviceName: 'JARVIS 웨어러블 HUD'
     });
     if (result.success === true) {
       memoryOnlyToken = result.deviceToken;
@@ -755,6 +825,7 @@ export function installWearableHudBrowserApp({
       }
       if (statusNode) statusNode.textContent = '페어링 완료';
       await sync();
+      if (statusNode) statusNode.textContent = '페어링 완료';
     } else if (statusNode) {
       statusNode.textContent = result.stage === 'start' ? '코드 실패' : '페어링 실패';
     }
@@ -787,10 +858,19 @@ export function installWearableHudBrowserApp({
   quietButton?.addEventListener('click', () => {
     root.dataset.controls = root.dataset.controls === 'hidden' ? 'visible' : 'hidden';
   });
+  restoreControlsButton?.addEventListener('click', () => {
+    root.dataset.controls = 'visible';
+    if (statusNode) statusNode.textContent = '제어 표시';
+  });
   tokenInput?.addEventListener('input', (event) => {
     memoryOnlyToken = event.target.value;
   });
-  micButton?.addEventListener('click', () => startSpeechRecognition({ windowRef, onTranscript: handleTranscript, statusNode }));
+  micButton?.addEventListener('click', () => {
+    Promise.resolve(voiceSession.toggle()).catch(() => {
+      if (statusNode) statusNode.textContent = '음성 오류';
+    });
+  });
+  windowRef.addEventListener?.('pagehide', () => voiceSession.destroy(), { once: true });
   renderBrowserHudFrame(currentFrame, root);
   start();
   return {
@@ -800,12 +880,21 @@ export function installWearableHudBrowserApp({
     start,
     handleTranscript,
     pair,
+    voiceSessionVersion: wearableVoiceSessionVersion,
+    voiceCapabilities() {
+      return voiceSession.capabilities();
+    },
+    destroy() {
+      stop();
+      voiceSession.destroy();
+    },
     setToken(token) {
       memoryOnlyToken = String(token ?? '');
     },
     state() {
       return {
         ...state,
+        voiceSession: voiceSession.snapshot(),
         rawBridgeTokenStored: false,
         tokenLength: memoryOnlyToken.length
       };
@@ -861,6 +950,7 @@ function browserHudMarkup(config) {
       <button type="button" data-mic>음성</button>
       <button type="button" data-quiet>숨김</button>
     </form>
+    <button type="button" class="hud-controls-restore" data-restore-controls>제어 표시</button>
   `;
 }
 
@@ -868,7 +958,7 @@ function metricsForBrowserFrame({ approvalState, notifications, task, voiceInten
   return [
     { label: '듣기', value: voiceIntent ? intentLabelKo(voiceIntent.intentName) : '대기', meta: '자비스 호출' },
     { label: '실행', value: taskStatusLabelKo(task?.status) ?? '준비', meta: taskTitleForHud(task) },
-    { label: '승인', value: approvalState ? `T${approvalState.riskTier}` : `${notifications.pendingApprovals ?? 0}`, meta: approvalState ? toneLabelKo(approvalState.tone) : '대기 없음' },
+    { label: '승인', value: approvalState ? `${approvalState.riskTier}단계` : `${notifications.pendingApprovals ?? 0}`, meta: approvalState ? toneLabelKo(approvalState.tone) : '대기 없음' },
     { label: '보안', value: '비식별', meta: voiceIntent?.redactedPreview ?? '원문 미저장' }
   ];
 }
@@ -930,7 +1020,7 @@ function contextDeckForBrowserFrame({ connection, approvalState, task, notificat
   if (approvalState) {
     return [
       ['판단', approvalState.summary],
-      ['위험', `T${approvalState.riskTier} · ${toneLabelKo(approvalState.tone)}`],
+      ['위험', `${approvalState.riskTier}단계 · ${toneLabelKo(approvalState.tone)}`],
       ['허용', approvalState.actions.approve.enabled ? '안경 승인 가능' : 'PC 확인 필요'],
       ['대안', approvalState.actions.reject.enabled ? '거절 가능' : '만료됨']
     ];
@@ -1082,36 +1172,6 @@ function formatHudClock(value) {
   }).format(date);
 }
 
-function startSpeechRecognition({ windowRef, onTranscript, statusNode }) {
-  const SpeechRecognition = windowRef.SpeechRecognition ?? windowRef.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    if (statusNode) statusNode.textContent = '음성 없음';
-    return null;
-  }
-  const recognition = new SpeechRecognition();
-  recognition.lang = 'ko-KR';
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.onstart = () => {
-    if (statusNode) statusNode.textContent = '듣는 중';
-  };
-  recognition.onerror = () => {
-    if (statusNode) statusNode.textContent = '음성 오류';
-  };
-  recognition.onend = () => {
-    if (statusNode) statusNode.textContent = '준비';
-  };
-  recognition.onresult = (event) => {
-    const transcript = Array.from(event.results ?? [])
-      .map((result) => result?.[0]?.transcript ?? '')
-      .join(' ')
-      .trim();
-    if (transcript) onTranscript(transcript);
-  };
-  recognition.start();
-  return recognition;
-}
-
 function normalizeItems(payload) {
   if (Array.isArray(payload?.items)) return payload.items;
   if (Array.isArray(payload?.tasks)) return payload.tasks;
@@ -1181,7 +1241,7 @@ function toneLabelKo(tone) {
     expired: '만료',
     'pc-confirmation-required': 'PC확인'
   };
-  return table[tone] ?? String(tone ?? '정상');
+  return table[tone] ?? '상태 확인';
 }
 
 function taskStatusLabelKo(status) {
@@ -1202,7 +1262,7 @@ function taskStatusLabelKo(status) {
     BLOCKED: '차단',
     CANCELLED: '취소'
   };
-  return table[status] ?? String(status);
+  return table[status] ?? '상태 확인';
 }
 
 function intentLabelKo(intentName) {
@@ -1217,7 +1277,22 @@ function intentLabelKo(intentName) {
     execute_command: '명령',
     unknown: '알 수 없음'
   };
-  return table[intentName] ?? String(intentName ?? '음성');
+  return table[intentName] ?? '음성 명령';
+}
+
+function voicePhaseLabelKo(phase) {
+  const table = {
+    idle: '음성 준비',
+    'requesting-permission': '마이크 권한',
+    starting: '음성 시작',
+    listening: '듣는 중',
+    speech: '말씀하세요',
+    processing: '음성 처리',
+    recovering: '음성 복구',
+    unavailable: '버튼 사용',
+    error: '음성 점검'
+  };
+  return table[phase] ?? '음성 준비';
 }
 
 export function redactBrowserHudText(value) {

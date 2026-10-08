@@ -4,6 +4,13 @@ import type { ExecutionResultView } from '../api/apiTypes';
 import { colors } from '../theme/colors';
 import { ResultFeedbackPanel } from './ResultFeedbackPanel';
 
+const verificationLabel: Record<string, string> = {
+  not_required: '검증 불필요',
+  pending: '검증 대기',
+  passed: '통과',
+  failed: '실패'
+};
+
 export function ResultSummaryCard({
   result,
   feedbackText,
@@ -22,7 +29,7 @@ export function ResultSummaryCard({
   return (
     <View style={{ padding: 16, backgroundColor: colors.surface }}>
       <Text style={{ color: colors.text }}>{result.summary}</Text>
-      <Text style={{ color: colors.muted }}>검증: {result.verificationStatus ?? 'not_required'}</Text>
+      <Text style={{ color: colors.muted }}>검증: {verificationLabel[result.verificationStatus ?? 'not_required'] ?? '상태 확인'}</Text>
       <Text style={{ color: colors.muted }}>되돌리기: {result.rollbackAvailable ? '가능' : '불가'}</Text>
       <ResultFeedbackPanel
         result={result}

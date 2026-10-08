@@ -1,6 +1,6 @@
 {
   "templateId": "ministry-report",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Ministry Report Workbook",
   "defaultStyle": {
     "headerBold": true,
@@ -11,6 +11,7 @@
     {
       "chartId": "status_summary",
       "type": "bar",
+      "aggregation": "count",
       "title": "상태 요약"
     }
   ],

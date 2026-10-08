@@ -1,6 +1,8 @@
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { verifyMobileReleaseCredentials } from './mobile-release-credentials.mjs';
+import { verifyMobileEasBuildEvidence } from './mobile-eas-build-gate.mjs';
 
 const defaultAppDir = 'apps/mobile';
 const defaultOutputDir = 'dist';
@@ -81,7 +83,9 @@ function buildGradleSigningPolicy(source) {
       && source.includes('JARVIS_ANDROID_KEYSTORE_PASSWORD')
       && source.includes('JARVIS_ANDROID_KEY_ALIAS')
       && source.includes('JARVIS_ANDROID_KEY_PASSWORD'),
-    releaseFallbackDocumented: source.includes('jarvisReleaseSigningReady ? signingConfigs.release : signingConfigs.debug')
+    releaseFailsClosed: source.includes('jarvisReleaseTaskRequested && !jarvisReleaseSigningReady')
+      && source.includes('signingConfig signingConfigs.release')
+      && !source.includes('jarvisReleaseSigningReady ? signingConfigs.release : signingConfigs.debug')
   };
 }
 
@@ -102,7 +106,7 @@ export function createMobileReleasePreflightPlan({ appDir = defaultAppDir } = {}
       {
         id: 'android-production-keystore',
         command: 'set JARVIS_ANDROID_KEYSTORE_PATH, JARVIS_ANDROID_KEYSTORE_PASSWORD, JARVIS_ANDROID_KEY_ALIAS, JARVIS_ANDROID_KEY_PASSWORD',
-        expected: 'Release Gradle signing switches from debug fallback to production keystore.'
+        expected: 'Release Gradle fails closed until the production keystore is available.'
       },
       {
         id: 'eas-store-build',
@@ -131,6 +135,8 @@ export function createMobileReleasePreflightPlan({ appDir = defaultAppDir } = {}
 export async function runMobileReleasePreflight({
   appDir = defaultAppDir,
   env = process.env,
+  credentialVerifier = verifyMobileReleaseCredentials,
+  easBuildEvidenceVerifier = verifyMobileEasBuildEvidence,
   outputDir = defaultOutputDir,
   jsonPath = join(outputDir, 'mobile-release-preflight-report.json'),
   markdownPath = join(outputDir, 'mobile-release-preflight-report.md'),
@@ -154,7 +160,14 @@ export async function runMobileReleasePreflight({
   const dependencies = packageJson.dependencies ?? {};
   const signingPolicy = buildGradleSigningPolicy(buildGradle);
   const productionProfile = easProductionProfile(easJson);
+  const easProjectId = env.JARVIS_EAS_PROJECT_ID || expo.extra?.eas?.projectId;
   const keystore = await fileInfo(env.JARVIS_ANDROID_KEYSTORE_PATH);
+  const credentialVerification = await credentialVerifier({ env, appDir, projectId: easProjectId });
+  const easBuildEvidence = await easBuildEvidenceVerifier({
+    appDir,
+    env,
+    evidencePath: join(outputDir, 'mobile-eas-production-build.json')
+  });
   const installReport = await readJsonIfExists(join(outputDir, 'mobile-android-install-report.json'));
   const deviceReport = await readJsonIfExists(join(outputDir, 'mobile-device-smoke-report.json'));
   const liveBridgeReport = await readJsonIfExists(join(outputDir, 'mobile-live-bridge-e2e-report.json'));
@@ -209,10 +222,10 @@ export async function runMobileReleasePreflight({
   });
   addCheck(checks, {
     id: 'gradle:release-signing-policy',
-    title: 'Android release signing can switch to production keystore from environment.',
+    title: 'Android release signing requires a production keystore and fails closed without it.',
     passed: signingPolicy.hasReleaseSigningConfig
       && signingPolicy.usesJarvisKeystoreEnv
-      && signingPolicy.releaseFallbackDocumented,
+      && signingPolicy.releaseFailsClosed,
     evidence: signingPolicy,
     remediation: 'Configure release signing with JARVIS_ANDROID_KEYSTORE_* environment variables.'
   });
@@ -247,23 +260,76 @@ export async function runMobileReleasePreflight({
     remediation: 'Set JARVIS_ANDROID_KEYSTORE_PASSWORD, JARVIS_ANDROID_KEY_ALIAS, and JARVIS_ANDROID_KEY_PASSWORD.'
   });
   addCheck(checks, {
+    id: 'credential:android-keystore-verified',
+    title: 'Production Android keystore opens and contains the configured private key.',
+    passed: credentialVerification.androidKeystore?.status === 'passed',
+    severity: 'credential',
+    evidence: credentialVerification.androidKeystore,
+    remediation: 'Verify the keystore password, key alias, private-key password, certificate validity, and key strength.'
+  });
+  addCheck(checks, {
     id: 'credential:eas-account',
-    title: 'EAS account/project credential is available.',
-    passed: Boolean(env.EXPO_TOKEN && (env.JARVIS_EAS_PROJECT_ID || expo.extra?.eas?.projectId)),
+    title: 'EAS token is accepted and resolves the configured project.',
+    passed: credentialVerification.easAccount?.status === 'passed',
     severity: 'credential',
     evidence: {
       hasExpoToken: Boolean(env.EXPO_TOKEN),
-      hasProjectId: Boolean(env.JARVIS_EAS_PROJECT_ID || expo.extra?.eas?.projectId)
+      hasProjectId: Boolean(easProjectId),
+      verificationStatus: credentialVerification.easAccount?.status ?? 'not-run',
+      cliAvailable: credentialVerification.easAccount?.cliAvailable ?? null,
+      tokenAccepted: credentialVerification.easAccount?.tokenAccepted === true,
+      projectIdMatches: credentialVerification.easAccount?.projectIdMatches === true,
+      secretValuesStored: false
     },
-    remediation: 'Set EXPO_TOKEN and JARVIS_EAS_PROJECT_ID, or add expo.extra.eas.projectId after linking the Expo project.'
+    remediation: 'Set a valid EXPO_TOKEN and UUID JARVIS_EAS_PROJECT_ID, install EAS CLI, and verify the linked project.'
+  });
+  const productionBuildFresh = installReport?.variant === 'release'
+    && installReport?.gradle?.build?.attempted === true
+    && installReport?.gradle?.build?.exitCode === 0
+    && installReport?.gradle?.build?.timedOut === false
+    && installReport?.apk?.exists === true
+    && Number.isFinite(Date.parse(installReport?.generatedAt))
+    && Number.isFinite(Date.parse(installReport?.apk?.modifiedAt))
+    && Date.parse(installReport.generatedAt) - Date.parse(installReport.apk.modifiedAt) >= 0
+    && Date.parse(installReport.generatedAt) - Date.parse(installReport.apk.modifiedAt) <= 10 * 60 * 1000;
+  addCheck(checks, {
+    id: 'artifact:android-production-build',
+    title: 'Android release artifact was built successfully in the current evidence run.',
+    passed: productionBuildFresh,
+    severity: 'device-artifact',
+    evidence: {
+      reportPresent: Boolean(installReport),
+      variant: installReport?.variant ?? null,
+      buildAttempted: installReport?.gradle?.build?.attempted === true,
+      buildExitCode: installReport?.gradle?.build?.exitCode ?? null,
+      apkPresent: installReport?.apk?.exists === true,
+      currentRunArtifact: productionBuildFresh
+    },
+    remediation: 'Run npm run mobile:android-install -- --build --install --variant release --device <serial> with production signing configured.'
   });
   addCheck(checks, {
     id: 'artifact:android-install',
-    title: 'Android release build/install report is present and useful.',
-    passed: artifactStatus(installReport, ['installed', 'apk-ready', 'apk-ready-no-device']).passed,
+    title: 'The current production-signed Android release was installed successfully.',
+    passed: productionBuildFresh
+      && installReport?.status === 'installed'
+      && installReport?.install?.attempted === true
+      && installReport?.install?.success === true,
     severity: 'device-artifact',
-    evidence: artifactStatus(installReport, ['installed', 'apk-ready', 'apk-ready-no-device']),
-    remediation: 'Run npm run mobile:android-install -- --build --install --variant release.'
+    evidence: {
+      status: installReport?.status ?? 'missing',
+      installAttempted: installReport?.install?.attempted === true,
+      installSuccess: installReport?.install?.success === true,
+      currentRunBuildRequired: true
+    },
+    remediation: 'Build and install the production-signed release on an explicitly selected Android device in one run.'
+  });
+  addCheck(checks, {
+    id: 'artifact:eas-production-build',
+    title: 'A fresh EAS production Android build matches the current source and project.',
+    passed: easBuildEvidence.passed === true,
+    severity: 'device-artifact',
+    evidence: easBuildEvidence,
+    remediation: 'Run npm run mobile:eas-build -- --execute after production credentials are verified.'
   });
   addCheck(checks, {
     id: 'artifact:device-smoke',
@@ -320,6 +386,12 @@ export async function runMobileReleasePreflight({
       iosBuildNumber: ios.buildNumber
     },
     plan: createMobileReleasePreflightPlan({ appDir }),
+    credentialVerification,
+    easBuildEvidence,
+    privacy: {
+      credentialValuesStored: false,
+      credentialValuesPassedInProcessArguments: false
+    },
     checks,
     blockers
   };

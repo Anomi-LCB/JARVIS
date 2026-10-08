@@ -1,6 +1,17 @@
 import { ActionType, ModuleId, TrustBoundary } from '../../../shared/src/types.js';
 
 export const defaultSkillManifest = Object.freeze([
+  {skillId:'xlsx_existing_pdf_export_skill',version:'1.0.0',label:'기존 엑셀 PDF 출력',module:ModuleId.PC_AGENT,category:'document',actionType:ActionType.CREATE_FILE,toolName:'excel.exportPdf',
+    match:{workflows:['export-existing-xlsx-pdf'],keywords:['기존 엑셀 PDF 출력']},capability:{readsLocalFiles:true,writesLocalFiles:true,externalNetwork:false,externalTransfer:false,reversible:true,requiresApproval:true,maxRiskTier:5,allowedModes:['shadow','execute']},
+    safety:{trustBoundary:TrustBoundary.USER_COMMAND,dataClasses:['user_text'],blockedWhen:['externalTransfer=true']},adapterContract:{preview:true,execute:true,rollback:true,evidence:['pdfExport','undoJournalId']}},
+  {skillId:'xlsx_region_read_skill',version:'1.0.0',label:'엑셀 내용 읽기',module:ModuleId.PC_AGENT,category:'document',actionType:ActionType.SEARCH_FILES,toolName:'excel.readWorkbook',
+    match:{workflows:['read-xlsx-file'],keywords:['엑셀 읽기']},capability:{readsLocalFiles:true,writesLocalFiles:false,externalNetwork:false,externalTransfer:false,reversible:false,requiresApproval:false,maxRiskTier:5,allowedModes:['shadow','execute']},
+    safety:{trustBoundary:TrustBoundary.USER_COMMAND,dataClasses:['user_text'],blockedWhen:['externalTransfer=true']},adapterContract:{preview:true,execute:true,rollback:false,evidence:['contentSha256','xlsxRead']}},
+  {skillId:'pdf_text_read_skill',version:'1.0.0',label:'PDF 내용 읽기',module:ModuleId.PC_AGENT,category:'document',actionType:ActionType.SEARCH_FILES,toolName:'document.readPdf',
+    match:{workflows:['read-pdf-file'],keywords:['PDF 읽기']},
+    capability:{readsLocalFiles:true,writesLocalFiles:false,externalNetwork:false,externalTransfer:false,reversible:false,requiresApproval:false,maxRiskTier:5,allowedModes:['shadow','execute']},
+    safety:{trustBoundary:TrustBoundary.USER_COMMAND,dataClasses:['user_text'],blockedWhen:['externalTransfer=true']},
+    adapterContract:{preview:true,execute:true,rollback:false,evidence:['contentSha256','pdfRead']}},
   {
     skillId: 'excel_workbook_skill',
     version: '1.0.0',
@@ -113,7 +124,7 @@ export const defaultSkillManifest = Object.freeze([
     toolName: 'filesystem.createTextFile',
     match: {
       outputFormats: ['txt'],
-      keywords: ['메모', '텍스트', 'txt', '로그']
+      keywords: ['메모', '텍스트', 'txt', 'md', 'markdown', 'csv', 'json', 'html', '로그']
     },
     capability: {
       readsLocalFiles: false,
@@ -135,6 +146,74 @@ export const defaultSkillManifest = Object.freeze([
       execute: true,
       rollback: true,
       evidence: ['outputPath', 'sha256']
+    }
+  },
+  {
+    skillId: 'visual_card_create_skill',
+    version: '1.0.0',
+    label: 'Verified PNG Card Create',
+    module: ModuleId.PC_AGENT,
+    category: 'visual',
+    actionType: ActionType.CREATE_FILE,
+    toolName: 'visual.createCards',
+    match: {
+      outputFormats: ['png'],
+      keywords: ['png', '뉴스 카드', '이미지 카드', '시각화 카드', '카드 이미지']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['user_text', 'public_summary'],
+      blockedWhen: ['outsideAllowedRoots=true', 'targetExists=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['outputPaths', 'cardCount', 'cards', 'undoJournalIds']
+    }
+  },
+  {
+    skillId: 'archive_zip_create_skill',
+    version: '1.0.0',
+    label: 'Verified ZIP Archive Create',
+    module: ModuleId.PC_AGENT,
+    category: 'archive',
+    actionType: ActionType.CREATE_FILE,
+    toolName: 'archive.createZip',
+    match: {
+      outputFormats: ['zip'],
+      keywords: ['zip', '압축', '묶음', '번들']
+    },
+    capability: {
+      readsLocalFiles: true,
+      writesLocalFiles: true,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.LOCAL_FILE_CONTENT,
+      dataClasses: ['file_path', 'file_metadata'],
+      blockedWhen: ['outsideAllowedRoots=true', 'inputMissing=true', 'targetExists=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['outputPath', 'sha256', 'entryCount', 'entries', 'undoJournalId']
     }
   },
   {
@@ -201,6 +280,41 @@ export const defaultSkillManifest = Object.freeze([
       execute: true,
       rollback: false,
       evidence: ['capabilityCount']
+    }
+  },
+  {
+    skillId: 'weekly_weather_hwp_report_skill',
+    version: '1.0.0',
+    label: 'Weekly Weather HWP Report',
+    module: ModuleId.PC_AGENT,
+    category: 'document',
+    actionType: ActionType.CREATE_FILE,
+    toolName: 'weather.createHwpReport',
+    match: {
+      outputFormats: ['hwp', 'hwpx'],
+      workflows: ['weekly-weather-hwp-report'],
+      keywords: ['날씨 통계', '기상 통계', '주간 예보', '날씨 표']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: true,
+      externalNetwork: true,
+      externalTransfer: false,
+      reversible: true,
+      requiresApproval: true,
+      maxRiskTier: 4,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['location_query', 'public_weather_data'],
+      blockedWhen: ['locationMissing=true', 'outsideAllowedRoots=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: true,
+      evidence: ['outputPath', 'sha256', 'weatherReport.sourceUrl', 'weatherReport.retrievedAt', 'weatherReport.rowCount']
     }
   },
   {
@@ -304,6 +418,142 @@ export const defaultSkillManifest = Object.freeze([
     }
   },
   {
+    skillId: 'file_read_text_skill',
+    version: '1.0.0',
+    label: 'Verified Text File Read',
+    module: ModuleId.PC_AGENT,
+    category: 'filesystem',
+    actionType: ActionType.SEARCH_FILES,
+    toolName: 'filesystem.readText',
+    match: {
+      workflows: ['read-text-file'],
+      keywords: ['내용 읽어', '본문 읽어', '파일 읽어', '열어서 읽어', '원문 확인', '내용 확인', '.txt', '.csv', '.json', '.jsonl', '.md', '.html', '.xml', '.yaml', '.log']
+    },
+    capability: {
+      readsLocalFiles: true,
+      writesLocalFiles: false,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: false,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.LOCAL_FILE_CONTENT,
+      dataClasses: ['file_content'],
+      blockedWhen: ['outsideAllowedRoots=true', 'unsupportedBinary=true', 'fileTooLarge=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['pathHash', 'contentSha256', 'bytes', 'offset', 'returnedChars', 'truncated']
+    }
+  },
+  {
+    skillId: 'news_headlines_fetch_skill',
+    version: '1.0.0',
+    label: 'Live Korean News Headlines',
+    module: ModuleId.PC_AGENT,
+    category: 'browser',
+    actionType: ActionType.BROWSER_SEARCH,
+    toolName: 'news.fetchHeadlines',
+    match: {
+      workflows: ['news-headlines'],
+      keywords: ['뉴스', '핫뉴스', '헤드라인', '속보', '오늘 뉴스', '최신 뉴스']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: false,
+      externalNetwork: true,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: false,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.WEB_CONTENT,
+      dataClasses: ['public_news_metadata'],
+      blockedWhen: ['readOnly=false', 'fixture=true', 'sourceHostMismatch=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['news.live', 'news.retrievedAt', 'news.sourceUrl', 'news.sourceHost', 'news.items']
+    }
+  },
+  {
+    skillId: 'publisher_rss_feed_fetch_skill',
+    version: '1.0.0',
+    label: 'Safe Public Publisher RSS Feed',
+    module: ModuleId.PC_AGENT,
+    category: 'browser',
+    actionType: ActionType.BROWSER_SEARCH,
+    toolName: 'news.fetchPublisherFeed',
+    match: {
+      workflows: ['publisher-news-feed'],
+      keywords: ['게시자 RSS', '언론사 RSS', '뉴스 피드 주소', '원문사 피드', 'publisher rss']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: false,
+      externalNetwork: true,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: false,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.WEB_CONTENT,
+      dataClasses: ['public_news_metadata'],
+      blockedWhen: ['nonHttps=true', 'privateAddress=true', 'fixture=true', 'sourceNotRss=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['news.live', 'news.feedUrl', 'news.finalFeedUrl', 'news.items']
+    }
+  },
+  {
+    skillId: 'news_article_read_skill',
+    version: '1.0.0',
+    label: 'Safe Public News Article Reader',
+    module: ModuleId.PC_AGENT,
+    category: 'browser',
+    actionType: ActionType.BROWSER_SEARCH,
+    toolName: 'news.fetchArticle',
+    match: {
+      workflows: ['news-article-read'],
+      keywords: ['기사 본문', '기사 원문', '이 기사 읽', '기사 링크 읽', '본문을 읽고 요약', '뉴스 기사 내용']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: false,
+      externalNetwork: true,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: false,
+      maxRiskTier: 5,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.WEB_CONTENT,
+      dataClasses: ['public_article_content'],
+      blockedWhen: ['nonHttps=true', 'privateAddress=true', 'bodyUnavailable=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['article.live', 'article.finalUrl', 'article.textSha256', 'article.textCharacters']
+    }
+  },
+  {
     skillId: 'browser_search_skill',
     version: '1.0.0',
     label: 'Read-only Browser Search',
@@ -334,6 +584,40 @@ export const defaultSkillManifest = Object.freeze([
       execute: true,
       rollback: false,
       evidence: ['query', 'searchEngine', 'readOnly']
+    }
+  },
+  {
+    skillId: 'windows_desktop_control_skill',
+    version: '1.0.0',
+    label: 'Windows Desktop Control',
+    module: ModuleId.PC_AGENT,
+    category: 'desktop',
+    actionType: ActionType.DESKTOP_CONTROL,
+    toolName: 'desktop.control',
+    match: {
+      keywords: ['창', '화면', '버튼', '메뉴', '클릭', '입력', '포커스', 'UI Automation']
+    },
+    capability: {
+      readsLocalFiles: false,
+      writesLocalFiles: false,
+      externalNetwork: false,
+      externalTransfer: false,
+      reversible: false,
+      requiresApproval: true,
+      requiresDesktopApproval: true,
+      maxRiskTier: 3,
+      allowedModes: ['shadow', 'execute']
+    },
+    safety: {
+      trustBoundary: TrustBoundary.USER_COMMAND,
+      dataClasses: ['desktop_ui_state'],
+      blockedWhen: ['passwordControl=true', 'scriptHostLaunch=true', 'verificationMissing=true', 'rawCoordinateClick=true', 'untrustedTemplate=true', 'ambiguousVisualTarget=true']
+    },
+    adapterContract: {
+      preview: true,
+      execute: true,
+      rollback: false,
+      evidence: ['operationCount', 'verification', 'observedWindow', 'interactiveSession', 'localOcrPerception', 'localTemplatePerception']
     }
   },
   {

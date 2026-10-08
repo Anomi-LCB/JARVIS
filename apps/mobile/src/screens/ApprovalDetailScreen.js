@@ -1310,7 +1310,10 @@ function normalizeClarificationConversations(conversations) {
 }
 
 function containsSensitiveCopy(text) {
-  return /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|01[016789]-?\d{3,4}-?\d{4}|token=|secret/i.test(String(text ?? ''));
+  // 해시 내부의 우연한 010 숫자열은 전화번호로 보지 않는다. 실제 값처럼
+  // 영숫자 경계 밖에 독립적으로 놓인 번호와 명시적인 비밀 값만 차단한다.
+  return /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|(?:^|[^a-z0-9])01[016789]-?\d{3,4}-?\d{4}(?=$|[^a-z0-9])|(?:token|secret)\s*=/i
+    .test(String(text ?? ''));
 }
 
 function serializedApprovalRestrictionContainsAny(value, needles) {

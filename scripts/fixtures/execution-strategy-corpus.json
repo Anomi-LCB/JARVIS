@@ -1,0 +1,77 @@
+{
+  "corpusVersion": "jarvis-execution-strategy-corpus-v1",
+  "scenarios": [
+    {
+      "id": "private-named-file-search",
+      "objective": "기밀 작업 폴더에서 package.json 파일을 오프라인만 사용해서 찾아",
+      "constraints": ["네트워크 금지", "외부 공유 금지"],
+      "expectedPrimaryTool": "filesystem.searchFiles",
+      "requiredTools": ["filesystem.searchFiles"],
+      "forbiddenChannels": ["service-api", "mcp-connector", "hosted-ai-tool", "web-dom"],
+      "maxTools": 6
+    },
+    {
+      "id": "local-file-list",
+      "objective": "작업 폴더의 파일 목록을 보여줘",
+      "expectedPrimaryTool": "filesystem.listFiles",
+      "requiredTools": ["filesystem.listFiles"],
+      "maxTools": 6
+    },
+    {
+      "id": "live-web-research",
+      "objective": "최신 AI 뉴스를 웹에서 조사해",
+      "expectedPrimaryTool": "news.fetchHeadlines",
+      "requiredTools": ["news.fetchHeadlines", "browser.search", "desktop.control"],
+      "maxTools": 6
+    },
+    {
+      "id": "excel-product",
+      "objective": "분기 실적 엑셀 보고서를 만들어",
+      "expectedPrimaryTool": "excel.createWorkbook",
+      "requiredTools": ["excel.createWorkbook"],
+      "maxTools": 6
+    },
+    {
+      "id": "powerpoint-product",
+      "objective": "프로젝트 발표용 파워포인트를 만들어",
+      "expectedPrimaryTool": "powerpoint.create",
+      "requiredTools": ["powerpoint.create"],
+      "maxTools": 6
+    },
+    {
+      "id": "word-product",
+      "objective": "회의록 워드 문서를 만들어",
+      "expectedPrimaryTool": "word.create",
+      "requiredTools": ["word.create"],
+      "maxTools": 6
+    },
+    {
+      "id": "hwp-product",
+      "objective": "회의록 한글 hwp 문서를 만들어",
+      "expectedPrimaryTool": "hwp.create",
+      "requiredTools": ["hwp.create"],
+      "maxTools": 6
+    },
+    {
+      "id": "shell-inspection",
+      "objective": "PowerShell로 실행 중인 서비스 목록을 조회해",
+      "expectedPrimaryTool": "shell.execute",
+      "requiredTools": ["shell.execute"],
+      "maxTools": 6
+    },
+    {
+      "id": "desktop-interaction",
+      "objective": "메모장 창의 저장 버튼을 클릭해",
+      "expectedPrimaryTool": "desktop.control",
+      "requiredTools": ["desktop.control"],
+      "maxTools": 6
+    },
+    {
+      "id": "external-email",
+      "objective": "보고서를 kim@example.com에게 이메일로 보내",
+      "expectedPrimaryTool": "email.send",
+      "requiredTools": ["email.send"],
+      "maxTools": 6
+    }
+  ]
+}

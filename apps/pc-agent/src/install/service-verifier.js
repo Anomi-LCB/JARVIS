@@ -16,6 +16,7 @@ const REQUIRED_PACKAGE_FILES = [
   'status-service.ps1',
   'uninstall-service.ps1',
   'verify-package.ps1',
+  'installation-preflight.ps1',
   'verify-installed-service.ps1',
   'install-all.ps1',
   'install-verify-release.ps1',
@@ -33,6 +34,13 @@ const REQUIRED_PACKAGE_FILES = [
   'release-manifest.json',
   'collect-logs.ps1',
   'tray-agent.ps1',
+  'tray-agent.xaml',
+  'jarvis.ico',
+  'Microsoft.Web.WebView2.Core.dll',
+  'Microsoft.Web.WebView2.Wpf.dll',
+  'WebView2Loader.dll',
+  'WebView2-LICENSE.txt',
+  'WebView2-provenance.json',
   'tray-agent.cs',
   'launch-tray.ps1',
   'build-tray-exe.ps1',
@@ -95,7 +103,7 @@ export async function verifyPcAgentServiceReadiness({
   });
 
   const generatedPackage = createInstallerPackagePlan({ daemonConfig, serviceManifest, cwd, outputDir: packageDir ?? 'dist/pc-agent-installer' });
-  add('generated-package-plan', generatedPackage.manifest.files.length === REQUIRED_PACKAGE_FILES.length ? 'pass' : 'fail', {
+  add('generated-package-plan', REQUIRED_PACKAGE_FILES.every(name => generatedPackage.manifest.files.includes(name)) ? 'pass' : 'fail', {
     files: generatedPackage.manifest.files.length,
     requiredFiles: REQUIRED_PACKAGE_FILES.length,
     signatureDigestLength: generatedPackage.manifest.signature.digest.length

@@ -1,0 +1,557 @@
+{
+  "snapshotVersion": "a-core-api-contract-snapshot-v1",
+  "label": "core-contract-gate:current",
+  "generatedAt": "2026-09-29T14:29:47.202Z",
+  "openapi": "3.1.0",
+  "pathCount": 84,
+  "operationCount": 89,
+  "schemaCount": 12,
+  "paths": [
+    "/admin/diagnostics",
+    "/capabilities/external/evaluate",
+    "/capability-package-promotions/promote",
+    "/capability-package-promotions/review",
+    "/capability-package-promotions/rollback",
+    "/capability-package-promotions/status",
+    "/cognition",
+    "/cognition/decisions/{taskId}",
+    "/health",
+    "/integrations",
+    "/integrations/connections/{connectionId}",
+    "/integrations/handoffs",
+    "/integrations/handoffs/{handoffId}",
+    "/integrations/handoffs/{handoffId}/complete",
+    "/integrations/model-providers/{provider}/verify",
+    "/missions",
+    "/missions/{missionId}",
+    "/missions/{missionId}/cancel",
+    "/missions/{missionId}/gates/{gateId}/decision",
+    "/missions/{missionId}/goal-revisions",
+    "/missions/{missionId}/managed-agent/session",
+    "/missions/{missionId}/managed-agent/session/reconcile",
+    "/missions/{missionId}/run",
+    "/missions/{missionId}/settings",
+    "/openapi.json",
+    "/owner-session",
+    "/owner-session/activate",
+    "/owner-session/revoke",
+    "/personal-budgets/{operation}",
+    "/personal-google/connect",
+    "/personal-google/mandate",
+    "/personal-inbox",
+    "/personal-inbox/accept",
+    "/personal-mandates",
+    "/personal-mandates/create-mission-quota",
+    "/personal-mandates/revoke",
+    "/personal-operations",
+    "/personal-operations/followups/{followUpId}/{operation}",
+    "/routines",
+    "/routines/command",
+    "/routines/{routineId}",
+    "/routines/{routineId}/cancel",
+    "/routines/{routineId}/timezone",
+    "/runtime/service-plan",
+    "/runtime/supervisor",
+    "/runtime/supervisor/tick",
+    "/security/managed-agent-egress",
+    "/security/managed-agent-egress/key/initialize",
+    "/security/managed-agent-egress/key/recover",
+    "/security/managed-agent-egress/key/rotate",
+    "/security/trust",
+    "/security/trust/audit/quarantine",
+    "/security/trust/lockdown",
+    "/security/trust/product-gate",
+    "/security/trust/recover",
+    "/security/trust/recovery/challenge",
+    "/skill-center/activate",
+    "/skill-center/catalog",
+    "/skill-center/compose",
+    "/skill-center/deactivate",
+    "/skill-center/search",
+    "/skill-center/status",
+    "/tasks",
+    "/tasks/{taskId}",
+    "/tasks/{taskId}/approve",
+    "/tasks/{taskId}/compensation",
+    "/tasks/{taskId}/compensation/plan",
+    "/tasks/{taskId}/compensation/run",
+    "/tasks/{taskId}/plan-artifacts",
+    "/tasks/{taskId}/plan-graph/product-gate",
+    "/tasks/{taskId}/queue",
+    "/tasks/{taskId}/resume",
+    "/tasks/{taskId}/run",
+    "/worker/daemon",
+    "/worker/daemon/start",
+    "/worker/daemon/stop",
+    "/worker/daemon/tick",
+    "/worker/leases",
+    "/worker/leases/recover",
+    "/worker/plan-artifacts",
+    "/worker/queue",
+    "/worker/queue/drain",
+    "/worker/state-product-gate",
+    "/worker/timeouts"
+  ],
+  "operations": [
+    {
+      "path": "/admin/diagnostics",
+      "method": "GET",
+      "operationId": "getCoreAdminDiagnostics"
+    },
+    {
+      "path": "/capabilities/external/evaluate",
+      "method": "POST",
+      "operationId": "evaluateExternalCapabilityAvailability"
+    },
+    {
+      "path": "/capability-package-promotions/promote",
+      "method": "POST",
+      "operationId": "promoteCapabilityPackage"
+    },
+    {
+      "path": "/capability-package-promotions/review",
+      "method": "POST",
+      "operationId": "reviewCapabilityPackagePromotion"
+    },
+    {
+      "path": "/capability-package-promotions/rollback",
+      "method": "POST",
+      "operationId": "rollbackCapabilityPackage"
+    },
+    {
+      "path": "/capability-package-promotions/status",
+      "method": "GET",
+      "operationId": "getCapabilityPackagePromotionStatus"
+    },
+    {
+      "path": "/cognition",
+      "method": "GET",
+      "operationId": "getCoreCognition"
+    },
+    {
+      "path": "/cognition/decisions/{taskId}",
+      "method": "GET",
+      "operationId": "getCoreDecisionTrace"
+    },
+    {
+      "path": "/health",
+      "method": "GET",
+      "operationId": "getCoreHealth"
+    },
+    {
+      "path": "/integrations",
+      "method": "GET",
+      "operationId": "getIntegrationReadiness"
+    },
+    {
+      "path": "/integrations",
+      "method": "POST",
+      "operationId": "storeIntegrationCredentials"
+    },
+    {
+      "path": "/integrations/connections/{connectionId}",
+      "method": "DELETE",
+      "operationId": "removeIntegrationCredentials"
+    },
+    {
+      "path": "/integrations/handoffs",
+      "method": "POST",
+      "operationId": "createIntegrationCredentialHandoff"
+    },
+    {
+      "path": "/integrations/handoffs/{handoffId}",
+      "method": "DELETE",
+      "operationId": "cancelIntegrationCredentialHandoff"
+    },
+    {
+      "path": "/integrations/handoffs/{handoffId}/complete",
+      "method": "POST",
+      "operationId": "completeIntegrationCredentialHandoff"
+    },
+    {
+      "path": "/integrations/model-providers/{provider}/verify",
+      "method": "POST",
+      "operationId": "verifyModelProviderCredentials"
+    },
+    {
+      "path": "/missions",
+      "method": "GET",
+      "operationId": "listAutonomousMissions"
+    },
+    {
+      "path": "/missions",
+      "method": "POST",
+      "operationId": "createAutonomousMission"
+    },
+    {
+      "path": "/missions/{missionId}",
+      "method": "GET",
+      "operationId": "getAutonomousMission"
+    },
+    {
+      "path": "/missions/{missionId}/cancel",
+      "method": "POST",
+      "operationId": "cancelAutonomousMission"
+    },
+    {
+      "path": "/missions/{missionId}/gates/{gateId}/decision",
+      "method": "POST",
+      "operationId": "decideAutonomousMissionGate"
+    },
+    {
+      "path": "/missions/{missionId}/goal-revisions",
+      "method": "POST",
+      "operationId": "reviseAutonomousMissionGoal"
+    },
+    {
+      "path": "/missions/{missionId}/managed-agent/session",
+      "method": "POST",
+      "operationId": "createManagedAgentMissionSession"
+    },
+    {
+      "path": "/missions/{missionId}/managed-agent/session/reconcile",
+      "method": "POST",
+      "operationId": "reconcileManagedAgentMissionSessionProvision"
+    },
+    {
+      "path": "/missions/{missionId}/run",
+      "method": "POST",
+      "operationId": "runAutonomousMission"
+    },
+    {
+      "path": "/missions/{missionId}/settings",
+      "method": "POST",
+      "operationId": "updateAutonomousMissionSettings"
+    },
+    {
+      "path": "/openapi.json",
+      "method": "GET",
+      "operationId": "getCoreOpenApiSpec"
+    },
+    {
+      "path": "/owner-session",
+      "method": "GET",
+      "operationId": "getPersonalOwnerSession"
+    },
+    {
+      "path": "/owner-session/activate",
+      "method": "POST",
+      "operationId": "activatePersonalOwnerSession"
+    },
+    {
+      "path": "/owner-session/revoke",
+      "method": "POST",
+      "operationId": "revokePersonalOwnerSession"
+    },
+    {
+      "path": "/personal-budgets/{operation}",
+      "method": "POST",
+      "operationId": "personalBudgetOperation"
+    },
+    {
+      "path": "/personal-google/connect",
+      "method": "GET",
+      "operationId": "getGoogleConnection"
+    },
+    {
+      "path": "/personal-google/connect",
+      "method": "POST",
+      "operationId": "startGoogleConnection"
+    },
+    {
+      "path": "/personal-google/mandate",
+      "method": "POST",
+      "operationId": "configureGooglePageMandate"
+    },
+    {
+      "path": "/personal-inbox",
+      "method": "GET",
+      "operationId": "getPersonalInbox"
+    },
+    {
+      "path": "/personal-inbox/accept",
+      "method": "POST",
+      "operationId": "acceptPersonalInboxItem"
+    },
+    {
+      "path": "/personal-mandates",
+      "method": "GET",
+      "operationId": "listPersonalMandates"
+    },
+    {
+      "path": "/personal-mandates/create-mission-quota",
+      "method": "POST",
+      "operationId": "createMissionQuota"
+    },
+    {
+      "path": "/personal-mandates/revoke",
+      "method": "POST",
+      "operationId": "revokePersonalMandate"
+    },
+    {
+      "path": "/personal-operations",
+      "method": "GET",
+      "operationId": "getPersonalOperations"
+    },
+    {
+      "path": "/personal-operations/followups/{followUpId}/{operation}",
+      "method": "POST",
+      "operationId": "executePersonalFollowupOperation"
+    },
+    {
+      "path": "/routines",
+      "method": "GET",
+      "operationId": "listDurableRoutines"
+    },
+    {
+      "path": "/routines",
+      "method": "POST",
+      "operationId": "scheduleDurableRoutine"
+    },
+    {
+      "path": "/routines/{routineId}",
+      "method": "GET",
+      "operationId": "getDurableRoutine"
+    },
+    {
+      "path": "/routines/{routineId}/cancel",
+      "method": "POST",
+      "operationId": "cancelScheduledRoutineExplicit"
+    },
+    {
+      "path": "/routines/{routineId}/timezone",
+      "method": "PATCH",
+      "operationId": "reviseWeeklyRoutineTimezone"
+    },
+    {
+      "path": "/routines/command",
+      "method": "POST",
+      "operationId": "scheduleDurableRoutineFromKoreanCommand"
+    },
+    {
+      "path": "/runtime/service-plan",
+      "method": "POST",
+      "operationId": "createCoreServiceLifecyclePlan"
+    },
+    {
+      "path": "/runtime/supervisor",
+      "method": "GET",
+      "operationId": "getCoreRuntimeSupervisor"
+    },
+    {
+      "path": "/runtime/supervisor/tick",
+      "method": "POST",
+      "operationId": "tickCoreRuntimeSupervisor"
+    },
+    {
+      "path": "/security/managed-agent-egress",
+      "method": "GET",
+      "operationId": "getManagedAgentEgressStatus"
+    },
+    {
+      "path": "/security/managed-agent-egress/key/initialize",
+      "method": "POST",
+      "operationId": "initializeManagedAgentEgressKey"
+    },
+    {
+      "path": "/security/managed-agent-egress/key/recover",
+      "method": "POST",
+      "operationId": "recoverUnreadableManagedAgentEgressKey"
+    },
+    {
+      "path": "/security/managed-agent-egress/key/rotate",
+      "method": "POST",
+      "operationId": "rotateManagedAgentEgressKey"
+    },
+    {
+      "path": "/security/trust",
+      "method": "GET",
+      "operationId": "getRuntimeTrustStatus"
+    },
+    {
+      "path": "/security/trust/audit/quarantine",
+      "method": "POST",
+      "operationId": "quarantineInvalidRuntimeTrustAuditJournal"
+    },
+    {
+      "path": "/security/trust/lockdown",
+      "method": "POST",
+      "operationId": "engageRuntimeTrustLockdown"
+    },
+    {
+      "path": "/security/trust/product-gate",
+      "method": "POST",
+      "operationId": "runRuntimeTrustProductGate"
+    },
+    {
+      "path": "/security/trust/recover",
+      "method": "POST",
+      "operationId": "recoverRuntimeTrust"
+    },
+    {
+      "path": "/security/trust/recovery/challenge",
+      "method": "POST",
+      "operationId": "createRuntimeTrustRecoveryChallenge"
+    },
+    {
+      "path": "/skill-center/activate",
+      "method": "POST",
+      "operationId": "activateNexusSkillProfile"
+    },
+    {
+      "path": "/skill-center/catalog",
+      "method": "GET",
+      "operationId": "getNexusSkillCenterCatalog"
+    },
+    {
+      "path": "/skill-center/compose",
+      "method": "POST",
+      "operationId": "composeNexusSkillRecipe"
+    },
+    {
+      "path": "/skill-center/deactivate",
+      "method": "POST",
+      "operationId": "deactivateNexusSkillProfile"
+    },
+    {
+      "path": "/skill-center/search",
+      "method": "GET",
+      "operationId": "searchNexusSkills"
+    },
+    {
+      "path": "/skill-center/status",
+      "method": "GET",
+      "operationId": "getNexusSkillCenterStatus"
+    },
+    {
+      "path": "/tasks",
+      "method": "GET",
+      "operationId": "listCoreTasks"
+    },
+    {
+      "path": "/tasks",
+      "method": "POST",
+      "operationId": "createCoreTask"
+    },
+    {
+      "path": "/tasks/{taskId}",
+      "method": "GET",
+      "operationId": "getCoreTask"
+    },
+    {
+      "path": "/tasks/{taskId}/approve",
+      "method": "POST",
+      "operationId": "decideCoreApproval"
+    },
+    {
+      "path": "/tasks/{taskId}/compensation",
+      "method": "POST",
+      "operationId": "beginCoreCompensation"
+    },
+    {
+      "path": "/tasks/{taskId}/compensation/plan",
+      "method": "GET",
+      "operationId": "previewCoreCompensationReplay"
+    },
+    {
+      "path": "/tasks/{taskId}/compensation/run",
+      "method": "POST",
+      "operationId": "runCoreCompensationReplay"
+    },
+    {
+      "path": "/tasks/{taskId}/plan-artifacts",
+      "method": "GET",
+      "operationId": "exportCorePlanNodeArtifacts"
+    },
+    {
+      "path": "/tasks/{taskId}/plan-graph/product-gate",
+      "method": "POST",
+      "operationId": "runCorePlanGraphProductGate"
+    },
+    {
+      "path": "/tasks/{taskId}/queue",
+      "method": "POST",
+      "operationId": "enqueueCoreWorkerTask"
+    },
+    {
+      "path": "/tasks/{taskId}/resume",
+      "method": "GET",
+      "operationId": "resumeCoreTask"
+    },
+    {
+      "path": "/tasks/{taskId}/run",
+      "method": "POST",
+      "operationId": "runTaskThroughCoreWorker"
+    },
+    {
+      "path": "/worker/daemon",
+      "method": "GET",
+      "operationId": "getCoreWorkerDaemon"
+    },
+    {
+      "path": "/worker/daemon/start",
+      "method": "POST",
+      "operationId": "startCoreWorkerDaemon"
+    },
+    {
+      "path": "/worker/daemon/stop",
+      "method": "POST",
+      "operationId": "stopCoreWorkerDaemon"
+    },
+    {
+      "path": "/worker/daemon/tick",
+      "method": "POST",
+      "operationId": "tickCoreWorkerDaemon"
+    },
+    {
+      "path": "/worker/leases",
+      "method": "GET",
+      "operationId": "getCoreWorkerLeases"
+    },
+    {
+      "path": "/worker/leases/recover",
+      "method": "POST",
+      "operationId": "recoverCoreWorkerLeases"
+    },
+    {
+      "path": "/worker/plan-artifacts",
+      "method": "GET",
+      "operationId": "getCorePlanNodeArtifactRetentionStatus"
+    },
+    {
+      "path": "/worker/queue",
+      "method": "GET",
+      "operationId": "getCoreWorkerQueue"
+    },
+    {
+      "path": "/worker/queue/drain",
+      "method": "POST",
+      "operationId": "drainCoreWorkerQueue"
+    },
+    {
+      "path": "/worker/state-product-gate",
+      "method": "POST",
+      "operationId": "runCoreWorkerStateProductGate"
+    },
+    {
+      "path": "/worker/timeouts",
+      "method": "GET",
+      "operationId": "getCoreWorkerTimeoutScheduler"
+    }
+  ],
+  "schemas": [
+    "ApprovalCard",
+    "AutonomousMission",
+    "CoreTaskDetail",
+    "CoreTaskSummary",
+    "ErrorEnvelope",
+    "ExecutionPacket",
+    "MissionAuthorization",
+    "MissionCriterion",
+    "PersonalOwnerSessionStatus",
+    "RuntimeTrustStatus",
+    "TaskPlan",
+    "TaskRequest"
+  ],
+  "digest": "sha256:5f74115bec1bbc4521cd2cf2a2fb149e1f42831dcc2b1ec1867213ce323f458c"
+}

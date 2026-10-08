@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, rm, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createAgRuntime } from '../apps/runtime-compose/src/create-runtime.js';
@@ -98,6 +99,7 @@ import {
   createMaturityProductGateState,
   createAutonomyCandidateReviewState,
   createSkillDraftReviewState,
+  createSkillRevisionDiff,
   createPatternClusterReviewState
 } from '../apps/mobile/src/components/GrowthReviewDecisionPanel.js';
 import {
@@ -121,6 +123,7 @@ import {
   createWearableHudFrame,
   createWearableHudProductGate,
   createWearableHudReleaseDossier,
+  createWearablePhysicalFieldReport,
   createWearableVoiceIntent,
   renderWearableHudHtml,
   renderWearableHudText
@@ -207,7 +210,8 @@ import {
   runBrowserNetworkReplayCorpus,
   runBrowserReadOnlySoak,
   runWorkbookProductCorpus,
-  StaticVaultKeyProvider
+  StaticVaultKeyProvider,
+  UndoJournal
 } from '../apps/pc-agent/src/pc-agent-runtime.js';
 import { runGoldenShadowCorpus } from '../apps/pc-agent/src/shadow/golden-shadow-runner.js';
 import { runServicePlanCli } from '../apps/pc-agent/src/cli/service-plan.mjs';
@@ -246,12 +250,25 @@ import { createAndroidSetupPlan, runAndroidSetup } from '../scripts/mobile-andro
 import { createMobileReleasePreflightPlan, runMobileReleasePreflight } from '../scripts/mobile-release-preflight.mjs';
 import { runMobileReleaseDossier } from '../scripts/mobile-release-dossier.mjs';
 import { runMobileVerification } from '../scripts/mobile-verify.mjs';
-import { createMobileDeviceVerificationPlan, runMobileDeviceSmoke, writeMobileDeviceSmokeArtifacts } from '../scripts/mobile-device-smoke.mjs';
+import {
+  createMobileDeviceVerificationPlan,
+  inspectProductionHomeSurface,
+  reconcileMobileDeviceEvidence,
+  runMobileDeviceSmoke,
+  writeMobileDeviceSmokeArtifacts
+} from '../scripts/mobile-device-smoke.mjs';
+import {
+  createMobileE2EInstallPlan,
+  selectMobileE2EDevice,
+  selectMobileE2ETargetArchitectures
+} from '../scripts/mobile-e2e-install.mjs';
+import { classifyMobileLiveBridgeE2EFailure, writeMobileLiveBridgeE2EArtifacts } from '../scripts/mobile-live-bridge-e2e.mjs';
+import { normalizeBridgeUrlForPlatform } from '../apps/mobile/src/api/bridge-url.js';
 import { runWearableHudVerification } from '../scripts/wearable-hud-verify.mjs';
 import { writeWearableHudFieldKit } from '../scripts/wearable-hud-field-kit.mjs';
 import { runWearableFieldChaos } from '../scripts/wearable-field-chaos.mjs';
 import { runSystemIntegrityAudit } from '../scripts/system-integrity-audit.mjs';
-import { runBridgeServerSoak } from '../scripts/bridge-server-soak.mjs';
+import { openBridgeWebSocketConnection, runBridgeServerSoak } from '../scripts/bridge-server-soak.mjs';
 import { runBridgeNetworkGuardDrillReport } from '../scripts/bridge-network-guard-drill.mjs';
 import { runBridgeClientContractGate } from '../scripts/bridge-client-contract-gate.mjs';
 import { runFederatedOpenApiContractGate } from '../scripts/federated-openapi-contract-gate.mjs';
@@ -547,6 +564,7 @@ await test('A IntentParser evaluates real command corpus with slot accuracy evid
   assert.equal(report.metrics.complexityAccuracy, 1);
   assert.equal(report.failures.length, 0);
   assert.equal(report.byActionType.some((item) => item.actionType === ActionType.UPLOAD_FILE && item.passRate === 1), true);
+  assert.equal(report.byActionType.some((item) => item.actionType === ActionType.SEND_EMAIL && item.passRate === 1), true);
   assert.equal(report.byActionType.some((item) => item.actionType === ActionType.CREATE_FILE && item.passRate === 1), true);
 });
 
@@ -630,7 +648,7 @@ await test('A approved intent logs build anonymized drift calibration corpus', a
 
     const upload = store.record({
       command: '고객 jang@example.com 010-1234-5678에게 보고서를 이메일로 보내줘',
-      expected: { actionType: ActionType.UPLOAD_FILE },
+      expected: { actionType: ActionType.SEND_EMAIL },
       approvedForLearning: true,
       approvalId: 'appr_a03_log_upload',
       taskId: 'task_a03_log_upload',
@@ -686,7 +704,7 @@ await test('A approved intent logs build anonymized drift calibration corpus', a
     });
     assert.equal(actionDriftTrend.trendVersion, 'a-03-intent-action-drift-trend-v1');
     assert.equal(actionDriftTrend.status, 'passed');
-    assert.equal(actionDriftTrend.items.some((item) => item.actionType === ActionType.UPLOAD_FILE && item.semanticPassRate === 1), true);
+    assert.equal(actionDriftTrend.items.some((item) => item.actionType === ActionType.SEND_EMAIL && item.semanticPassRate === 1), true);
     const providerTelemetryDashboard = createSemanticProviderTelemetryDashboard({
       report: drift,
       providers: [
@@ -1113,7 +1131,11 @@ await test('A CoreOrchestrationWorker runs approved tasks through E, B, G, and F
     const run = await orchestrationWorker.runTask(task.taskId, { deviceId: 'worker_test' });
     const storedTask = coreFacade.getTask(task.taskId);
 
-    assert.equal(run.success, true);
+    assert.equal(
+      run.success,
+      true,
+      JSON.stringify(run.executionVerification?.checks?.filter((check) => check.status === 'failed') ?? [])
+    );
     assert.equal(run.status, TaskStatus.COMPLETED);
     assert.equal(storedTask.status, TaskStatus.COMPLETED);
     assert.equal(run.capability.scope.allowedPaths[0], dir);
@@ -1142,7 +1164,8 @@ await test('A CoreOrchestrationWorker executes plan graph nodes with artifact bu
     const { coreFacade, policyRuntime, verificationRuntime, growthRuntime } = createAgRuntime({
       allowedRoots: [dir],
       auditRoot: dir,
-      cwd: () => dir
+      cwd: () => dir,
+      env: {}
     });
     const receivedPackets = [];
     const fakePcAgent = {
@@ -1163,11 +1186,21 @@ await test('A CoreOrchestrationWorker executes plan graph nodes with artifact bu
             memoryEvent: null
           };
         }
+        // This scheduling fixture must satisfy the real predecessor G gate.
+        // A fabricated B success with no file is now correctly rejected early.
+        const startedAt = new Date().toISOString();
+        const undoJournalId = `undo_${packet.planGraphNodeId}`;
+        await writeFile(join(dir, `${packet.planGraphNodeId}.txt`), 'synthetic predecessor output');
         return {
           taskId: packet.taskId,
           status: TaskStatus.COMPLETED,
           executionResult: {
+            taskId: packet.taskId,
             status: 'success',
+            startedAt,
+            finishedAt: startedAt,
+            undoJournalId,
+            safety: { capabilityTokenUsed: packet.capabilityToken.tokenId },
             summary: `${packet.planGraphNodeId} completed`,
             outputPaths: [join(dir, `${packet.planGraphNodeId}.txt`)],
             changedItems: [{ path: join(dir, `${packet.planGraphNodeId}.txt`), changeType: 'created' }],
@@ -1181,7 +1214,8 @@ await test('A CoreOrchestrationWorker executes plan graph nodes with artifact bu
               undoJournalId: `undo_${packet.planGraphNodeId}`
             }
           },
-          evidence: { evidenceId: `ev_${packet.planGraphNodeId}` },
+          evidence: { evidenceId: `ev_${packet.planGraphNodeId}`, taskId: packet.taskId, status: 'success',
+            outputPaths: [join(dir, `${packet.planGraphNodeId}.txt`)], shadow: { expectedChangesCount: 1 }, undo: { undoJournalId } },
           memoryEvent: null
         };
       }
@@ -1253,7 +1287,8 @@ await test('A CoreOrchestrationWorker executes parallel-ready plan graph waves',
     const { coreFacade, policyRuntime, verificationRuntime, growthRuntime } = createAgRuntime({
       allowedRoots: [dir],
       auditRoot: dir,
-      cwd: () => dir
+      cwd: () => dir,
+      env: {}
     });
     const received = [];
     let inFlight = 0;
@@ -1265,21 +1300,39 @@ await test('A CoreOrchestrationWorker executes parallel-ready plan graph waves',
         maxInFlight = Math.max(maxInFlight, inFlight);
         await new Promise((resolve) => setTimeout(resolve, 10));
         inFlight -= 1;
+        const outputPath = join(dir, `${packet.planGraphNodeId}.txt`);
+        const undoJournalId = `undo_${packet.planGraphNodeId}`;
+        const startedAt = new Date().toISOString();
+        await writeFile(outputPath, `${packet.planGraphNodeId} completed`, 'utf8');
         return {
           taskId: packet.taskId,
           status: TaskStatus.COMPLETED,
           executionResult: {
+            taskId: packet.taskId,
             status: 'success',
             summary: `${packet.planGraphNodeId} completed`,
-            outputPaths: [join(dir, `${packet.planGraphNodeId}.txt`)],
-            changedItems: [{ path: join(dir, `${packet.planGraphNodeId}.txt`), changeType: 'created' }],
+            startedAt,
+            finishedAt: startedAt,
+            outputPaths: [outputPath],
+            changedItems: [{ path: outputPath, changeType: 'created' }],
+            undoJournalId,
             rollbackAvailable: true,
             executedBy: {
               module: ModuleId.PC_AGENT,
               toolName: packet.action.toolName
+            },
+            safety: {
+              capabilityTokenUsed: packet.capabilityToken.tokenId
             }
           },
-          evidence: { evidenceId: `parallel_ev_${packet.planGraphNodeId}` },
+          evidence: {
+            evidenceId: `parallel_ev_${packet.planGraphNodeId}`,
+            taskId: packet.taskId,
+            status: 'success',
+            outputPaths: [outputPath],
+            shadow: { expectedChangesCount: 1 },
+            undo: { undoJournalId }
+          },
           memoryEvent: null
         };
       }
@@ -1299,8 +1352,19 @@ await test('A CoreOrchestrationWorker executes parallel-ready plan graph waves',
 
     const run = await graphWorker.runTask(task.taskId, { deviceId: 'parallel_graph_worker_test' });
 
-    assert.equal(run.success, true);
+    assert.equal(
+      run.success,
+      true,
+      JSON.stringify(run.executionVerification?.checks?.filter((check) => check.status === 'failed') ?? [])
+    );
     assert.equal(run.planGraphRun.schedule.waves[0].nodeIds.length >= 2, true);
+    assert.equal(run.trustAuthorization?.allowed, true);
+    assert.equal(
+      run.planGraphRun.nodeRuns
+        .filter((node) => node.status === 'completed')
+        .every((node) => node.trustAuthorization?.allowed === true),
+      true
+    );
     assert.equal(maxInFlight > 1, true);
     assert.equal(received.length >= 3, true);
     assert.equal(run.planGraphRun.artifactExport.exportVersion, 'a-plan-node-artifact-export-v1');
@@ -1368,7 +1432,7 @@ await test('A CoreOrchestrationWorker recovers expired task leases into retry sc
     const task = coreFacade.createTask('파일 목록 보여줘');
     const queued = orchestrationWorker.enqueueTask(task.taskId, {
       userConfirmation: { confirmed: true },
-      timeoutMs: 20
+      timeoutMs: 5000
     });
     const queueItem = orchestrationWorker.queue.find((item) => item.queueId === queued.queueId);
     queueItem.status = 'running';
@@ -1412,7 +1476,7 @@ await test('A CoreOrchestrationWorker recovers expired task leases into retry sc
     assert.equal(drained.results[0].item.status, 'succeeded');
     assert.equal(coreFacade.getTask(task.taskId).status, TaskStatus.COMPLETED);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -1622,10 +1686,17 @@ await test('A TaskStateMachine enforces retry, expiry, and compensation transiti
   assert.equal(compensationMachine.beginCompensation().status, TaskStatus.COMPENSATING);
   assert.equal(compensationMachine.completeCompensation().status, TaskStatus.COMPENSATED);
   assert.equal(TaskStateMachine.transitionTable()[TaskStatus.COMPENSATING].includes(TaskStatus.COMPENSATED), true);
+
+  const completedMachine = new TaskStateMachine(TaskStatus.COMPLETED, { clock });
+  assert.equal(completedMachine.canTransition(TaskStatus.COMPENSATING), true);
+  assert.equal(completedMachine.beginCompensation({ reason: 'user-confirmed-undo' }).status, TaskStatus.COMPENSATING);
+  assert.equal(completedMachine.completeCompensation().status, TaskStatus.COMPENSATED);
 });
 
 await test('A CoreFacade records execution failure retry and compensation lifecycle', () => {
-  const { coreFacade } = createAgRuntime();
+  const { coreFacade } = createAgRuntime({
+    clock: () => new Date('2026-06-08T00:21:00.000Z')
+  });
   const task = coreFacade.createTask('엑셀 보고서 만들고 그리고 안내문 작성해', {
     createdAt: '2026-06-08T00:20:00.000Z'
   });
@@ -1734,6 +1805,100 @@ await test('A CoreOrchestrationWorker replays node-level compensation with rollb
   }
 });
 
+await test('A completed reversible task requires confirmation and records a coherent undo lifecycle', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-a-completed-undo-'));
+  try {
+    const { coreFacade, policyRuntime, verificationRuntime, growthRuntime } = createAgRuntime({
+      allowedRoots: [dir],
+      auditRoot: dir,
+      cwd: () => dir
+    });
+    const task = coreFacade.createTask('검증 메모 파일을 만들어줘');
+    coreFacade.submitApprovalDecision(createApprovalDecision({
+      approvalId: task.approvalCard.approvalId,
+      taskId: task.taskId,
+      decision: ApprovalDecision.APPROVE,
+      deviceId: 'completed_undo_test'
+    }));
+    task.stateMachine.transition(TaskStatus.EXECUTING, 'completed-undo-fixture-started');
+    task.stateMachine.transition(TaskStatus.COMPLETED, 'completed-undo-fixture-completed');
+    task.status = task.stateMachine.status;
+    task.executionResult = {
+      status: TaskStatus.COMPLETED,
+      executionResult: {
+        status: 'success',
+        rollbackAvailable: true,
+        changedItems: [{ type: 'create_file', path: join(dir, 'fixture.txt') }]
+      }
+    };
+
+    let rollbackCalls = 0;
+    const worker = new CoreOrchestrationWorker({
+      coreFacade,
+      policyRuntime,
+      verificationRuntime,
+      growthRuntime,
+      pcAgent: {
+        async rollbackPlan(taskId) {
+          return {
+            success: true,
+            taskId,
+            dryRun: true,
+            planningMode: 'sequential-virtual-state-v1',
+            readyCount: 1,
+            noopCount: 0,
+            blockedCount: 0,
+            steps: [{ undoJournalId: 'undo_completed_fixture', status: 'ready' }],
+            chain: { status: 'valid' }
+          };
+        },
+        async rollbackTask(taskId) {
+          rollbackCalls += 1;
+          return {
+            success: true,
+            taskId,
+            rolledBack: [{ undoJournalId: 'undo_completed_fixture', action: 'delete_created_file' }],
+            skipped: [],
+            transaction: { transactionId: 'rbtx_completed_fixture', status: 'completed' },
+            plan: { chain: { status: 'valid' } }
+          };
+        }
+      },
+      allowedPaths: [dir]
+    });
+
+    const preview = await worker.previewCompensation(task.taskId);
+    assert.equal(preview.success, true);
+    assert.equal(preview.previewVersion, 'a-core-compensation-preview-v1');
+    assert.equal(preview.planningMode, 'sequential-virtual-state-v1');
+    assert.equal(preview.safeToExecute, true);
+
+    const unconfirmed = await worker.runCompensation(task.taskId, {
+      reason: 'completed undo without confirmation'
+    });
+    assert.equal(unconfirmed.success, false);
+    assert.equal(unconfirmed.error.code, 'A_COMPENSATION_CONFIRMATION_REQUIRED');
+    assert.equal(coreFacade.getTask(task.taskId).status, TaskStatus.COMPLETED);
+    assert.equal(rollbackCalls, 0);
+
+    const confirmed = await worker.runCompensation(task.taskId, {
+      reason: 'completed undo with confirmation',
+      userConfirmation: {
+        confirmed: true,
+        confirmedAt: '2026-08-19T00:00:00.000Z',
+        source: 'test'
+      }
+    });
+    assert.equal(confirmed.success, true);
+    assert.equal(confirmed.status, TaskStatus.COMPENSATED);
+    assert.equal(confirmed.compensationReplay.rollbackProof.transaction.status, 'completed');
+    assert.equal(coreFacade.getTask(task.taskId).status, TaskStatus.COMPENSATED);
+    assert.equal(rollbackCalls, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test('A core runtime, CLI intake, ambiguity resolver, capability request, dummy execution, and JSONL events work end-to-end', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-a-core-'));
   try {
@@ -1758,7 +1923,10 @@ await test('A core runtime, CLI intake, ambiguity resolver, capability request, 
     assert.ok(runtimeEvents.some((event) => event.eventType === 'core.fault.recorded'));
     assert.ok(runtimeEvents.some((event) => event.eventType === 'core.restarted'));
 
-    const { coreFacade } = createAgRuntime({ auditRoot: dir });
+    const { coreFacade } = createAgRuntime({
+      auditRoot: dir,
+      clock: () => new Date('2026-06-08T00:02:00.000Z')
+    });
     const ambiguousTask = coreFacade.createCliTask('자료 좀 봐줘', { createdAt: '2026-06-08T00:00:00.000Z' });
     assert.equal(ambiguousTask.request.source.type, InputSource.CLI);
     assert.equal(ambiguousTask.request.source.module, ModuleId.CORE);
@@ -1770,7 +1938,8 @@ await test('A core runtime, CLI intake, ambiguity resolver, capability request, 
       approvalId: task.approvalCard.approvalId,
       taskId: task.taskId,
       decision: ApprovalDecision.APPROVE,
-      deviceId: 'local_cli'
+      deviceId: 'local_cli',
+      decidedAt: '2026-06-08T00:02:00.000Z'
     });
     assert.equal(coreFacade.submitApprovalDecision(decision).status, TaskStatus.APPROVED);
     const capabilityRequest = coreFacade.createCapabilityRequest(task.taskId, decision);
@@ -1848,16 +2017,21 @@ await test('A Core service lifecycle planner creates Windows service commands an
     action: 'install',
     cwd: process.cwd(),
     logs: {
-      adminTokenHash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+      adminTokenHash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      integrationHandoffTokenHash: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
     }
   });
   assert.equal(plan.planVersion, 'a-core-service-lifecycle-plan-v1');
   assert.equal(plan.localOnly, true);
   assert.equal(plan.commands.some((command) => command.includes('New-Service')), true);
   assert.equal(plan.commands.some((command) => command.includes('sc.exe failure')), true);
+  assert.equal(plan.serviceAccount, 'virtual');
+  assert.equal(plan.commands.some((command) => command.includes('NT SERVICE\\JARVISCoreRuntime')), true);
+  assert.equal(plan.commands.some((command) => command.includes('sc.exe sidtype')), true);
   assert.equal(plan.entryPath.endsWith(join('scripts', 'core-service-runtime.mjs')), true);
   assert.equal(plan.environment.JARVIS_CORE_WORKER_DAEMON_AUTOSTART, 'true');
   assert.equal(plan.environment.JARVIS_CORE_WORKER_QUEUE_STORE.endsWith('core-worker-queue.json'), true);
+  assert.equal(plan.environment.JARVIS_CORE_INTEGRATION_VAULT, '%ProgramData%\\JARVIS\\CoreRuntime\\JARVISCoreRuntime\\integrations\\credentials.dpapi.json');
 
   const readiness = await verifyCoreServiceReadiness({
     plan,
@@ -1871,6 +2045,15 @@ await test('A Core service lifecycle planner creates Windows service commands an
 
   const statusPlan = createCoreServiceLifecyclePlan({ action: 'status' });
   assert.equal(statusPlan.commands.some((command) => command.includes('Get-CimInstance Win32_Service')), true);
+  assert.equal(statusPlan.commands.some((command) => command.includes('StartName')), true);
+  const updatePlan = createCoreServiceLifecyclePlan({ action: 'update' });
+  assert.equal(updatePlan.serviceAccount, 'preserve');
+  assert.equal(updatePlan.environment.JARVIS_CORE_INTEGRATION_VAULT, '');
+  assert.equal(updatePlan.commands.some((command) => command.includes('obj=')), false);
+  assert.throws(
+    () => createCoreServiceLifecyclePlan({ action: 'update', serviceAccount: 'virtual' }),
+    { code: 'A_CORE_SERVICE_ACCOUNT_MIGRATION_REQUIRED' }
+  );
 });
 
 await test('A Core service package writes install verification runbook artifacts', async () => {
@@ -1881,6 +2064,7 @@ await test('A Core service package writes install verification runbook artifacts
       outputDir: dir,
       logs: {
         adminTokenHash: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+        integrationHandoffTokenHash: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
         workerDaemonIntervalMs: 50,
         workerDaemonDrainLimit: 2
       },
@@ -1893,6 +2077,7 @@ await test('A Core service package writes install verification runbook artifacts
     assert.equal(plan.manifest.environment.JARVIS_CORE_WORKER_DAEMON_AUTOSTART, 'true');
     assert.equal(plan.manifest.environment.JARVIS_CORE_WORKER_DAEMON_INTERVAL_MS, '50');
     assert.equal(plan.manifest.environment.JARVIS_CORE_WORKER_DAEMON_DRAIN_LIMIT, '2');
+    assert.equal(plan.manifest.environment.JARVIS_CORE_INTEGRATION_HANDOFF_TOKEN_SHA256, '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef');
     assert.equal(plan.manifest.files.includes('verify-installed-core-service.ps1'), true);
     assert.equal(plan.manifest.files.includes('run-installed-service-smoke.ps1'), true);
     assert.equal(plan.manifest.files.includes('run-installed-service-soak.ps1'), true);
@@ -1902,6 +2087,9 @@ await test('A Core service package writes install verification runbook artifacts
     assert.equal(plan.manifest.files.includes('build-service-host.ps1'), true);
     assert.equal(plan.manifest.files.includes('install-all.ps1'), true);
     assert.equal(plan.manifest.serviceHostExecutable, 'JarvisCoreRuntimeHost.exe');
+    assert.equal(plan.manifest.serviceAccount, 'virtual');
+    assert.equal(plan.manifest.updateServiceAccount, 'preserve');
+    assert.equal(plan.manifest.safety.defaultServiceAccount, 'per-service-virtual-account');
     assert.match(plan.manifest.nodeExecutable, /node(?:\.exe)?$/i);
     assert.equal(plan.manifest.safety.actualServiceInstallRequiresAdministrator, true);
     assert.equal(plan.manifest.safety.fullAgRuntimeEntry, true);
@@ -1913,12 +2101,33 @@ await test('A Core service package writes install verification runbook artifacts
     assert.match(plan.files['install-service.ps1'], /Invoke-ScConfig/);
     assert.match(plan.files['install-service.ps1'], /LASTEXITCODE/);
     assert.match(plan.files['install-service.ps1'], /Stop-ServiceIfRunning/);
+    assert.match(plan.files['install-service.ps1'], /NT SERVICE\\JARVISCoreRuntime/);
+    assert.match(plan.files['install-service.ps1'], /Core service already exists\. Use update-service\.ps1/);
+    assert.match(plan.files['install-service.ps1'], /\$serviceAccountName = 'NT SERVICE\\JARVISCoreRuntime'/);
+    assert.match(plan.files['install-service.ps1'], /StartupType Manual -BinaryPathName/);
+    assert.match(plan.files['install-service.ps1'], /sc\.exe sidtype \$serviceName unrestricted/);
+    assert.match(plan.files['install-service.ps1'], /icacls\.exe/);
+    assert.match(plan.files['install-service.ps1'], /Grant-CoreRuntimePath \$workspaceRoot "RX"/);
+    assert.match(plan.files['install-service.ps1'], /Grant-CoreRuntimePath \$auditRoot "M"/);
+    assert.match(plan.files['install-service.ps1'], /ProgramData/);
+    assert.equal(plan.manifest.environment.JARVIS_CORE_INTEGRATION_VAULT, '%ProgramData%\\JARVIS\\CoreRuntime\\JARVISCoreRuntime\\integrations\\credentials.dpapi.json');
+    assert.match(plan.files['verify-installed-core-service.ps1'], /service-logon-account/);
+    assert.match(plan.files['verify-installed-core-service.ps1'], /service-sid-type/);
+    assert.equal(plan.files['verify-installed-core-service.ps1'].includes('if ($actualServiceAccount -match "^NT SERVICE\\\\") {'), true);
+    assert.match(plan.files['collect-core-logs.ps1'], /ProgramData/);
+    assert.match(plan.files['update-service.ps1'], /Get-CimInstance Win32_Service/);
+    assert.doesNotMatch(plan.files['update-service.ps1'], /sc\.exe config \$serviceName obj=/);
+    assert.match(plan.files['README-install.md'], /Updates preserve the existing service identity by default/);
     assert.match(plan.files['service-host.cs'], /ServiceBase/);
+    assert.match(plan.files['service-host.cs'], /Environment\.SpecialFolder\.CommonApplicationData/);
     assert.match(plan.files['service-host.cs'], /private volatile bool stopping = false/);
     assert.match(plan.files['service-host.cs'], /child\.Exited \+=/);
     assert.match(plan.files['service-host.cs'], /Environment\.Exit\(exitCode\)/);
     assert.match(plan.files['service-host.cs'], /stopping = true/);
     assert.match(plan.files['service-host.cs'], /core-service-runtime\.mjs/);
+    assert.match(plan.files['service-host.cs'], /JARVIS_WINDOWS_SERVICE/);
+    assert.match(plan.files['service-host.cs'], /JARVIS_CORE_INTEGRATION_HANDOFF_TOKEN_SHA256/);
+    assert.doesNotMatch(plan.files['service-host.cs'], /<set-integration-handoff-token-sha256-before-broker-use>/);
     assert.doesNotMatch(plan.files['service-host.cs'], /<set-admin-token-sha256-before-install>/);
     assert.match(plan.files['build-service-host.ps1'], /System\.ServiceProcess\.dll/);
     assert.match(plan.files['build-service-host.ps1'], /LASTEXITCODE/);
@@ -1930,10 +2139,10 @@ await test('A Core service package writes install verification runbook artifacts
     assert.match(plan.files['core-admin-token.ps1'], /ConvertFrom-SecureString/);
     assert.match(plan.files['run-installed-service-smoke.ps1'], /installed-service-smoke\.json/);
     assert.match(plan.files['run-installed-service-smoke.ps1'], /rawText = "list files"/);
-    assert.doesNotMatch(plan.files['run-installed-service-smoke.ps1'], /[^\x00-\x7F]/);
+    assert.doesNotMatch(plan.files['run-installed-service-smoke.ps1'].replace(/^\uFEFF/u,''), /[^\x00-\x7F]/);
     assert.match(plan.files['run-installed-service-soak.ps1'], /installed-service-soak\.json/);
     assert.match(plan.files['run-installed-service-soak.ps1'], /rawText = "list files"/);
-    assert.doesNotMatch(plan.files['run-installed-service-soak.ps1'], /[^\x00-\x7F]/);
+    assert.doesNotMatch(plan.files['run-installed-service-soak.ps1'].replace(/^\uFEFF/u,''), /[^\x00-\x7F]/);
     assert.match(plan.files['install-all.ps1'], /verify-package\.ps1/);
     assert.match(plan.files['install-all.ps1'], /configure-core-admin-token\.ps1/);
 
@@ -2012,7 +2221,7 @@ await test('A Core service runtime entry starts full A-G worker daemon', async (
 
     let detail = null;
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      detail = await getJson(`${service.baseUrl}/tasks/${created.taskId}`);
+      detail = await getJson(`${service.baseUrl}/tasks/${created.taskId}`, 'service-runtime-token');
       if (detail.status === TaskStatus.COMPLETED) break;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
     }
@@ -2076,7 +2285,7 @@ await test('A Core service soak runs daemon watchdog across queued tasks', async
       taskCount: 3,
       intervalMs: 20,
       drainLimit: 1,
-      durationMs: 500
+      durationMs: 1200
     });
 
     assert.equal(report.reportVersion, 'a-core-service-soak-report-v1');
@@ -2116,7 +2325,7 @@ await test('A Core service release dossier gates package smoke and soak evidence
       taskCount: 2,
       intervalMs: 20,
       drainLimit: 1,
-      durationMs: 350
+      durationMs: 1200
     });
 
     assert.equal(report.reportVersion, 'a-core-service-release-dossier-report-v1');
@@ -2374,6 +2583,16 @@ await test('A Core HTTP API exposes task flow and admin diagnostics', async () =
     const created = await postJson(`${baseUrl}/tasks`, { rawText: '엑셀 만들어' });
     assert.equal(created.status, TaskStatus.WAITING_APPROVAL);
     assert.equal(created.plan.action.toolName, 'excel.createWorkbook');
+    coreFacade.getTask(created.taskId).compensationReplay = {
+      replayVersion: 'a-node-compensation-replay-v1',
+      rollbackProof: {
+        rolledBack: [{ undoJournalId: 'undo_http_detail_fixture' }],
+        plan: { chain: { status: 'valid' } }
+      }
+    };
+    const detailed = await getJson(`${baseUrl}/tasks/${created.taskId}`, 'test-admin-token');
+    assert.equal(detailed.compensationReplay.replayVersion, 'a-node-compensation-replay-v1');
+    assert.equal(detailed.compensationReplay.rollbackProof.rolledBack.length, 1);
 
     const controlCenterCreated = await postJson(`${baseUrl}/tasks`, {
       rawText: '파일 목록 보여줘',
@@ -2392,7 +2611,7 @@ await test('A Core HTTP API exposes task flow and admin diagnostics', async () =
     assert.equal(controlCenterCreated.request.metadata.submittedBy, 'jarvis-control-center');
     assert.equal(controlCenterCreated.request.metadata.smoke, 'http-contract');
 
-    const listed = await getJson(`${baseUrl}/tasks`);
+    const listed = await getJson(`${baseUrl}/tasks`, 'test-admin-token');
     assert.equal(listed.items.some((item) => item.taskId === created.taskId), true);
 
     const approved = await postJson(`${baseUrl}/tasks/${created.taskId}/approve`, {
@@ -2401,7 +2620,7 @@ await test('A Core HTTP API exposes task flow and admin diagnostics', async () =
     });
     assert.equal(approved.status, TaskStatus.APPROVED);
 
-    const resume = await getJson(`${baseUrl}/tasks/${created.taskId}/resume`);
+    const resume = await getJson(`${baseUrl}/tasks/${created.taskId}/resume`, 'test-admin-token');
     assert.equal(resume.resumable, true);
 
     const rejectedDiagnostics = await getJson(`${baseUrl}/admin/diagnostics`);
@@ -2451,6 +2670,7 @@ await test('A Core HTTP API runs approved tasks through the orchestration worker
         assert.equal(openApi.paths['/worker/queue/drain'].post.operationId, 'drainCoreWorkerQueue');
         assert.equal(openApi.paths['/worker/leases'].get.operationId, 'getCoreWorkerLeases');
         assert.equal(openApi.paths['/worker/daemon'].get.operationId, 'getCoreWorkerDaemon');
+        assert.equal(openApi.paths['/tasks/{taskId}/compensation/plan'].get.operationId, 'previewCoreCompensationReplay');
         const leases = await getJson(`${baseUrl}/worker/leases`);
         assert.equal(leases.leaseTableVersion, 'a-worker-lease-table-v1');
         const rejectedDaemonStatus = await getJson(`${baseUrl}/worker/daemon`);
@@ -2461,7 +2681,7 @@ await test('A Core HTTP API runs approved tasks through the orchestration worker
           decision: ApprovalDecision.APPROVE,
           userConfirmation: { confirmed: true }
         });
-        const detail = await getJson(`${baseUrl}/tasks/${created.taskId}`);
+        const detail = await getJson(`${baseUrl}/tasks/${created.taskId}`, 'test-admin-token');
 
         assert.equal(run.success, true);
         assert.equal(run.status, TaskStatus.COMPLETED);
@@ -2703,7 +2923,7 @@ await test('A Core API type generator emits static operation and route unions', 
 });
 
 await test('A core replans edited approvals and keeps clarification evidence', () => {
-  const { coreFacade } = createAgRuntime();
+  const { coreFacade } = createAgRuntime({ env: {} });
   const task = coreFacade.createTask('자료 좀 봐줘', { createdAt: new Date().toISOString() });
   assert.equal(task.ambiguity.ambiguous, true);
   assert.ok(task.ambiguity.clarificationRequest.question.length > 0);
@@ -2856,7 +3076,7 @@ await test('A SkillRouter uses document-style manifests and capability matrix me
 });
 
 await test('A SkillRouter verifies signed manifests, migrates legacy permissions, and blocks disabled skills', () => {
-  const signedSkill = structuredClone(defaultSkillManifest[0]);
+  const signedSkill = structuredClone(defaultSkillManifest.find(skill=>skill.skillId==='excel_workbook_skill'));
   signedSkill.signature = SkillRouter.signManifestEntry(signedSkill, 'jarvis-local-dev-key');
   const signedRouter = new SkillRouter({
     manifest: [signedSkill],
@@ -2873,13 +3093,13 @@ await test('A SkillRouter verifies signed manifests, migrates legacy permissions
     (error) => error.code === 'A_SKILL_MANIFEST_SIGNATURE_INVALID'
   );
 
-  const disabledSkill = structuredClone(defaultSkillManifest[4]);
+  const disabledSkill = structuredClone(defaultSkillManifest.find(skill=>skill.actionTypes?.includes(ActionType.BROWSER_SEARCH))??defaultSkillManifest.find(skill=>skill.toolName==='browser.search'));
   disabledSkill.status = 'disabled';
   const disabledRouter = new SkillRouter({ manifest: [disabledSkill] });
   assert.equal(disabledRouter.disabledSkills()[0].skillId, disabledSkill.skillId);
   assert.equal(disabledRouter.route({ actionType: ActionType.BROWSER_SEARCH, category: 'browser', slots: {} }).routable, false);
 
-  const legacySkill = structuredClone(defaultSkillManifest[1]);
+  const legacySkill = structuredClone(defaultSkillManifest.find(skill=>skill.toolName==='filesystem.createTextFile'));
   delete legacySkill.capability;
   legacySkill.permissions = {
     readsLocalFiles: false,
@@ -2897,7 +3117,7 @@ await test('A SkillRouter verifies signed manifests, migrates legacy permissions
 });
 
 await test('A SkillRouter installs signed plugin bundles with sandbox and compatibility evidence', () => {
-  const pluginSkill = structuredClone(defaultSkillManifest[1]);
+  const pluginSkill = structuredClone(defaultSkillManifest.find(skill=>skill.toolName==='filesystem.createTextFile'));
   pluginSkill.skillId = 'markdown_report_plugin_skill';
   pluginSkill.version = '1.1.0';
   pluginSkill.label = 'Markdown Report Plugin';
@@ -3540,13 +3760,16 @@ await test('E policy blocks forbidden actions and rejects Tier 3 mobile approval
   const riskMatrix = policyRuntime.riskClassifier.matrix();
   assert.equal(riskMatrix.some((entry) => entry.actionType === ActionType.CREATE_FILE && entry.tier === 5), true);
   assert.equal(riskMatrix.some((entry) => entry.actionType === ActionType.UPLOAD_FILE && entry.tier === 3), true);
+  assert.equal(riskMatrix.some((entry) => entry.actionType === ActionType.SEND_EMAIL && entry.tier === 2), true);
   assert.equal(riskMatrix.some((entry) => entry.actionType === ActionType.DELETE_FILE && entry.blocked === true), true);
   const uploadRisk = policyRuntime.riskClassifier.classify({ actionType: ActionType.UPLOAD_FILE });
   assert.equal(uploadRisk.evidence.source, 'policy-as-code:risk.tiersByAction');
   assert.equal(uploadRisk.reasons.includes(`POLICY_TIER_3_${ActionType.UPLOAD_FILE}`), true);
-  const task = coreFacade.createTask('파일을 메일로 전송해');
+  const task = coreFacade.createTask('주보.pdf를 밴드에 공유해');
 
   assert.equal(task.approvalCard.riskTier, 3);
+  assert.equal(task.approvalCard.externalTransfer, true);
+  assert.equal(task.approvalCard.rollbackAvailable, false);
   const decision = createApprovalDecision({
     approvalId: task.approvalCard.approvalId,
     taskId: task.taskId,
@@ -3557,6 +3780,12 @@ await test('E policy blocks forbidden actions and rejects Tier 3 mobile approval
   const validation = policyRuntime.validateApprovalDecision({ decision, riskTier: task.approvalCard.riskTier });
   assert.equal(validation.success, false);
   assert.equal(validation.error.code, 'E_POLICY_MOBILE_APPROVAL_BLOCKED');
+
+  const emailTask = coreFacade.createTask('파일을 메일로 전송해');
+  assert.equal(emailTask.approvalCard.riskTier, 2);
+  assert.equal(emailTask.approvalCard.externalTransfer, true);
+  assert.equal(emailTask.approvalCard.rollbackAvailable, false);
+  assert.equal(emailTask.policy.approval.approvalMode, 'pc_only');
 
   const deleteTask = coreFacade.createTask('다운로드 폴더 삭제');
   assert.equal(deleteTask.policy.decision, 'block');
@@ -4926,6 +5155,96 @@ await test('B undo journal persists rollback records across pc-agent restarts', 
   }
 });
 
+await test('B rollback preview simulates dependent undo steps in exact journal order', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-pc-agent-dependent-rollback-'));
+  try {
+    const journalPath = join(dir, 'undo-journal.jsonl');
+    const stagingPath = join(dir, 'staging', 'artifact.txt');
+    const deliveredPath = join(dir, 'delivered', 'artifact.txt');
+    await mkdir(dirname(deliveredPath), { recursive: true });
+    await mkdir(dirname(stagingPath), { recursive: true });
+    await writeFile(stagingPath, 'dependent rollback', 'utf8');
+    const fixedClock = () => new Date('2026-08-19T00:00:00.000Z');
+    const journal = new UndoJournal({ journalPath, clock: fixedClock });
+    journal.record({ taskId: 'task_dependent_rollback', action: 'delete_created_file', path: stagingPath });
+    await rename(stagingPath, deliveredPath);
+    journal.record({ taskId: 'task_dependent_rollback', action: 'move_back', from: stagingPath, to: deliveredPath });
+
+    const runtime = createAgRuntime({ allowedRoots: [dir], auditRoot: dir, undoJournalPath: journalPath });
+    const pending = runtime.pcAgent.undoJournal.list().filter((entry) => entry.taskId === 'task_dependent_rollback');
+    assert.deepEqual(pending.map((entry) => entry.action), ['move_back', 'delete_created_file']);
+
+    const plan = await runtime.pcAgent.rollbackPlan('task_dependent_rollback');
+    assert.equal(plan.success, true);
+    assert.equal(plan.planningMode, 'sequential-virtual-state-v1');
+    assert.equal(plan.readyCount, 2);
+    assert.equal(plan.noopCount, 0);
+    assert.equal(plan.blockedCount, 0);
+    assert.deepEqual(plan.steps.map((step) => step.action), ['move_back', 'delete_created_file']);
+
+    const rollback = await runtime.pcAgent.rollbackTask('task_dependent_rollback');
+    assert.equal(rollback.success, true);
+    assert.equal(rollback.rolledBack.length, 2);
+    assert.equal(await pathExists(stagingPath), false);
+    assert.equal(await pathExists(deliveredPath), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('B undo journal serializes stale writers before appending a new hash head', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-pc-agent-undo-lock-'));
+  try {
+    const journalPath = join(dir, 'undo-journal.jsonl');
+    const firstWriter = new UndoJournal({ journalPath });
+    const staleWriter = new UndoJournal({ journalPath });
+    firstWriter.record({ taskId: 'task_writer_a', action: 'delete_created_file', path: join(dir, 'a.txt') });
+    staleWriter.record({ taskId: 'task_writer_b', action: 'delete_created_file', path: join(dir, 'b.txt') });
+
+    const reloaded = new UndoJournal({ journalPath });
+    const chain = reloaded.verifyChain();
+    assert.equal(chain.status, 'valid');
+    assert.equal(chain.integrityMode, 'linear-chain');
+    assert.equal(chain.forkCount, 0);
+    assert.equal(chain.hashedRecords, 2);
+    assert.equal(new Set(reloaded.records.map((record) => record.undoJournalId)).size, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('B undo journal recognizes an intact historical concurrent branch without hiding tampering', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-pc-agent-undo-fork-'));
+  try {
+    const journalPath = join(dir, 'undo-journal.jsonl');
+    const builder = new UndoJournal();
+    const root = { recordType: 'undo', undoJournalId: 'undo_root', createdAt: '2026-08-17T00:00:00.000Z', taskId: 'task_root', action: 'delete_created_file', path: join(dir, 'root.txt') };
+    builder.addHash(root);
+    builder.records.push(root);
+    const firstBranch = { recordType: 'undo', undoJournalId: 'undo_branch_a', createdAt: '2026-08-17T00:00:01.000Z', taskId: 'task_branch_a', action: 'delete_created_file', path: join(dir, 'a.txt') };
+    builder.addHash(firstBranch);
+    const originalRoot = builder.records[0];
+    builder.records = [originalRoot];
+    const secondBranch = { recordType: 'undo', undoJournalId: 'undo_branch_b', createdAt: '2026-08-17T00:00:02.000Z', taskId: 'task_branch_b', action: 'delete_created_file', path: join(dir, 'b.txt') };
+    builder.addHash(secondBranch);
+    await writeFile(journalPath, `${[originalRoot, firstBranch, secondBranch].map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+    const recovered = new UndoJournal({ journalPath }).verifyChain();
+    assert.equal(recovered.status, 'valid');
+    assert.equal(recovered.integrityMode, 'append-only-dag');
+    assert.equal(recovered.forkCount, 1);
+    assert.equal(recovered.failures.length, 0);
+
+    const tamperedBody = (await readFile(journalPath, 'utf8')).replace('delete_created_file', 'delete_created_file_tampered');
+    await writeFile(journalPath, tamperedBody, 'utf8');
+    const tampered = new UndoJournal({ journalPath }).verifyChain();
+    assert.equal(tampered.status, 'invalid');
+    assert.equal(tampered.failures.some((failure) => failure.reason === 'hash-mismatch'), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test('B rollback transaction log locks active rollbacks and records partial skipped steps', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-pc-agent-rollback-tx-'));
   try {
@@ -6080,6 +6399,18 @@ await test('B pc-agent service planner creates safe dry-run install, status, and
   assert.equal(runtimeOptions.allowedRoots.length, 2);
   assert.equal(runtimeOptions.auditRoot.endsWith('audit'), true);
   assert.equal(runtimeOptions.packetQueuePath.endsWith('packet-queue.jsonl'), true);
+  const isolatedRuntimeOptions = pcAgentRuntimeOptionsFromConfig({
+    daemonConfig,
+    env: {
+      JARVIS_TEST_MODE: '1',
+      JARVIS_TEST_AUDIT_ROOT: dirPathForTest('isolated-test-runtime'),
+      PORT: '43117'
+    }
+  });
+  assert.equal(isolatedRuntimeOptions.trustRoot.includes('isolated-test-runtime'), true);
+  assert.equal(isolatedRuntimeOptions.trustRoot.includes('pc-agent-43117'), true);
+  assert.equal(isolatedRuntimeOptions.trustRoot.endsWith('trust'), true);
+  assert.notEqual(isolatedRuntimeOptions.trustRoot, join(process.cwd(), 'logs', 'trust'));
   const supervisorOptions = serviceSupervisorOptionsFromConfig({
     daemonConfig,
     env: { JARVIS_QUEUE_DRAIN_INTERVAL_MS: '250', JARVIS_QUEUE_DRAIN_BATCH_LIMIT: '7' }
@@ -6145,26 +6476,51 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(packagePlan.manifest.serviceHostExecutable, 'JarvisPcAgentServiceHost.exe');
     assert.match(packagePlan.manifest.nodeExecutable, /node(?:\.exe)?$/i);
     assert.equal(packagePlan.manifest.fileIntegrity['install-service.ps1'].sha256.length, 64);
+    assert.equal(packagePlan.manifest.fileIntegrity['README-install.md'].sha256.length, 64);
     assert.equal(packagePlan.manifest.signature.digest.length, 64);
-    assert.equal(packagePlan.files['install-service.ps1'].includes('Administrator PowerShell is required'), true);
+    assert.equal(packagePlan.files['install-service.ps1'].includes('관리자 권한 PowerShell이 필요합니다'), true);
     assert.equal(packagePlan.files['install-service.ps1'].includes('JarvisPcAgentServiceHost.exe'), true);
     assert.equal(packagePlan.files['install-service.ps1'].includes('Convert-ToScStartType'), true);
     assert.equal(packagePlan.files['install-service.ps1'].includes('"manual" { return "demand" }'), true);
     assert.equal(packagePlan.files['install-service.ps1'].includes('Invoke-ScConfig'), true);
     assert.equal(packagePlan.files['install-service.ps1'].includes('LASTEXITCODE'), true);
     assert.equal(packagePlan.files['install-service.ps1'].includes('Stop-ServiceIfRunning'), true);
+    assert.equal(packagePlan.files['install-service.ps1'].includes('verify-package.ps1'), true);
+    assert.equal(packagePlan.files['install-service.ps1'].includes('& (Join-Path $root "build-service-host.ps1")'), false);
     assert.equal(packagePlan.files['service-host.cs'].includes('ServiceBase'), true);
     assert.equal(packagePlan.files['service-host.cs'].includes('private volatile bool stopping = false'), true);
     assert.equal(packagePlan.files['service-host.cs'].includes('child.Exited +='), true);
     assert.equal(packagePlan.files['service-host.cs'].includes('Environment.Exit(exitCode)'), true);
     assert.equal(packagePlan.files['service-host.cs'].includes('stopping = true'), true);
-    assert.equal(packagePlan.files['service-host.cs'].includes('apps/pc-agent/src/main.mjs') || packagePlan.files['service-host.cs'].includes('apps\\pc-agent\\src\\main.mjs'), true);
+    // The native host starts the integrity-checking installed launcher, which
+    // imports main from its own payload. A builder repository is not a runtime dependency.
+    assert.equal(packagePlan.manifest.runtimeEntry, 'pc-agent-runtime/launch.mjs');
+    assert.match(packagePlan.files['service-host.cs'], /psi\.Arguments = Quote\(Path\.Combine\(packageRoot,"pc-agent-runtime","launch\.mjs"\)\)/);
+    assert.doesNotMatch(packagePlan.files['service-host.cs'], /psi\.Arguments[^\n]*main\.mjs/);
+    const runtimeLauncher = String(packagePlan.files[packagePlan.manifest.runtimeEntry]);
+    assert.match(runtimeLauncher, /await import\('\.\/apps\/pc-agent\/src\/main\.mjs'\)/);
+    assert.match(runtimeLauncher, /PC_RUNTIME_INTEGRITY_FAILED/);
+    assert.match(runtimeLauncher, /PC_RUNTIME_STATE_ROOT_IS_CODE/);
+    const launcherSha256=createHash('sha256').update(runtimeLauncher).digest('hex');
+    const pinnedLauncher=packagePlan.files['service-host.cs'].match(/VerifyRuntimeLauncher\(packageRoot,@?"([a-f0-9]{64})"\);/);
+    assert.equal(pinnedLauncher?.[1],launcherSha256);
+    assert.ok(packagePlan.files['service-host.cs'].indexOf('VerifyRuntimeLauncher(packageRoot,')
+      < packagePlan.files['service-host.cs'].indexOf('child.Start();'));
+    for (const path of [packagePlan.manifest.runtimeEntry, 'pc-agent-runtime/apps/pc-agent/src/main.mjs']) {
+      assert.ok(packagePlan.manifest.files.includes(path));
+      assert.equal(packagePlan.manifest.fileIntegrity[path].sha256,
+        createHash('sha256').update(packagePlan.files[path]).digest('hex'));
+    }
     assert.equal(packagePlan.files['build-service-host.ps1'].includes('System.ServiceProcess.dll'), true);
     assert.equal(packagePlan.files['build-service-host.ps1'].includes('LASTEXITCODE'), true);
     assert.equal(packagePlan.files['update-service.ps1'].includes('sc.exe config'), true);
     assert.equal(packagePlan.files['restart-service.ps1'].includes('Restart-Service'), true);
-    assert.equal(packagePlan.files['verify-package.ps1'].includes('Digest mismatch'), true);
+    assert.equal(packagePlan.files['verify-package.ps1'].includes('파일 무결성 값이 일치하지 않습니다'), true);
     assert.equal(packagePlan.files['verify-package.ps1'].includes('$root = Split-Path'), true);
+    assert.equal(packagePlan.files['verify-package.ps1'].includes('[switch]$SourceOnly'), true);
+    assert.equal(packagePlan.files['verify-package.ps1'].includes('runtime-integrity.psd1'), true);
+    assert.equal(packagePlan.files['verify-package.ps1'].includes('JarvisPcAgentServiceHost.exe'), true);
+    assert.equal(packagePlan.files['verify-package.ps1'].includes('설치 프로그램 서명이 유효하지 않습니다'), true);
     assert.equal(packagePlan.files['verify-installed-service.ps1'].includes('Invoke-RestMethod'), true);
     assert.equal(packagePlan.files['verify-installed-service.ps1'].includes('service-smoke-report.json'), true);
     assert.equal(packagePlan.files['verify-installed-service.ps1'].includes('undo-chain'), true);
@@ -6178,14 +6534,26 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(packagePlan.files['install-verify-release.ps1'].includes('build-nsis-installer.ps1'), true);
     assert.equal(packagePlan.files['install-verify-release.ps1'].includes('create-dev-signing-cert.ps1'), true);
     assert.equal(packagePlan.files['install-verify-release.ps1'].includes('sign-artifacts.ps1'), true);
+    assert.equal(packagePlan.files['install-verify-release.ps1'].includes('build-service-host.ps1'), true);
+    assert.equal(packagePlan.files['install-verify-release.ps1'].includes('-RuntimeOnly'), true);
+    assert.equal(packagePlan.files['install-verify-release.ps1'].includes('-SetupOnly'), true);
+    assert.equal(packagePlan.files['install-verify-release.ps1'].indexOf('sign-runtime-artifacts') < packagePlan.files['install-verify-release.ps1'].indexOf('build-nsis-installer'), true);
     assert.equal(packagePlan.files['install-verify-release.ps1'].includes('verify-release-gate.ps1'), true);
     assert.equal(packagePlan.files['install-verify-release.ps1'].includes('build-release-evidence.ps1'), true);
-    assert.equal(packagePlan.files['install-verify-release.ps1'].includes('Administrator PowerShell is required'), true);
-    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('Set-AuthenticodeSignature'), true);
+    assert.equal(packagePlan.files['install-verify-release.ps1'].includes('관리자 권한 PowerShell이 필요합니다'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('windows-sdk-signtool'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('"/fd", "SHA256"'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('"/tr", $TimestampServer, "/td", "SHA256"'), true);
     assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('TimestampServer'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('[switch]$RuntimeOnly'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('[switch]$SetupOnly'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('[switch]$RequireTimestamp'), true);
+    assert.equal(packagePlan.files['sign-artifacts.ps1'].includes('jarvis-pc-agent-runtime-integrity-v1'), true);
     assert.equal(packagePlan.files['verify-signatures.ps1'].includes('Get-AuthenticodeSignature'), true);
     assert.equal(packagePlan.files['production-signing-policy.json'].includes('b-pc-agent-production-signing-policy-v1'), true);
     assert.equal(packagePlan.files['production-signing-policy.json'].includes('requiresTimestamp'), true);
+    assert.equal(packagePlan.files['production-signing-policy.json'].includes('RFC3161'), true);
+    assert.equal(packagePlan.files['production-signing-policy.json'].includes('requiresOnlineRevocationCheck'), true);
     assert.equal(packagePlan.files['verify-production-signing.ps1'].includes('b-pc-agent-production-signing-report-v1'), true);
     assert.equal(packagePlan.files['verify-production-signing.ps1'].includes('production-artifacts-timestamped'), true);
     assert.equal(packagePlan.files['verify-production-signing.ps1'].includes('rawPrivateKeyMaterialStored = $false'), true);
@@ -6200,6 +6568,8 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('installed-service-smoke'), true);
     assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('queue-soak'), true);
     assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('Add-FileCheck "setup-executable" "JARVIS-PC-Agent-Setup.exe" ([bool]$Production)'), true);
+    assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('Add-FileCheck "service-host-executable" "JarvisPcAgentServiceHost.exe"'), true);
+    assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('Add-FileCheck "runtime-integrity-manifest" "runtime-integrity.psd1"'), true);
     assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('signature-artifacts-signed'), true);
     assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('production-signing-readiness'), true);
     assert.equal(packagePlan.files['verify-release-gate.ps1'].includes('trust-dev-signing-cert.ps1 -TrustCurrentUser'), true);
@@ -6215,9 +6585,23 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(packagePlan.files['README-install.md'].includes('JARVIS_PC_AGENT_VAULT_KEY_PROVIDER=windows-dpapi'), true);
     assert.equal(packagePlan.files['installer.nsi'].includes('RequestExecutionLevel admin'), true);
     assert.equal(packagePlan.files['installer.nsi'].includes('JARVIS-PC-Agent-Setup.exe'), true);
+    // Exact payload enumeration replaces recursive folder copying with exclusions.
+    assert.equal(packagePlan.manifest.distribution.unlistedFilesIncluded, false);
+    assert.doesNotMatch(packagePlan.files['installer.nsi'], /File \/r/);
+    assert.equal(packagePlan.manifest.distribution.requiredFiles.includes('JARVIS-PC-Agent-Setup.exe'), false);
+    assert.equal(packagePlan.manifest.distribution.optionalFiles.includes('JARVIS-PC-Agent-Setup.exe'), false);
+    assert.doesNotMatch(packagePlan.files['installer.nsi'], /^\s*File[^\n]*"JARVIS-PC-Agent-Setup\.exe"/m);
+    assert.equal(packagePlan.files['installer.nsi'].includes('verify-package.ps1'), true);
+    assert.equal(packagePlan.files['installer.nsi'].includes('start-service.ps1'), true);
+    assert.equal(packagePlan.files['installer.nsi'].includes('build-tray-exe.ps1\' $0'), false);
     assert.equal(packagePlan.files['installer.nsi'].includes('verify-installed-service.ps1'), true);
     assert.equal(packagePlan.files['build-nsis-installer.ps1'].includes('makensis.exe'), true);
+    assert.equal(packagePlan.files['build-nsis-installer.ps1'].includes('LASTEXITCODE'), true);
+    assert.equal(packagePlan.files['build-nsis-installer.ps1'].includes('NSIS 설치 파일 생성에 실패했습니다'), true);
     assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).signableArtifacts.includes('JARVIS-PC-Agent-Setup.exe'), true);
+    assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).signableArtifacts.includes('JarvisPcAgentServiceHost.exe'), true);
+    assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).signableArtifacts.includes('runtime-integrity.psd1'), true);
+    assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).requiredReleaseSteps.includes('build-service-host.ps1'), true);
     assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).requiredReleaseSteps.includes('verify-production-signing.ps1'), true);
     assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).reports.includes('daemon-smoke-report.json'), true);
     assert.equal(JSON.parse(packagePlan.files['release-manifest.json']).reports.includes('queue-soak-report.json'), true);
@@ -6230,10 +6614,26 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(packagePlan.files['tray-agent.ps1'].includes('System.Windows.Forms.NotifyIcon'), true);
     assert.equal(packagePlan.files['tray-agent.cs'].includes('public static class JarvisPcAgentTray'), true);
     assert.equal(packagePlan.files['tray-agent.cs'].includes('NotifyIcon'), true);
-    assert.equal(packagePlan.files['launch-tray.ps1'].includes('-STA'), true);
+    assert.equal(packagePlan.files['launch-tray.ps1'].includes('build-tray-exe.ps1'), false);
+    assert.equal(packagePlan.files['launch-tray.ps1'].includes('verify-package.ps1'), true);
+    assert.equal(packagePlan.files['launch-tray.ps1'].includes('Start-Process $trayExe'), true);
     assert.equal(packagePlan.files['launch-tray.ps1'].includes('JarvisPcAgentTray.exe'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('class JarvisControlWindow'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('-WindowStyle Hidden'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('SetProcessDPIAware'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('XamlReader.Parse'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('EventWaitHandle.OpenExisting'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('JARVIS_CONTROL_CENTER'), true);
+    assert.equal(packagePlan.files['tray-agent.cs'].includes('FlowLayoutPanel'), false);
+    assert.equal(packagePlan.files['tray-agent.xaml'].includes('x:Name="OverviewPage"'), true);
+    assert.equal(packagePlan.files['tray-agent.xaml'].includes('x:Name="ServicePage"'), true);
+    assert.equal(packagePlan.files['tray-agent.xaml'].includes('x:Name="DiagnosticsPage"'), true);
+    assert.equal(packagePlan.files['tray-agent.xaml'].includes('x:Name="SettingsPage"'), true);
+    assert.equal(packagePlan.manifest.files.includes('tray-agent.xaml'), true);
+    assert.equal(packagePlan.files['install-tray-shortcut.ps1'].includes('$shortcut.TargetPath = $trayExe'), true);
     assert.equal(packagePlan.files['build-tray-exe.ps1'].includes('csc.exe'), true);
     assert.equal(packagePlan.files['build-tray-exe.ps1'].includes('JarvisPcAgentTray.exe'), true);
+    assert.equal(packagePlan.files['build-tray-exe.ps1'].includes('PresentationFramework'), true);
     assert.equal(packagePlan.files['build-tray-exe.ps1'].includes('LASTEXITCODE'), true);
     assert.equal(packagePlan.files['install-tray-shortcut.ps1'].includes('JARVIS PC Agent Tray.lnk'), true);
     assert.equal(packagePlan.files['tray-state.json'].includes('jarvis-pc-agent-tray'), true);
@@ -6245,7 +6645,9 @@ await test('B pc-agent installer package and tray state expose installable produ
       outputDir: dir
     });
     assert.equal(written.success, true);
-    assert.equal(written.files.length, 35);
+    assert.equal(written.files.length, packagePlan.manifest.files.length);
+    assert.equal(packagePlan.manifest.files.includes('jarvis.ico'), true);
+    assert.equal(packagePlan.manifest.files.includes('WebView2Loader.dll'), true);
     const manifest = JSON.parse(await readFile(join(dir, 'package-manifest.json'), 'utf8'));
     assert.equal(manifest.safety.bindsTo, '127.0.0.1');
     assert.equal(manifest.fileIntegrity['restart-service.ps1'].sha256.length, 64);
@@ -6262,7 +6664,7 @@ await test('B pc-agent installer package and tray state expose installable produ
     });
     assert.equal(readiness.status, 'ready');
     assert.equal(readiness.checks.some((check) => check.id === 'package-directory' && check.status === 'pass'), true);
-    assert.equal(readiness.checks.some((check) => check.id === 'package-manifest' && check.integrityFiles === 33), true);
+    assert.equal(readiness.checks.some((check) => check.id === 'package-manifest' && check.integrityFiles === Object.keys(packagePlan.manifest.fileIntegrity).length), true);
     const verificationReportPath = join(dir, 'service-verification-report.json');
     const cliReport = await runServicePlanCli(['verify', '--package-dir', dir, '--administrator', '--output', verificationReportPath]);
     assert.equal(cliReport.status, 'ready');
@@ -6273,6 +6675,7 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(daemonSmoke.mode, 'user-process-daemon-smoke');
     assert.equal(daemonSmoke.serviceInstalled, false);
     assert.equal(daemonSmoke.checks.every((check) => check.status === 'pass'), true);
+    assert.equal(daemonSmoke.checks.some((check) => check.id === 'runtime-trust-operational' && check.status === 'pass'), true);
     assert.equal(daemonSmoke.evidence.productGate.productGateVersion, 'b-execution-evidence-product-gate-v1');
     assert.equal(daemonSmoke.evidence.productGate.status, 'passed');
     assert.equal(daemonSmoke.checks.some((check) => check.id === 'evidence-product-gate-passed' && check.status === 'pass'), true);
@@ -6372,7 +6775,7 @@ await test('B pc-agent installer package and tray state expose installable produ
     assert.equal(trayState.menu.some((item) => item.id === 'review-poison-queue' && item.enabled === true), true);
     assert.equal(trayState.menu.some((item) => item.id === 'collect-logs'), true);
     assert.equal(trayState.menu.some((item) => item.id === 'verify-package'), true);
-    assert.equal(trayState.notifications.some((item) => item.title === 'Poison packets need review'), true);
+    assert.equal(trayState.notifications.some((item) => item.title === '격리된 작업 검토 필요'), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -6701,10 +7104,12 @@ await test('D bridge issues signed device tokens and rotates them without retain
 await test('D bridge state cache rebuilds task and replay state from JSONL journal', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-bridge-cache-'));
   try {
+    const clock = () => new Date('2026-06-13T00:00:01.000Z');
     const first = createAgRuntime({
       allowedRoots: [dir],
       auditRoot: dir,
-      outputPath: join(dir, 'cache-output.txt')
+      outputPath: join(dir, 'cache-output.txt'),
+      clock
     }).bridgeRuntime;
     const pairing = first.pairing.start();
     const confirmed = first.pairing.confirm({
@@ -6728,7 +7133,8 @@ await test('D bridge state cache rebuilds task and replay state from JSONL journ
     const second = createAgRuntime({
       allowedRoots: [dir],
       auditRoot: dir,
-      outputPath: join(dir, 'cache-output-2.txt')
+      outputPath: join(dir, 'cache-output-2.txt'),
+      clock
     }).bridgeRuntime;
     assert.equal(second.stateCache.snapshot().tasks.some((task) => task.taskId === created.taskId), true);
     assert.equal(second.stateCache.snapshot().requestIds.includes('req_cache_once'), true);
@@ -8079,7 +8485,7 @@ await test('C mobile session lock gates sensitive approval and execution confirm
 await test('C mobile poison queue screen reviews, requeues, and ignores PC agent dead letters', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-mobile-poison-'));
   try {
-    const { bridgeRuntime, pcAgent } = createAgRuntime({ allowedRoots: [dir], auditRoot: dir });
+    const { bridgeRuntime, pcAgent, policyRuntime } = createAgRuntime({ allowedRoots: [dir], auditRoot: dir });
     const mobile = new MobileAppRuntime({ bridgeRuntime });
     const pairing = bridgeRuntime.pairing.start();
     assert.equal(mobile.pair({ pairingCode: pairing.pairingCode }).success, true);
@@ -8126,11 +8532,22 @@ await test('C mobile poison queue screen reviews, requeues, and ignores PC agent
       taskId: 'task_mobile_poison_requeue',
       action: { actionType: ActionType.CREATE_FILE }
     });
+    const requeueCapabilityToken = policyRuntime.capabilities.issue({
+      taskId: 'task_mobile_poison_requeue',
+      planId: 'plan_mobile_poison_requeue_fixed',
+      approvalId: 'approval_mobile_poison_requeue_fixed',
+      action: {
+        actionType: ActionType.CREATE_FILE,
+        toolName: 'filesystem.createTextFile',
+        skillId: 'jarvis.local.mvp'
+      },
+      allowedPaths: [dir]
+    });
     const requeued = createPoisonQueueScreenViewModel({ mobileRuntime: mobile }).requeue(poisonForRequeue.queueId, {
       note: 'restored required execution fields',
       patch: {
         packetId: 'packet_mobile_poison_requeue_fixed',
-        capabilityToken: { tokenId: 'cap_mobile_poison_fixed' },
+        capabilityToken: requeueCapabilityToken,
         userConfirmation: { confirmed: true },
         action: {
           actionType: ActionType.CREATE_FILE,
@@ -8147,6 +8564,10 @@ await test('C mobile poison queue screen reviews, requeues, and ignores PC agent
     const drainResult = await createPoisonQueueScreenViewModel({ mobileRuntime: mobile }).drainQueue({ limit: 2 });
     assert.equal(drainResult.processed >= 1, true);
     assert.equal(drainResult.after.queue.succeeded >= 1, true);
+    assert.equal(
+      await readFile(join(dir, 'mobile-poison-requeue-fixed.txt'), 'utf8'),
+      'fixed from mobile poison queue'
+    );
     assert.equal(drainResult.refreshState.delta.changed, true);
     assert.equal(['clear', 'warning'].includes(drainResult.refreshState.visualSnapshot.tone), true);
     assert.equal(drainResult.visualRegression.reportVersion, 'c-poison-queue-visual-regression-v1');
@@ -8626,6 +9047,7 @@ await test('C Expo project structure includes document-required screens, compone
   const packageJson = JSON.parse(await readFile('apps/mobile/package.json', 'utf8'));
   const appJson = JSON.parse(await readFile('apps/mobile/app.json', 'utf8'));
   const appSource = await readFile('apps/mobile/src/App.tsx', 'utf8');
+  const androidBuild = await readFile('apps/mobile/android/app/build.gradle', 'utf8');
   assert.equal(packageJson.dependencies.expo.startsWith('^53.'), true);
   assert.equal(Boolean(packageJson.dependencies['expo-secure-store']), true);
   assert.equal(Boolean(packageJson.dependencies['expo-notifications']), true);
@@ -8637,6 +9059,12 @@ await test('C Expo project structure includes document-required screens, compone
   assert.equal(appSource.includes('AppState.addEventListener'), true);
   assert.equal(appSource.includes('app-backgrounded'), true);
   assert.equal(appSource.includes('lastLifecycleLockReason'), true);
+  const releaseBlockStart = androidBuild.indexOf('        release {');
+  const releaseBlockEnd = androidBuild.indexOf('            shrinkResources', releaseBlockStart);
+  const releaseBlock = androidBuild.slice(releaseBlockStart, releaseBlockEnd);
+  assert.match(releaseBlock, /if \(jarvisE2EPackage\)/);
+  assert.match(releaseBlock, /applicationIdSuffix "\.e2e"/);
+  assert.match(releaseBlock, /versionNameSuffix "-e2e"/);
 
   const requiredFiles = [
     'apps/mobile/src/App.tsx',
@@ -8681,10 +9109,13 @@ await test('C Expo project structure includes document-required screens, compone
 await test('C mobile verification harness produces Expo, runtime, notification, and device-probe evidence', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-mobile-verify-report-'));
   try {
+    const fieldEvidenceRoot = join(dir, 'field-evidence-must-not-be-written');
     const report = await runMobileVerification({
       jsonPath: join(dir, 'mobile-verification-report.json'),
       markdownPath: join(dir, 'mobile-verification-report.md'),
-      htmlPath: join(dir, 'mobile-verification-report.html')
+      htmlPath: join(dir, 'mobile-verification-report.html'),
+      probeExternalDevices: false,
+      deviceEvidenceRoot: fieldEvidenceRoot
     });
     assert.equal(report.status, 'passed');
     assert.equal(report.project.slug, 'jarvis-mobile');
@@ -8796,9 +9227,9 @@ await test('C mobile verification harness produces Expo, runtime, notification, 
     assert.equal(report.nativeReadiness.checks.some((item) => item.id === 'native:android-permission:POST_NOTIFICATIONS' && item.passed), true);
     assert.equal(report.screenReadiness.status, 'passed');
     assert.equal(report.screenReadiness.checks.some((item) => item.id === 'screen:test-id:jarvis-mobile-root' && item.passed), true);
-    assert.equal(report.screenReadiness.checks.some((item) => item.id === 'screen:test-id:route-button-CommandScreen' && item.passed), true);
-    assert.equal(report.screenReadiness.checks.some((item) => item.id === 'screen:test-id:native-runtime-probe' && item.passed), true);
-    assert.equal(report.checks.some((item) => item.id === 'product:native-runtime-probe-ui' && item.passed), true);
+    assert.equal(report.screenReadiness.checks.some((item) => item.id === 'screen:test-id:home-command-input' && item.passed), true);
+    assert.equal(report.screenReadiness.checks.some((item) => item.id === 'screen:test-id:home-conversation-button' && item.passed), true);
+    assert.equal(report.checks.some((item) => item.id === 'product:home-surface-contract' && item.passed), true);
     assert.equal(report.productMatrix.packageName, 'local.eureka.jarvis');
     assert.equal(report.productMatrix.commands.some((item) => item.id === 'expo-prebuild-android'), true);
     assert.equal(report.productMatrix.commands.some((item) => item.id === 'android-platform-tools-setup'), true);
@@ -8845,7 +9276,7 @@ await test('C mobile verification harness produces Expo, runtime, notification, 
     assert.equal(report.checks.some((item) => item.id === 'device:actual-device' && item.severity === 'product-readiness'), true);
     const plan = createMobileDeviceVerificationPlan({ packageName: report.productMatrix.packageName });
     assert.equal(plan.steps.some((step) => step.command.includes('local.eureka.jarvis')), true);
-    assert.equal(plan.steps.some((step) => step.id === 'native.runtime.probe'), true);
+    assert.equal(plan.steps.some((step) => step.id === 'home.surface.contract'), true);
     assert.ok((await readFile(join(dir, 'mobile-verification-report.md'), 'utf8')).includes('Mobile Verification'));
     assert.ok((await readFile(join(dir, 'mobile-verification-report.html'), 'utf8')).includes('Runtime Scenario'));
     assert.ok((await readFile(join(dir, 'mobile-android-setup-report.md'), 'utf8')).includes('Android Platform Tools'));
@@ -8854,6 +9285,8 @@ await test('C mobile verification harness produces Expo, runtime, notification, 
     assert.ok((await readFile(join(dir, 'mobile-release-preflight-report.md'), 'utf8')).includes('Mobile Release Preflight'));
     assert.ok((await readFile(join(dir, 'mobile-device-smoke-report.md'), 'utf8')).includes('Mobile Device Smoke'));
     assert.equal(Array.isArray(report.deviceSmoke.nextActions), true);
+    assert.equal(report.deviceSmoke.evidenceSource, 'external-probe-disabled');
+    await assert.rejects(access(fieldEvidenceRoot));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -9123,18 +9556,36 @@ await test('C/D wearable field kit writes browser-ready launch assets', async ()
     assert.equal(manifest.privacy.tokenStorage, 'memory-only');
     assert.equal(await pathExists(join(outputDir, 'index.html')), true);
     assert.equal(await pathExists(join(outputDir, 'wearable-hud-client.js')), true);
+    assert.equal(await pathExists(join(outputDir, 'voice-session.js')), true);
+    assert.equal(await pathExists(join(outputDir, 'wearable-field-lab.js')), true);
+    assert.equal(await pathExists(join(outputDir, 'field-calibration.html')), true);
     assert.equal(await pathExists(join(outputDir, 'field-server.mjs')), true);
+    assert.equal(await pathExists(join(outputDir, 'connect-wearable-adb.ps1')), true);
     const html = await readFile(join(outputDir, 'index.html'), 'utf8');
     const client = await readFile(join(outputDir, 'wearable-hud-client.js'), 'utf8');
+    const voice = await readFile(join(outputDir, 'voice-session.js'), 'utf8');
+    const fieldLab = await readFile(join(outputDir, 'field-calibration.html'), 'utf8');
+    const server = await readFile(join(outputDir, 'field-server.mjs'), 'utf8');
+    const adbHarness = await readFile(join(outputDir, 'connect-wearable-adb.ps1'), 'utf8');
     assert.match(html, /jarvis-wearable-hud-root/);
     assert.match(html, /#00ff66/);
     assert.match(html, /JARVIS 웨어러블 HUD/);
-    assert.match(client, /SpeechRecognition/);
+    assert.match(client, /WearableVoiceSession/);
+    assert.match(voice, /c-d-wearable-voice-session-v2/);
+    assert.match(voice, /voice-transcription-v1/);
+    assert.match(fieldLab, /물리 안경 검증/);
+    assert.match(server, /\/field-evidence/);
+    assert.match(server, /\/voice\/transcribe/);
+    assert.match(server, /JARVIS_WEARABLE_STT_COMMAND/);
+    assert.match(adbHarness, /adb-reverse-verification-v1/);
+    assert.match(adbHarness, /rawDeviceSerialStored = \$false/);
     assert.match(client, /memoryOnlyToken/);
     assert.match(client, /웨어러블 관제/);
     assert.match(client, /PC 확인 필요/);
     assert.match(client, /data-quick-command/);
     assert.match(client, /data-action-deck/);
+    assert.match(client, /data-restore-controls/);
+    assert.match(client, /bridgeInput\?\.value \|\| config\.bridgeUrl/);
     assert.match(client, /operatorFirst/);
     assert.match(client, /createWearableQuickCommandPlan/);
     assert.match(client, /data-pair/);
@@ -9166,6 +9617,8 @@ await test('C/D wearable field chaos simulation survives pairing, burst, CORS, p
     assert.equal(report.summary.offlineDegraded, true);
     assert.equal(report.summary.rawBridgeTokenStored, false);
     assert.equal(report.summary.rawTranscriptStored, false);
+    assert.equal(report.summary.voice2RecoveryPassed, true);
+    assert.equal(report.summary.physicalFieldSelfCertified, false);
     assert.equal(report.checks.every((check) => check.status === 'passed'), true);
     assert.equal(await pathExists(join(dir, 'wearable-field-chaos-report.json')), true);
     assert.match(await readFile(join(dir, 'wearable-field-chaos-report.md'), 'utf8'), /Wearable Field Chaos/);
@@ -9214,6 +9667,13 @@ await test('C mobile release preflight validates EAS profiles and production sig
         JARVIS_ANDROID_KEY_PASSWORD: '',
         EXPO_TOKEN: ''
       },
+      credentialVerifier: async () => ({
+        status: 'blocked',
+        androidKeystore: { status: 'not-configured', secretValuesStored: false },
+        easAccount: { status: 'not-configured', secretValuesStored: false },
+        privacy: { rawExpoTokenStored: false }
+      }),
+      easBuildEvidenceVerifier: async () => ({ status: 'missing', passed: false, secretValuesStored: false }),
       jsonPath: join(dir, 'mobile-release-preflight-report.json'),
       markdownPath: join(dir, 'mobile-release-preflight-report.md'),
       htmlPath: join(dir, 'mobile-release-preflight-report.html')
@@ -9226,7 +9686,11 @@ await test('C mobile release preflight validates EAS profiles and production sig
     assert.equal(report.project.iosBuildNumber, '1');
     assert.equal(report.checks.some((item) => item.id === 'eas:production-profile' && item.passed), true);
     assert.equal(report.checks.some((item) => item.id === 'gradle:release-signing-policy' && item.passed), true);
+    assert.equal(report.checks.find((item) => item.id === 'gradle:release-signing-policy').evidence.releaseFailsClosed, true);
     assert.equal(report.checks.some((item) => item.id === 'credential:android-keystore-file' && !item.passed), true);
+    assert.equal(report.checks.some((item) => item.id === 'credential:android-keystore-verified' && !item.passed), true);
+    assert.equal(report.checks.some((item) => item.id === 'artifact:android-production-build' && !item.passed), true);
+    assert.equal(report.checks.some((item) => item.id === 'artifact:eas-production-build' && !item.passed), true);
     assert.equal(report.blockers.some((item) => item.id === 'credential:eas-account'), true);
     assert.ok((await readFile(report.artifacts.markdownPath, 'utf8')).includes('Mobile Release Preflight'));
   } finally {
@@ -9263,6 +9727,208 @@ await test('C mobile release dossier consolidates app structure and preflight pr
   }
 });
 
+await test('C mobile physical home contract accepts practical paired and pairing-ready surfaces', () => {
+  const node = (resourceId, attributes = 'clickable="false"') => `<node resource-id="${resourceId}" enabled="true" ${attributes} />`;
+  const base = [
+    node('jarvis-mobile-root'),
+    node('jarvis-mobile-title'),
+    node('jarvis-current-route'),
+    node('screen-content-HomeScreen'),
+    node('home-command-input'),
+    node('home-submit-button', 'clickable="true"'),
+    node('home-conversation-button', 'clickable="true"'),
+    '<node text="무엇을 도와드릴까요?" />',
+    '<node text="무엇을 할까요?" />'
+  ];
+  const paired = inspectProductionHomeSurface(`<hierarchy>${base.join('')}<node text="연결됨" /></hierarchy>`);
+  assert.equal(paired.status, 'passed');
+  assert.equal(paired.mode, 'paired-command-ready');
+  assert.equal(paired.pairedStateRestored, true);
+
+  const pairing = inspectProductionHomeSurface(`<hierarchy>${base.join('')}${node('home-bridge-url-input')}${node('home-pairing-code-input')}${node('home-pair-button', 'clickable="true"')}</hierarchy>`);
+  assert.equal(pairing.status, 'passed');
+  assert.equal(pairing.mode, 'pairing-ready');
+
+  const staleEngineeringSurface = inspectProductionHomeSurface('<hierarchy><node resource-id="route-button-CommandScreen" /></hierarchy>');
+  assert.equal(staleEngineeringSurface.status, 'failed');
+});
+
+await test('C mobile live E2E install plan isolates test data from the primary app', () => {
+  const plan = createMobileE2EInstallPlan({
+    targetArchitectures: ['x86_64'],
+    deviceAbis: ['x86_64', 'arm64-v8a'],
+    architectureSource: 'connected-device-primary-abi',
+    artifactPath: 'dist/mobile-phone-e2e/jarvis-mobile-e2e-arm64.apk'
+  });
+  assert.equal(plan.planVersion, 'c-mobile-isolated-e2e-install-plan-v3');
+  assert.equal(plan.packageName, 'local.eureka.jarvis.e2e');
+  assert.equal(plan.gradleArguments.includes('-Pjarvis.e2e=true'), true);
+  assert.equal(plan.gradleArguments.includes('-PreactNativeArchitectures=x86_64'), true);
+  assert.equal(plan.gradleArguments.includes('-Pjarvis.targetAbis=x86_64'), true);
+  assert.equal(plan.gradleArguments.includes('-PnewArchEnabled=false'), true);
+  assert.equal(plan.isolation.applicationIdSuffix, '.e2e');
+  assert.equal(plan.isolation.primaryPackageUntouched, true);
+  assert.equal(plan.isolation.separateSecureStoreNamespace, true);
+  assert.deepEqual(plan.buildProfile.targetArchitectures, ['x86_64']);
+  assert.deepEqual(plan.buildProfile.deviceAbis, ['x86_64', 'arm64-v8a']);
+  assert.equal(plan.buildProfile.architectureSource, 'connected-device-primary-abi');
+  assert.equal(plan.buildProfile.newArchitecture, false);
+  assert.equal(plan.apkPath, 'dist/mobile-phone-e2e/jarvis-mobile-e2e-arm64.apk');
+});
+
+await test('C mobile live E2E selects a compatible primary ABI and rejects incompatible overrides', () => {
+  assert.deepEqual(
+    selectMobileE2ETargetArchitectures({ deviceAbis: ['x86_64', 'arm64-v8a'] }),
+    ['x86_64']
+  );
+  assert.deepEqual(
+    selectMobileE2ETargetArchitectures({
+      deviceAbis: ['arm64-v8a', 'armeabi-v7a'],
+      requestedArchitectures: 'armeabi-v7a,arm64-v8a'
+    }),
+    ['armeabi-v7a', 'arm64-v8a']
+  );
+  assert.throws(
+    () => selectMobileE2ETargetArchitectures({
+      deviceAbis: ['x86_64'],
+      requestedArchitectures: ['arm64-v8a']
+    }),
+    /requested-mobile-e2e-abi-incompatible/
+  );
+});
+
+await test('C mobile live E2E requires an explicit target when multiple Android devices are ready', () => {
+  const devices = [
+    { serial: 'phone-new', state: 'device' },
+    { serial: 'wearable-old', state: 'device' },
+    { serial: 'phone-locked', state: 'unauthorized' }
+  ];
+  assert.deepEqual(
+    selectMobileE2EDevice({ devices, requestedSerial: 'phone-new' }),
+    devices[0]
+  );
+  assert.throws(
+    () => selectMobileE2EDevice({ devices }),
+    /multiple-ready-android-devices/
+  );
+  assert.throws(
+    () => selectMobileE2EDevice({ devices, requestedSerial: 'phone-locked' }),
+    /requested-android-device-not-ready:phone-locked:unauthorized/
+  );
+});
+
+await test('C mobile live Bridge E2E exercises the full A-E-B-G-F execution path', async () => {
+  const source = await readFile('scripts/mobile-live-bridge-e2e.mjs', 'utf8');
+
+  assert.match(source, /bridgeRealExecution:\s*true/);
+  assert.match(source, /realExecutionEnabled:\s*bridgeRuntime\.realExecutionEnabled === true/);
+  assert.match(source, /orchestrationWorkerAttached:\s*Boolean\(bridgeRuntime\.orchestrationWorker\)/);
+  assert.match(source, /ui\.voice-input-start-stop/);
+  assert.match(source, /adb\.interactive-device/);
+  assert.match(source, /svc power stayon usb/);
+  assert.match(source, /restoreInteractiveDevice/);
+  assert.match(source, /findUnintentionalTouchFilter/);
+  assert.match(source, /android-unintentional-touch-filter/);
+  assert.match(source, /--acoustic-voice/);
+  assert.match(source, /--file-voice/);
+  assert.match(source, /--pc-voice-handoff/);
+  assert.match(source, /ui\.pc-voice-high-risk-handoff/);
+  assert.match(source, /PC voice handoff E2E requires file voice mode/);
+  assert.match(source, /challengeSingleUseVerified:\s*true/);
+  assert.match(source, /executionDisposition:\s*accepted\.executionDisposition/);
+  assert.match(source, /externalTransferExecuted:\s*false/);
+  assert.match(source, /deterministic-pc-voice-proof-simulator/);
+  assert.match(source, /windows-system-speech/);
+  assert.match(source, /voiceTranscriptVerified/);
+  assert.match(source, /inputMode !== 'voice'/);
+  assert.match(source, /actionType !== 'LIST_FILES'/);
+  assert.match(source, /low-confidence voice task did not preserve repeat or readback confirmation evidence/);
+  assert.match(source, /independentEngineCount >= 2 \|\| confirmationCount >= 3/);
+  assert.match(source, /recognition\.confirmationMode === 'voice-readback'/);
+  assert.match(source, /recognition\.confirmationReason === 'explicit-affirmation'/);
+  assert.match(source, /recognition\.confirmationEngine/);
+  assert.match(source, /recognition\.confirmationTranscriptStored === false/);
+  assert.match(source, /mobile native voice recognizer did not enter ready state/);
+  assert.match(source, /acoustic voice audio did not reach the phone microphone/);
+  assert.match(source, /acoustic voice audio was detected but produced no semantic result/);
+  assert.match(source, /maxAttempts:\s*3/);
+  assert.match(source, /enginesAttempted/);
+  assert.match(source, /synthetic-file-audio-source/);
+  assert.match(source, /adb-reverse-http-to-app-cache/);
+  assert.match(source, /acousticVoiceConfirmationFixture/);
+  assert.match(source, /fixtureRequestsByVariant/);
+  assert.match(source, /readbackPending/);
+  assert.match(source, /appCacheCleanupSignalVerified/);
+  assert.match(source, /externalDeviceFixtureCreated:\s*false/);
+  assert.match(source, /sourceReverseRemoved/);
+  assert.doesNotMatch(source, /\/sdcard\/Android\/data\/local\.eureka\.jarvis\.e2e/);
+  assert.match(source, /rawVoiceTranscriptStored:\s*false/);
+});
+
+await test('C mobile bridge URL normalization distinguishes emulator loopback from ADB reverse', () => {
+  assert.equal(
+    normalizeBridgeUrlForPlatform('http://127.0.0.1:17777', { platform: 'android' }),
+    'http://10.0.2.2:17777'
+  );
+  assert.equal(
+    normalizeBridgeUrlForPlatform('http://adb.localhost:17777', { platform: 'android' }),
+    'http://127.0.0.1:17777'
+  );
+  assert.equal(
+    normalizeBridgeUrlForPlatform('http://192.168.0.10:17777/', { platform: 'android' }),
+    'http://192.168.0.10:17777'
+  );
+  assert.equal(
+    normalizeBridgeUrlForPlatform('http://127.0.0.1:17777', { platform: 'ios' }),
+    'http://127.0.0.1:17777'
+  );
+});
+
+await test('C mobile live E2E classifies a mid-run USB disconnect as an external blocker', () => {
+  assert.deepEqual(
+    classifyMobileLiveBridgeE2EFailure(new Error("adb.exe: device 'physical-1' not found"), { deviceReady: true }),
+    { status: 'external-blocked', reason: 'android-device-disconnected-during-e2e' }
+  );
+  assert.deepEqual(
+    classifyMobileLiveBridgeE2EFailure(new Error('approval did not complete'), { deviceReady: true }),
+    { status: 'failed', reason: 'approval did not complete' }
+  );
+});
+
+await test('C mobile live E2E preserves a report inside each isolated run directory', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-mobile-live-e2e-report-'));
+  try {
+    const runDirectory = join(dir, 'runs', 'run-1');
+    const report = {
+      runId: 'run-1',
+      generatedAt: new Date(0).toISOString(),
+      status: 'external-blocked',
+      reason: 'android-device-not-ready',
+      device: null,
+      bridge: { localUrl: 'http://127.0.0.1:1', deviceUrl: 'http://adb.localhost:1' },
+      liveBridgeVerified: false,
+      secureStoreRestoreVerified: false,
+      deviceRevokeVerified: false,
+      secureStoreCleanupVerified: false,
+      steps: [],
+      runtime: null,
+      privacy: { isolatedPackage: true, rawCommandStoredInReport: false },
+      artifacts: { directory: runDirectory, isolatedRuntimeState: true }
+    };
+    const paths = await writeMobileLiveBridgeE2EArtifacts(report, {
+      jsonPath: join(dir, 'latest.json'),
+      markdownPath: join(dir, 'latest.md')
+    });
+    assert.equal(paths.runJsonPath, join(runDirectory, 'report.json'));
+    assert.equal(paths.runMarkdownPath, join(runDirectory, 'report.md'));
+    const preserved = JSON.parse(await readFile(paths.runJsonPath, 'utf8'));
+    assert.equal(preserved.runId, 'run-1');
+    assert.equal(preserved.artifacts.isolatedRuntimeState, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test('C mobile device smoke writes device evidence and actionable ADB guidance when blocked', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-mobile-device-smoke-'));
   try {
@@ -9277,11 +9943,91 @@ await test('C mobile device smoke writes device evidence and actionable ADB guid
     });
     assert.ok(['passed', 'blocked', 'product-readiness-blocked'].includes(report.status));
     assert.equal(report.plan.steps.some((step) => step.id === 'adb.resolve'), true);
-    assert.equal(report.plan.steps.some((step) => step.id === 'native.runtime.probe'), true);
+    assert.equal(report.plan.steps.some((step) => step.id === 'home.surface.contract'), true);
     const markdown = await readFile(artifacts.markdownPath, 'utf8');
     assert.ok(markdown.includes('ADB command'));
     assert.ok(markdown.includes('Actual device verified'));
     if (report.status !== 'passed') assert.ok(markdown.includes('Next Actions'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('C mobile physical evidence survives dist rebuilds only while source fingerprint and screenshot integrity match', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-mobile-device-evidence-'));
+  try {
+    const evidenceRoot = join(dir, 'persistent-evidence');
+    const screenshotPath = join(dir, 'physical-screen.png');
+    await writeFile(screenshotPath, Buffer.alloc(8192, 7));
+    const appFingerprint = {
+      algorithm: 'sha256',
+      value: 'a'.repeat(64),
+      fileCount: 17,
+      scope: 'mobile-source-and-android-runtime'
+    };
+    const passed = {
+      reportVersion: 'c-mobile-device-smoke-v2',
+      generatedAt: new Date(1_000_000).toISOString(),
+      status: 'passed',
+      actualDeviceVerified: true,
+      reason: null,
+      appFingerprint,
+      probe: { tool: 'adb', available: true, adb: { command: 'adb', source: 'test' }, devices: [{ serial: 'device-1', state: 'device' }] },
+      plan: createMobileDeviceVerificationPlan(),
+      devices: [{
+        serial: 'device-1',
+        installed: true,
+        verified: true,
+        launch: { success: true },
+        screenshot: { outputPath: screenshotPath, credibleImage: true, sha256: 'source-hash' },
+        uiDump: { available: true, outputPath: join(dir, 'window.xml') },
+        homeSurface: { status: 'passed' },
+        packageCapabilities: { status: 'passed' }
+      }]
+    };
+    await writeMobileDeviceSmokeArtifacts(passed, {
+      jsonPath: join(dir, 'dist', 'mobile-device-smoke-report.json'),
+      markdownPath: join(dir, 'dist', 'mobile-device-smoke-report.md'),
+      htmlPath: join(dir, 'dist', 'mobile-device-smoke-report.html'),
+      attemptReport: passed,
+      evidenceRoot,
+      workspaceRoot: dir
+    });
+
+    const retained = JSON.parse(await readFile(join(evidenceRoot, 'last-passed.json'), 'utf8'));
+    assert.equal(retained.persistence.rawUiXmlRetained, false);
+    assert.equal(retained.devices[0].uiDump.outputPath, null);
+    assert.equal(retained.devices[0].screenshot.persisted, true);
+
+    const blocked = {
+      ...passed,
+      generatedAt: new Date(1_001_000).toISOString(),
+      status: 'blocked',
+      actualDeviceVerified: false,
+      reason: 'no-ready-android-device',
+      probe: { tool: 'adb', available: true, adb: { command: 'adb', source: 'test' }, devices: [] },
+      devices: []
+    };
+    const recovered = await reconcileMobileDeviceEvidence(blocked, {
+      evidenceRoot,
+      workspaceRoot: dir,
+      now: 1_001_000
+    });
+    assert.equal(recovered.status, 'passed-retained-evidence');
+    assert.equal(recovered.actualDeviceVerified, true);
+    assert.equal(recovered.evidenceSource, 'retained-last-passed');
+    assert.equal(recovered.retainedEvidence.screenshotIntegrity.passed, true);
+
+    const changedSource = await reconcileMobileDeviceEvidence({
+      ...blocked,
+      appFingerprint: { ...appFingerprint, value: 'b'.repeat(64) }
+    }, {
+      evidenceRoot,
+      workspaceRoot: dir,
+      now: 1_001_000
+    });
+    assert.equal(changedSource.actualDeviceVerified, false);
+    assert.equal(changedSource.retainedEvidence.reason, 'mobile-source-fingerprint-changed');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -9610,11 +10356,12 @@ await test('F pattern miner normalizes workflow signatures and records negative 
 
 await test('F failure memory classifies causes and creates recurrence guardrails', () => {
   let current = new Date('2026-06-01T00:00:00.000Z');
-  const { coreFacade, growthRuntime } = createAgRuntime({ clock: () => current });
+  const { coreFacade, growthRuntime } = createAgRuntime({ clock: () => current, env: { JARVIS_TEST_MODE: '1', JARVIS_LLM_INTENT: '0', JARVIS_LLM_PLANNER: '0', JARVIS_LLM_CONTENT: '0' } });
+  const policySource = coreFacade.createTask('밴드 자료 준비해');
   growthRuntime.ingestor.ingest({
     eventId: 'evt_failure_policy_blocked',
     eventType: 'policy.blocked',
-    taskId: 'task_failure_policy',
+    taskId: policySource.taskId,
     payload: {
       rawText: '밴드에 외부 전송해',
       reason: '외부 전송은 PC 승인 필요',
@@ -9629,18 +10376,20 @@ await test('F failure memory classifies causes and creates recurrence guardrails
     trustBoundary: { userProvided: true, externalContent: false, systemGenerated: false }
   });
   current = new Date('2026-06-03T00:00:00.000Z');
+  const recoverySource = coreFacade.createTask('밴드 자료 확인해');
   growthRuntime.ingestor.ingest({
     eventId: 'evt_failure_policy_recovered',
     eventType: 'execution.completed',
-    taskId: 'task_failure_policy_recovered',
+    taskId: recoverySource.taskId,
     payload: { rawText: '밴드에 외부 전송해' },
     learningFlags: { canBeUsedForWorkflow: true, doNotRemember: false, containsSensitiveData: false },
     trustBoundary: { userProvided: true, externalContent: false, systemGenerated: false }
   });
+  const verificationSource = coreFacade.createTask('엑셀 자료 확인해');
   growthRuntime.ingestor.ingest({
     eventId: 'evt_failure_verification',
     eventType: 'verification.failed',
-    taskId: 'task_failure_verification',
+    taskId: verificationSource.taskId,
     payload: {
       rawText: '엑셀 보고서 만들어',
       reason: '검증 evidence 누락',
@@ -9653,7 +10402,7 @@ await test('F failure memory classifies causes and creates recurrence guardrails
   });
 
   const review = growthRuntime.latestReview();
-  const policyFailure = review.failureLessons.find((item) => item.taskId === 'task_failure_policy');
+  const policyFailure = review.failureLessons.find((item) => item.taskId === policySource.taskId);
   assert.ok(policyFailure);
   assert.equal(policyFailure.cause.category, 'policy_safety_block');
   assert.equal(policyFailure.severity, 'critical');
@@ -9689,7 +10438,7 @@ await test('F failure memory classifies causes and creates recurrence guardrails
   assert.equal(guardedTask.plan.riskNotes.some((note) => note.includes('수신자 확인과 PC 승인')), true);
   assert.equal(guardedTask.plan.planGraph.invariants.some((item) => item.includes(policyFailure.failureId)), true);
 
-  const verificationFailure = review.failureLessons.find((item) => item.taskId === 'task_failure_verification');
+  const verificationFailure = review.failureLessons.find((item) => item.taskId === verificationSource.taskId);
   assert.equal(verificationFailure.cause.category, 'verification_evidence_failure');
   assert.equal(verificationFailure.severity, 'high');
   assert.equal(verificationFailure.guardrailChecklist.includes('require_execution_evidence'), true);
@@ -10093,12 +10842,14 @@ await test('F confirmed preferences promote reviewed hypotheses and affect memor
 });
 
 await test('F confirmed preferences update, revoke, detect conflicts, and feed A planning context', () => {
-  const { coreFacade, growthRuntime } = createAgRuntime();
+  const { coreFacade, growthRuntime } = createAgRuntime({ allowedRoots: [join(process.cwd(), 'weekly-report-workspace')], env: { JARVIS_TEST_MODE: '1', JARVIS_LLM_INTENT: '0', JARVIS_LLM_PLANNER: '0', JARVIS_LLM_CONTENT: '0' } });
   for (let index = 0; index < 3; index += 1) {
+    const sourceTask = coreFacade.createTask('날짜 자료를 정리해줘');
     growthRuntime.ingestor.ingest({
       eventId: `evt_pref_lifecycle_${index + 1}`,
       eventType: 'approval.edited',
-      taskId: `task_pref_lifecycle_${index + 1}`,
+      taskId: sourceTask.taskId,
+      source: { memoryScope: { userId: 'local_user', workspaceRoot: coreFacade.workspaceRoot, conversationId: null } },
       payload: { editRequest: '날짜를 크게 표시해줘' },
       learningFlags: { canBeUsedForPreference: true, doNotRemember: false },
       trustBoundary: { userProvided: true, externalContent: false, systemGenerated: false }
@@ -10128,10 +10879,12 @@ await test('F confirmed preferences update, revoke, detect conflicts, and feed A
   assert.equal(growthRuntime.planningPreferenceContext('날짜').confirmedPreferenceHints[0].applyMode, 'strong_planning_hint');
 
   for (let index = 0; index < 3; index += 1) {
+    const sourceTask = coreFacade.createTask('날짜 자료를 비교해줘');
     growthRuntime.ingestor.ingest({
       eventId: `evt_pref_conflict_${index + 1}`,
       eventType: 'approval.edited',
-      taskId: `task_pref_conflict_${index + 1}`,
+      taskId: sourceTask.taskId,
+      source: { memoryScope: { userId: 'local_user', workspaceRoot: coreFacade.workspaceRoot, conversationId: null } },
       payload: { editRequest: '날짜를 작게 표시해줘' },
       learningFlags: { canBeUsedForPreference: true, doNotRemember: false },
       trustBoundary: { userProvided: true, externalContent: false, systemGenerated: false }
@@ -10222,7 +10975,7 @@ await test('F confirmed preferences update, revoke, detect conflicts, and feed A
     targetScopePolicy: { workspaceScope: 'weekly-report-workspace-v2' }
   });
   assert.equal(confirmedGate.productGateVersion, 'f-confirmed-preference-product-gate-v1');
-  assert.equal(confirmedGate.status, 'passed');
+  assert.equal(confirmedGate.status, 'passed', JSON.stringify({ checks: confirmedGate.checks, hypothesisChecks: confirmedGate.hypothesisGate?.checks }));
   assert.equal(confirmedGate.checks.every((check) => check.passed), true);
   const confirmedReleaseDossier = growthRuntime.confirmedPreferenceReleaseDossier({
     query: '날짜',
@@ -10301,6 +11054,73 @@ await test('F advanced learning builds clone evidence, style genome, and skill d
   assert.equal(reviewedSkillDraft.success, true);
   assert.equal(reviewedSkillDraft.registryEntry.status, 'approved_for_skill_registry');
   assert.equal(reviewedSkillDraft.registryEntry.policy.executableByDefault, false);
+  const activeSkillRevisionId = reviewedSkillDraft.registryEntry.activeRevisionId;
+  const staleSkillRevision = growthRuntime.mutateSkillRevision('create', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    expectedActiveRevisionId: 'stale-revision',
+    suggestedSteps: ['새 자료를 확인한다.'],
+    reason: 'stale write must be rejected'
+  });
+  assert.equal(staleSkillRevision.success, false);
+  assert.equal(staleSkillRevision.error.code, 'F_SKILL_REVISION_STALE_BASE');
+  const invalidSkillRevision = growthRuntime.mutateSkillRevision('create', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    expectedActiveRevisionId: activeSkillRevisionId,
+    suggestedSteps: [],
+    reason: 'empty revision must be rejected'
+  });
+  assert.equal(invalidSkillRevision.success, false);
+  assert.equal(invalidSkillRevision.error.code, 'F_SKILL_REVISION_INVALID');
+  const skillRevision = growthRuntime.mutateSkillRevision('create', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    expectedActiveRevisionId: activeSkillRevisionId,
+    suggestedSteps: ['요청의 범위를 확인한다.', '근거 자료를 다시 검증한다.'],
+    createdBy: 'skill_registry_test',
+    reason: 'improve evidence verification'
+  });
+  assert.equal(skillRevision.success, true);
+  const evaluatedSkillRevision = growthRuntime.mutateSkillRevision('evaluate', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    revisionId: skillRevision.revision.revisionId
+  });
+  assert.equal(evaluatedSkillRevision.success, true);
+  assert.equal(evaluatedSkillRevision.revision.evaluation.mode, 'static-contract-only');
+  assert.equal(evaluatedSkillRevision.revision.status, 'awaiting_user_review');
+  const promotedWithoutReview = growthRuntime.mutateSkillRevision('promote', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    revisionId: skillRevision.revision.revisionId,
+    expectedActiveRevisionId: activeSkillRevisionId
+  });
+  assert.equal(promotedWithoutReview.success, false);
+  assert.equal(promotedWithoutReview.error.code, 'F_SKILL_REVISION_REVIEW_REQUIRED');
+  const skillRevisionReview = growthRuntime.mutateSkillRevision('review', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    revisionId: skillRevision.revision.revisionId,
+    decision: 'approve',
+    decidedBy: 'skill_registry_test',
+    reason: 'reviewed static checks and wording'
+  });
+  assert.equal(skillRevisionReview.success, true);
+  const promotedSkillRevision = growthRuntime.mutateSkillRevision('promote', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    revisionId: skillRevision.revision.revisionId,
+    expectedActiveRevisionId: activeSkillRevisionId,
+    promotedBy: 'skill_registry_test',
+    reason: 'approved metadata revision'
+  });
+  assert.equal(promotedSkillRevision.success, true);
+  assert.equal(promotedSkillRevision.registryEntry.activeRevisionId, skillRevision.revision.revisionId);
+  assert.equal(promotedSkillRevision.registryEntry.policy.executableByDefault, false);
+  const rolledBackSkillRevision = growthRuntime.mutateSkillRevision('rollback', {
+    skillId: reviewedSkillDraft.registryEntry.skillId,
+    targetRevisionId: activeSkillRevisionId,
+    expectedActiveRevisionId: skillRevision.revision.revisionId,
+    rolledBackBy: 'skill_registry_test',
+    reason: 'rollback drill'
+  });
+  assert.equal(rolledBackSkillRevision.success, true);
+  assert.equal(rolledBackSkillRevision.registryEntry.activeRevisionId, activeSkillRevisionId);
+  assert.equal(rolledBackSkillRevision.registryEntry.policy.executableByDefault, false);
   const usefulness = growthRuntime.recordSkillUsefulness(reviewedSkillDraft.registryEntry.skillId, {
     outcome: 'adopted',
     taskId: 'task_style_approved_skill',
@@ -10355,6 +11175,16 @@ await test('F advanced learning builds clone evidence, style genome, and skill d
   const skillReviewState = createSkillDraftReviewState({ review });
   assert.equal(skillReviewState.stateVersion, 'c-skill-draft-review-ui-v1');
   assert.equal(skillReviewState.drafts[0].actions.some((action) => action.actionKey === 'approve_skill_draft'), true);
+  assert.equal(skillReviewState.revisionEntries[0].executableByDefault, false);
+  assert.equal(skillReviewState.revisionEntries[0].availableActions.includes('create'), true);
+  assert.equal(skillReviewState.revisionEntries[0].activeRevisionId, activeSkillRevisionId);
+  assert.deepEqual(createSkillRevisionDiff(['요청 범위를 확인한다.', '파일을 저장한다.'], [
+    '요청 범위를 확인한다.', '근거를 대조한다.', '파일을 저장한다.'
+  ]), [
+    { status: 'unchanged', text: '요청 범위를 확인한다.' },
+    { status: 'added', text: '근거를 대조한다.' },
+    { status: 'unchanged', text: '파일을 저장한다.' }
+  ]);
   const advancedVerifier = growthRuntime.advancedLearningVerifierReport();
   assert.equal(advancedVerifier.reportVersion, 'f-advanced-learning-verifier-report-v1');
   assert.equal(advancedVerifier.verifierVersion, 'g-advanced-learning-verifier-v1');
@@ -10465,7 +11295,7 @@ await test('F growth quality corpus runner scores long-memory product readiness'
     });
     assert.equal(report.reportVersion, 'f-growth-quality-corpus-report-v1');
     assert.equal(report.corpusId, 'f-growth-quality-corpus-v1');
-    assert.equal(report.status, 'passed');
+    assert.equal(report.status, 'passed', JSON.stringify(report.checks.filter(check => check.status !== 'passed')));
     assert.equal(report.checks.every((check) => check.status === 'passed'), true);
     assert.equal(report.metrics.patternCount >= 2, true);
     assert.equal(report.metrics.skillRegistryEntryCount >= 1, true);
@@ -10815,7 +11645,9 @@ await test('F growth memory persists MemoryEvent and GrowthReview through SQLite
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-growth-sqlite-'));
   const dbPath = join(dir, 'growth.sqlite');
   const reviewDir = join(dir, 'reviews');
-  let store = new SqliteMemoryStore({ dbPath, reviewDir });
+  const backupDir = join(dir, 'backups');
+  const storeOptions = { dbPath, reviewDir, backupDir };
+  let store = new SqliteMemoryStore(storeOptions);
   let runtime = createAgRuntime({ memoryStore: store }).growthRuntime;
   for (let index = 0; index < 3; index += 1) {
     runtime.ingestor.ingest({
@@ -10847,7 +11679,7 @@ await test('F growth memory persists MemoryEvent and GrowthReview through SQLite
   assert.equal(review.memoryEventSchema.schemaVersion, 'f-memory-event-union-v1');
   assert.equal(runtime.ingestor.all().find((event) => event.eventId === 'evt_sqlite_1').schema.variant, 'task_event');
   runtime.decidePreference({
-    hypothesisId: 'pref_h_1',
+    hypothesisId: runtime.preferenceEngine.create(runtime.ingestor.all())[0].hypothesisId,
     decision: 'confirm',
     decidedBy: 'sqlite_test'
   });
@@ -10943,6 +11775,7 @@ await test('F growth memory persists MemoryEvent and GrowthReview through SQLite
   assert.equal(storageReleaseDossier.status, 'passed');
   assert.equal(storageReleaseDossier.artifactManifest.rawLeakCheck.rawLeakDetected, false);
   assert.equal(JSON.stringify(storageReleaseDossier).includes(dbPath), false);
+  assert.ok(store.backups().every(item => dirname(item.filePath) === backupDir && item.sourceDbPath === dbPath));
   const restoreDrill = runtime.restoreDrill({ backupPath: backup.filePath });
   assert.equal(restoreDrill.drillVersion, 'f-storage-restore-drill-v1');
   assert.equal(restoreDrill.success, true);
@@ -10962,7 +11795,7 @@ await test('F growth memory persists MemoryEvent and GrowthReview through SQLite
   assert.equal(store.allEvents().some((event) => event.eventId === 'evt_sqlite_after_backup'), false);
   store.close();
 
-  store = new SqliteMemoryStore({ dbPath, reviewDir });
+  store = new SqliteMemoryStore(storeOptions);
   runtime = createAgRuntime({ memoryStore: store }).growthRuntime;
   assert.equal(runtime.ingestor.all().length, 7);
   assert.equal(runtime.query('저장되는').length, 1);
@@ -12976,7 +13809,12 @@ await test('D Bridge HTTP API rotates signed device tokens and rejects the previ
 await test('D Bridge HTTP API implements pairing, task, approval, handoff, result, and growth routes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-http-bridge-'));
   try {
-    const { bridgeRuntime, pcAgent } = createAgRuntime({ allowedRoots: [dir], auditRoot: dir, outputPath: join(dir, 'http-output.txt') });
+    const { bridgeRuntime, coreFacade, pcAgent, policyRuntime } = createAgRuntime({
+      env: {},
+      allowedRoots: [dir],
+      auditRoot: dir,
+      outputPath: join(dir, 'http-output.txt')
+    });
     await withServer(createBridgeServer(bridgeRuntime), async (baseUrl) => {
       assert.equal((await getJson(`${baseUrl}/health`)).module, 'D_BRIDGE');
       const serverProfile = await getJson(`${baseUrl}/server/profile`);
@@ -13142,7 +13980,11 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
       const taskApprovalResultRelease = await client.runTaskApprovalResultReleaseDossier({
         reason: 'http task approval result release dossier'
       });
-      assert.equal(taskApprovalResultRelease.dossierVersion, 'd-bridge-task-approval-result-release-dossier-v1');
+      assert.equal(
+        taskApprovalResultRelease.dossierVersion,
+        'd-bridge-task-approval-result-release-dossier-v1',
+        JSON.stringify(taskApprovalResultRelease)
+      );
       assert.equal(taskApprovalResultRelease.status, 'passed');
       assert.equal(taskApprovalResultRelease.dossierSha256.length, 64);
       assert.equal(taskApprovalResultRelease.liveWorkflow.workflowVersion, 'd-bridge-task-approval-result-live-workflow-v1');
@@ -13158,6 +14000,9 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
       assert.equal(taskApprovalResultRelease.externalWormPromotionPackage.status, 'ready');
       assert.equal(taskApprovalResultRelease.checks.some((check) => check.checkId === 'task_approval_result_worm_promotion_package_ready'), true);
       assert.equal(taskApprovalResultRelease.checks.every((check) => check.status === 'passed'), true);
+      const internalAuditTask = coreFacade.getTask(taskApprovalResultRelease.liveWorkflow.taskId);
+      assert.equal(internalAuditTask.plan.llmPlanning?.modelRoundTrips ?? 0, 0);
+      assert.equal(internalAuditTask.intent.semantic?.rawCommandSharedWithModel ?? false, false);
       const fallbackUx = await client.getEventFallbackUxContract();
       assert.equal(fallbackUx.contractVersion, 'd-mobile-websocket-fallback-ux-contract-v1');
       assert.equal(fallbackUx.status, 'passed');
@@ -13199,9 +14044,15 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
       assert.match(eventReleaseDossier.releaseHash, /^[a-f0-9]{64}$/);
       assert.equal(eventReleaseDossier.checks.some((check) => check.checkId === 'event_stream_release_exercise_replayed_and_acked' && check.status === 'passed'), true);
       assert.equal(eventReleaseDossier.checks.some((check) => check.checkId === 'event_stream_raw_identifiers_not_stored' && check.status === 'passed'), true);
-      assert.equal(client.eventStreamUrl({ eventType: 'task.created' }).includes('/events/stream?'), true);
+      const streamConnection = await client.eventStreamConnection({
+        sinceEventId: events.items[0].eventId,
+        eventType: 'task.created'
+      });
+      assert.equal(streamConnection.url.includes('/events/stream?'), true);
+      assert.equal(new URL(streamConnection.url).searchParams.has('token'), false);
       const streamAbort = new AbortController();
-      const streamResponse = await fetch(`${baseUrl}/events/stream?token=${encodeURIComponent(confirmed.deviceToken)}&sinceEventId=${encodeURIComponent(events.items[0].eventId)}`, {
+      const streamResponse = await fetch(streamConnection.url, {
+        headers: streamConnection.headers,
         signal: streamAbort.signal
       });
       assert.equal(streamResponse.status, 200);
@@ -13213,11 +14064,18 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
       assert.equal(streamText.includes('event: stream.opened'), true);
       assert.equal(streamText.includes('replayedCount'), true);
       assert.equal(typeof WebSocket, 'function');
-      assert.equal(client.eventWebSocketUrl({ eventType: 'task.created' }).startsWith('ws://'), true);
-      const eventSocket = new WebSocket(client.eventWebSocketUrl({ sinceEventId: events.items[0].eventId }), 'jarvis-events.v1');
+      const webSocketConnection = await client.eventWebSocketConnection({
+        sinceEventId: events.items[0].eventId,
+        eventType: 'task.created'
+      });
+      assert.equal(webSocketConnection.url.startsWith('ws://'), true);
+      assert.equal(new URL(webSocketConnection.url).searchParams.has('token'), false);
+      assert.equal(webSocketConnection.headers.authorization, `Bearer ${confirmed.deviceToken}`);
+      const eventSocket = await openBridgeWebSocketConnection(webSocketConnection);
       try {
+        const socketOpenedPromise = waitForWebSocketJson(eventSocket, (message) => message.type === 'stream.opened');
         await waitForWebSocketOpen(eventSocket);
-        const socketOpened = await waitForWebSocketJson(eventSocket, (message) => message.type === 'stream.opened');
+        const socketOpened = await socketOpenedPromise;
         assert.equal(socketOpened.channel.enabled, true);
         assert.equal(socketOpened.channel.authRequired, true);
         assert.equal(socketOpened.channel.fallback, 'sse');
@@ -13227,8 +14085,9 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
           command: { rawText: 'websocket live event task' }
         });
         const socketEvent = await socketEventPromise;
+        const socketAckPromise = waitForWebSocketJson(eventSocket, (message) => message.type === 'ack.result' && message.requestId === 'ws-ack-test');
         eventSocket.send(JSON.stringify({ type: 'ack', eventId: socketEvent.event.eventId, requestId: 'ws-ack-test' }));
-        const socketAck = await waitForWebSocketJson(eventSocket, (message) => message.type === 'ack.result' && message.requestId === 'ws-ack-test');
+        const socketAck = await socketAckPromise;
         assert.equal(socketAck.ack.success, true);
         assert.equal(socketAck.ack.ack.eventId, socketEvent.event.eventId);
       } finally {
@@ -13323,6 +14182,9 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
       assert.equal(pcAccepted.success, true);
       assert.equal(pcAccepted.handoff.status, 'accepted');
       assert.equal(pcAccepted.taskStatus, TaskStatus.APPROVED);
+      assert.equal(pcAccepted.executionHandoffId, null);
+      assert.equal(pcAccepted.requiresUserConfirmation, false);
+      assert.equal(pcAccepted.executionDisposition, 'review-only');
       const pcHandoffHistory = await client.getApprovalHistory(pcHandoffTask.approvalId);
       assert.equal(pcHandoffHistory.items.some((item) => item.eventType === 'approval.pc_handoff.requested'), true);
       assert.equal(pcHandoffHistory.items.some((item) => item.eventType === 'approval.pc_handoff.accepted'), true);
@@ -13355,11 +14217,22 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
         taskId: 'task_bridge_http_poison_requeue',
         action: { actionType: ActionType.CREATE_FILE }
       });
+      const poisonRequeueCapability = policyRuntime.capabilities.issue({
+        taskId: 'task_bridge_http_poison_requeue',
+        planId: 'plan_bridge_http_poison_fixed',
+        approvalId: 'approval_bridge_http_poison_fixed',
+        action: {
+          actionType: ActionType.CREATE_FILE,
+          toolName: 'filesystem.createTextFile',
+          skillId: 'jarvis.local.mvp'
+        },
+        allowedPaths: [dir]
+      });
       const poisonRequeue = await client.requeuePoisonPacket(poisonForRequeue.queueId, {
         note: 'http mobile restored required fields',
         patch: {
           packetId: 'packet_bridge_http_poison_fixed',
-          capabilityToken: { tokenId: 'cap_bridge_http_poison_fixed' },
+          capabilityToken: poisonRequeueCapability,
           userConfirmation: { confirmed: true },
           action: {
             actionType: ActionType.CREATE_FILE,
@@ -13376,6 +14249,7 @@ await test('D Bridge HTTP API implements pairing, task, approval, handoff, resul
       const poisonDrain = await client.drainPcAgentQueue({ limit: 2 });
       assert.equal(poisonDrain.processed >= 1, true);
       assert.equal(poisonDrain.status.succeeded >= 1, true);
+      assert.equal(await readFile(join(dir, 'bridge-http-poison-fixed.txt'), 'utf8'), 'bridge http poison fixed');
       const poisonForIgnore = pcAgent.queueExecutionPacket({
         taskId: 'task_bridge_http_poison_ignore',
         action: { actionType: ActionType.CREATE_FILE }
@@ -13672,6 +14546,165 @@ await test('D Bridge HTTP API routes growth hygiene review decisions to F', asyn
       assert.equal(releaseDossier.externalWormPromotionPackage.status, 'ready');
       assert.equal(releaseDossier.checks.some((check) => check.checkId === 'growth_routing_worm_promotion_package_ready'), true);
       assert.equal(releaseDossier.checks.every((check) => check.status === 'passed'), true);
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('D Bridge HTTP API enforces authenticated skill revision lifecycle and records device actor', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-http-growth-skill-revision-'));
+  try {
+    const { bridgeRuntime, growthRuntime } = createAgRuntime({ allowedRoots: [dir], auditRoot: dir });
+    for (let index = 0; index < 3; index += 1) {
+      growthRuntime.ingestor.ingest({
+        eventId: `evt_revision_task_${index}`,
+        eventType: 'task.created',
+        taskId: `task_revision_${index}`,
+        payload: { rawText: '연구 자료를 읽고 핵심 근거를 정리해줘' },
+        learningFlags: { canBeUsedForWorkflow: true },
+        trustBoundary: { userProvided: true, externalContent: false, systemGenerated: false }
+      });
+      growthRuntime.ingestor.ingest({
+        eventId: `evt_revision_feedback_${index}`,
+        eventType: 'approval.edited',
+        taskId: `task_revision_${index}`,
+        payload: { editRequest: '근거 출처를 다시 확인하고 제목을 짧게 해줘' },
+        learningFlags: { canBeUsedForPreference: true },
+        trustBoundary: { userProvided: true, externalContent: false, systemGenerated: false }
+      });
+    }
+    const draft = growthRuntime.advancedLearningModels().skillDistillations[0];
+    const approved = growthRuntime.reviewSkillDraft(draft.distilledSkillId, {
+      decision: 'approve', decidedBy: 'fixture-seed', reason: 'seed approved skill for route test'
+    });
+    assert.equal(approved.success, true);
+    const skillId = approved.registryEntry.skillId;
+    const baseRevisionId = approved.registryEntry.activeRevisionId;
+
+    await withServer(createBridgeServer(bridgeRuntime), async (baseUrl) => {
+      const pairing = await postJson(`${baseUrl}/pairing/start`, {});
+      const paired = await postJson(`${baseUrl}/pairing/confirm`, {
+        deviceId: 'mobile_growth_revision_001',
+        deviceName: 'Growth Revision Phone',
+        pairingCode: pairing.pairingCode
+      });
+      const client = new BridgeClient({ bridgeUrl: baseUrl, tokenProvider: () => paired.deviceToken });
+      const unauthenticated = await fetch(`${baseUrl}/growth/skills/${encodeURIComponent(skillId)}/revisions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedActiveRevisionId: baseRevisionId, suggestedSteps: ['근거를 확인한다.'] })
+      });
+      assert.equal(unauthenticated.status, 200);
+      assert.equal((await unauthenticated.json()).error.code, 'D_AUTH_MISSING_TOKEN');
+
+      const created = await client.createGrowthSkillRevision(skillId, {
+        expectedActiveRevisionId: baseRevisionId,
+        suggestedSteps: ['요구 범위를 확인한다.', '출처의 원문과 날짜를 대조한다.'],
+        createdBy: 'forged-client-actor',
+        reason: 'route lifecycle integration test'
+      });
+      assert.equal(created.success, true);
+      const revisionId = created.revision.revisionId;
+      assert.equal(growthRuntime.skillRegistryStatus().registryEntries
+        .find((entry) => entry.skillId === skillId).revisions
+        .find((revision) => revision.revisionId === revisionId).createdBy, 'mobile_growth_revision_001');
+      const concurrentDraft = await client.createGrowthSkillRevision(skillId, {
+        expectedActiveRevisionId: baseRevisionId,
+        suggestedSteps: ['같은 기준 버전에서 동시에 덮어쓰기를 시도한다.']
+      });
+      assert.equal(concurrentDraft.success, false);
+      assert.equal(concurrentDraft.error.code, 'F_SKILL_REVISION_PENDING_EXISTS');
+      assert.equal(growthRuntime.skillRegistryStatus().registryEntries
+        .find((entry) => entry.skillId === skillId).revisions.filter((revision) => revision.status === 'draft').length, 1);
+      const evaluated = await client.evaluateGrowthSkillRevision(skillId, revisionId);
+      assert.equal(evaluated.success, true);
+      assert.equal(evaluated.revision.status, 'awaiting_user_review');
+      const ownerRequired = await bridgeRuntime.mutateGrowthSkillRevision({
+        token: paired.deviceToken,
+        action: 'review',
+        skillId,
+        revisionId,
+        payload: { decision: 'approve' }
+      });
+      assert.equal(ownerRequired.success, false);
+      assert.equal(ownerRequired.error.code, 'D_GROWTH_SKILL_OWNER_AUTH_UNAVAILABLE');
+      bridgeRuntime.growthSkillReviewAuthorizer = async ({ action, deviceId }) => ({
+        allowed: true,
+        authorization: { action, deviceId, sessionId: 'owner-session-fixture', expiresAt: '2026-09-29T01:00:00.000Z' }
+      });
+      const reviewed = await client.reviewGrowthSkillRevision(skillId, revisionId, {
+        decision: 'approve', decidedBy: 'forged-client-actor', reason: 'manual review completed'
+      });
+      assert.equal(reviewed.success, true);
+      assert.equal(growthRuntime.skillRegistryStatus().registryEntries
+        .find((entry) => entry.skillId === skillId).revisions
+        .find((revision) => revision.revisionId === revisionId).review.decidedBy, 'mobile_growth_revision_001');
+      const promoted = await client.promoteGrowthSkillRevision(skillId, revisionId, {
+        expectedActiveRevisionId: baseRevisionId, promotedBy: 'forged-client-actor'
+      });
+      assert.equal(promoted.success, true);
+      assert.equal(promoted.registryEntry.activeRevisionId, revisionId);
+      assert.equal(promoted.registryEntry.policy.executableByDefault, false);
+      const rollback = await client.rollbackGrowthSkillRevision(skillId, revisionId, {
+        expectedActiveRevisionId: revisionId,
+        targetRevisionId: baseRevisionId,
+        rolledBackBy: 'forged-client-actor'
+      });
+      assert.equal(rollback.success, true);
+      assert.equal(rollback.registryEntry.activeRevisionId, baseRevisionId);
+      assert.equal(rollback.registryEntry.policy.executableByDefault, false);
+      const rejectedDraft = await client.createGrowthSkillRevision(skillId, {
+        expectedActiveRevisionId: baseRevisionId,
+        suggestedSteps: ['사용자가 거절한 초안이다.']
+      });
+      assert.equal(rejectedDraft.success, true);
+      const rejectedRevisionId = rejectedDraft.revision.revisionId;
+      const rejectedEvaluation = await client.evaluateGrowthSkillRevision(skillId, rejectedRevisionId);
+      assert.equal(rejectedEvaluation.success, true);
+      const rejectedReview = await client.reviewGrowthSkillRevision(skillId, rejectedRevisionId, {
+        decision: 'reject', reason: 'rejection path coverage'
+      });
+      assert.equal(rejectedReview.success, true);
+      assert.equal(rejectedReview.revision.status, 'review_rejected');
+      assert.equal(rejectedReview.registryEntry.activeRevisionId, baseRevisionId);
+      assert.equal(rejectedReview.registryEntry.pendingRevisionId, null);
+      const events = await client.getEvents({ eventType: 'growth.skill_revision.promote' });
+      assert.equal(events.items.some((event) => event.payload.deviceId === 'mobile_growth_revision_001'), true);
+
+      const malformed = await fetch(`${baseUrl}/growth/skills/${encodeURIComponent(skillId)}/revisions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${paired.deviceToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedActiveRevisionId: baseRevisionId, suggestedSteps: [], unexpected: true })
+      });
+      assert.equal(malformed.status, 400);
+
+      const procedureDefinition = { kind: 'tabular-group-sum-v1', reportTitle: '부서별 합계',
+        groupAliases: ['Team', 'Department'], valueAliases: ['Amount', 'Total KRW'] };
+      const typedDraft = await client.createGrowthSkillRevision(skillId, {
+        expectedActiveRevisionId: baseRevisionId,
+        suggestedSteps: ['그룹 열과 금액 열을 찾아 합계를 대조한다.'],
+        procedureDefinition, reason: 'bridge route cross-material skill trial' });
+      assert.equal(typedDraft.success, true);
+      const trialCases = [
+        { caseId: 'bridge-demo', sourceId: 'bridge-source-a', split: 'demonstration',
+          rows: [{ Team: 'A', Amount: 2 }, { Team: 'A', Amount: 3 }, { Team: 'B', Amount: 4 }],
+          expectedRows: [{ group: 'A', total: 5, count: 2 }, { group: 'B', total: 4, count: 1 }] },
+        { caseId: 'bridge-holdout', sourceId: 'bridge-source-b', split: 'holdout',
+          rows: [{ Department: 'UNIQUE_PRIVATE_HOLDOUT_LABEL', 'Total KRW': 7 }, { Department: 'C', 'Total KRW': 6 }],
+          expectedRows: [{ group: 'UNIQUE_PRIVATE_HOLDOUT_LABEL', total: 7, count: 1 }, { group: 'C', total: 6, count: 1 }] }
+      ];
+      const typedEvaluated = await client.evaluateGrowthSkillRevision(skillId, typedDraft.revision.revisionId, { trialCases });
+      assert.equal(typedEvaluated.success, true);
+      assert.equal(typedEvaluated.revision.status, 'awaiting_user_review');
+      assert.equal(typedEvaluated.revision.evaluation.trialEvaluation.status, 'passed');
+      const typedReviewed = await client.reviewGrowthSkillRevision(skillId, typedDraft.revision.revisionId, {
+        decision: 'approve', reason: 'reviewed deterministic holdout result' });
+      assert.equal(typedReviewed.success, true);
+      const typedPromoted = await client.promoteGrowthSkillRevision(skillId, typedDraft.revision.revisionId, {
+        expectedActiveRevisionId: baseRevisionId });
+      assert.equal(typedPromoted.success, true);
+      assert.equal(typedPromoted.registryEntry.policy.executableByDefault, false);
+      assert.equal(JSON.stringify(growthRuntime.skillRegistryStatus()).includes('UNIQUE_PRIVATE_HOLDOUT_LABEL'), false);
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -15444,6 +16477,13 @@ await test('A-G final release gate separates product evidence from field signoff
       rawCredentialsStored: false,
       rawCommandStored: false
     }), 'utf8');
+    await writeFile(join(distDir, 'wearable-physical-field-gate.json'), JSON.stringify({
+      status: 'passed',
+      physicalValidationPassed: true,
+      evidence: { state: 'available' },
+      integrity: { passed: true, state: 'verified' },
+      evaluation: { status: 'passed' }
+    }), 'utf8');
 
     const passed = await runFinalReleaseGate({
       workspaceRoot: root,
@@ -15730,6 +16770,24 @@ await test('A-G product completion ledger explains ready warnings and blocking e
           }
         }
       }
+    });
+    await writeJsonFixture(join(distDir, 'wearable-physical-field-gate.json'), {
+      status: 'passed',
+      physicalValidationPassed: true,
+      evidence: { state: 'available' },
+      integrity: { passed: true, state: 'verified' },
+      evaluation: { status: 'passed' }
+    });
+    await writeJsonFixture(join(distDir, 'wearable-field-chaos-report.json'), {
+      status: 'passed',
+      checks: [{ checkId: 'voice-v2', status: 'passed' }],
+      summary: {
+        passed: 1,
+        checks: 1,
+        voice2RecoveryPassed: true,
+        rawTranscriptStored: false
+      },
+      rawLeakCheck: { rawLeakDetected: false }
     });
     await writeJsonFixture(join(distDir, 'security-redteam-corpus-report.json'), { status: 'passed' });
     await writeJsonFixture(join(distDir, 'growth-quality-corpus-report.json'), { status: 'passed' });
@@ -16106,6 +17164,7 @@ await test('A-G final release verification bundle preserves reports and returns 
           { id: 'windows-pc-agent-admin-install', status: 'verified' },
           { id: 'mobile-physical-device-smoke', status: 'verified' },
           { id: 'mobile-live-bridge-e2e', status: 'verified' },
+          { id: 'wearable-physical-field-validation', status: 'verified' },
           { id: 'ci-worm-promotion', status: 'verified' }
         ]
       });
@@ -16182,6 +17241,67 @@ await test('A-G final release verification bundle preserves reports and returns 
               pcHandoff: { enabled: true }
             }
           }
+        }
+      });
+      await writeJsonFixture(join(distDir, 'wearable-physical-field-gate.json'), {
+        reportVersion: 'c-d-wearable-physical-field-gate-v1',
+        status: 'passed',
+        physicalValidationPassed: true,
+        evidence: { state: 'verified', actualDeviceConfirmed: true },
+        integrity: { state: 'verified', passed: true },
+        evaluation: { status: 'passed' }
+      });
+      const physicalFieldReport = createWearablePhysicalFieldReport({
+        physicalDeviceConfirmed: true,
+        capability: { secureContext: true },
+        display: {
+          viewport: { width: 320, height: 240 },
+          layout: { horizontalOverflowPx: 0 },
+          privacy: { screenshotStored: false, userAgentStored: false }
+        },
+        microphone: {
+          status: 'passed',
+          privacy: { rawAudioStored: false, audioFramesStored: false }
+        },
+        voice: {
+          status: 'passed',
+          activationDetected: true,
+          intentName: 'show_status',
+          rawTranscriptStored: false
+        },
+        network: {
+          status: 'passed',
+          privacy: { bridgeTokenStored: false }
+        },
+        scenarios: {
+          indoorReadability: true,
+          outdoorReadability: true,
+          motionComfort: true,
+          offlineRecovery: true,
+          thermalBattery: true
+        }
+      });
+      const physicalEvidenceId = createHash('sha256')
+        .update(JSON.stringify(physicalFieldReport))
+        .digest('hex');
+      await writeJsonFixture(
+        join(distDir, 'wearable-hud-field-kit', 'field-evidence', 'latest-field-evidence.json'),
+        {
+          envelopeVersion: 'c-d-wearable-field-evidence-envelope-v1',
+          evidenceId: physicalEvidenceId,
+          receivedAt: '2026-07-30T00:00:00.000Z',
+          report: physicalFieldReport
+        }
+      );
+      await writeJsonFixture(join(distDir, 'wearable-field-chaos-report.json'), {
+        reportVersion: 'c-d-wearable-field-chaos-report-v1',
+        status: 'passed',
+        checks: [{ checkId: 'voice-recovery', status: 'passed' }],
+        rawLeakCheck: { rawLeakDetected: false },
+        summary: {
+          voice2RecoveryPassed: true,
+          rawTranscriptStored: false,
+          physicalFieldSelfCertified: false
         }
       });
       await writeJsonFixture(join(distDir, 'security-redteam-corpus-report.json'), { status: 'passed' });
@@ -17001,6 +18121,38 @@ await test('E/F/G HTTP APIs expose document-defined contract endpoints', async (
     });
     assert.equal(reviewedSkillDraft.success, true);
     assert.equal(reviewedSkillDraft.registryEntry.policy.executableByDefault, false);
+    const apiBaseRevisionId = reviewedSkillDraft.registryEntry.activeRevisionId;
+    const apiSkillRevision = await postJson(`${baseUrl}/advanced-learning/skill-registry/${reviewedSkillDraft.registryEntry.skillId}/revisions`, {
+      expectedActiveRevisionId: apiBaseRevisionId,
+      suggestedSteps: ['요청 범위를 보존한다.', '결과를 다시 확인한다.'],
+      createdBy: 'http_growth_test',
+      reason: 'API lifecycle check'
+    });
+    assert.equal(apiSkillRevision.success, true);
+    const apiRevisionId = apiSkillRevision.revision.revisionId;
+    const apiEvaluation = await postJson(`${baseUrl}/advanced-learning/skill-registry/${reviewedSkillDraft.registryEntry.skillId}/revisions/${apiRevisionId}/evaluate`, {});
+    assert.equal(apiEvaluation.revision.evaluation.mode, 'static-contract-only');
+    assert.equal(apiEvaluation.revision.status, 'awaiting_user_review');
+    const apiReview = await postJson(`${baseUrl}/advanced-learning/skill-registry/${reviewedSkillDraft.registryEntry.skillId}/revisions/${apiRevisionId}/review`, {
+      decision: 'approve',
+      decidedBy: 'http_growth_test',
+      reason: 'explicit API review'
+    });
+    assert.equal(apiReview.revision.status, 'review_approved');
+    const apiPromotion = await postJson(`${baseUrl}/advanced-learning/skill-registry/${reviewedSkillDraft.registryEntry.skillId}/revisions/${apiRevisionId}/promote`, {
+      expectedActiveRevisionId: apiBaseRevisionId,
+      promotedBy: 'http_growth_test',
+      reason: 'reviewed metadata promotion'
+    });
+    assert.equal(apiPromotion.registryEntry.activeRevisionId, apiRevisionId);
+    assert.equal(apiPromotion.registryEntry.policy.executableByDefault, false);
+    const apiRollback = await postJson(`${baseUrl}/advanced-learning/skill-registry/${reviewedSkillDraft.registryEntry.skillId}/revisions/${apiRevisionId}/rollback`, {
+      expectedActiveRevisionId: apiRevisionId,
+      targetRevisionId: apiBaseRevisionId,
+      rolledBackBy: 'http_growth_test',
+      reason: 'restore initial revision'
+    });
+    assert.equal(apiRollback.registryEntry.activeRevisionId, apiBaseRevisionId);
     const usefulness = await postJson(`${baseUrl}/advanced-learning/skill-registry/${reviewedSkillDraft.registryEntry.skillId}/usefulness`, {
       outcome: 'adopted',
       taskId: 'task_http_skill_usefulness',

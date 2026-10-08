@@ -1,0 +1,52 @@
+{
+  "policyVersion": "jarvis-hwpx-mcp-policy-v1",
+  "defaultDeny": true,
+  "plugin": {
+    "marketplace": "airmang/hwpx-plugins",
+    "marketplaceRef": "v2.0.2",
+    "marketplaceCommit": "d195ad61ba53149ff8e12c6851392c4de1502883",
+    "pluginName": "hwpx-plugin",
+    "pluginVersion": "2.0.2",
+    "serverPackage": "python-hwpx-automation",
+    "serverVersion": "7.0.3",
+    "corePackage": "python-hwpx",
+    "coreVersion": "6.3.0"
+  },
+  "routing": {
+    "nativeHwpPrimary": true,
+    "nativeTool": "hwp.create",
+    "mcpRole": "secondary-hwpx-create-edit-inspect",
+    "allowedTools": [
+      "mcp_server_health",
+      "create_document",
+      "add_table",
+      "add_paragraph",
+      "get_document_text"
+    ],
+    "quarantinedTools": [
+      {
+        "name": "start_workflow",
+        "reason": "High-level unknown_form_fill workflow did not complete in two isolated E2E runs."
+      },
+      {
+        "name": "continue_workflow",
+        "reason": "The same workflow continuation exceeded both 90-second and 240-second deadlines."
+      },
+      {
+        "name": "approve_workflow_decision",
+        "reason": "Workflow mutation remains disabled until continuation completes under a bounded deadline."
+      },
+      {
+        "name": "resume_workflow",
+        "reason": "Workflow mutation remains disabled until continuation completes under a bounded deadline."
+      }
+    ]
+  },
+  "limits": {
+    "toolTimeoutMs": 45000,
+    "maximumOutputBytes": 16777216,
+    "workspaceRootsRequired": true,
+    "advancedProfileEnabled": false,
+    "automaticBackupEnabled": true
+  }
+}

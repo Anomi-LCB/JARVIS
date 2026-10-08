@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
+import {readFile} from 'node:fs/promises';
 import { writeCoreServicePackage } from '../packages/core/src/install/core-service-packager.js';
 
 export async function runCoreServicePackageCli(argv = process.argv.slice(2)) {
@@ -12,6 +13,8 @@ export async function runCoreServicePackageCli(argv = process.argv.slice(2)) {
     port: args.port ? Number(args.port) : undefined,
     host: args.host ?? undefined,
     signed: args.signed === true,
+    installedRuntime:args.installedRuntimeFile?JSON.parse(await readFile(args.installedRuntimeFile,'utf8')):null,
+    serviceAuthority:args.serviceAuthorityFile?JSON.parse(await readFile(args.serviceAuthorityFile,'utf8')):null,
     logs: {
       adminTokenHash: args.adminTokenHash,
       workerDaemonIntervalMs: args.daemonIntervalMs ? Number(args.daemonIntervalMs) : undefined,
@@ -36,6 +39,8 @@ function parseArgs(argv) {
     else if (arg === '--display-name') parsed.displayName = argv[++index];
     else if (arg === '--port') parsed.port = argv[++index];
     else if (arg === '--host') parsed.host = argv[++index];
+    else if (arg === '--installed-runtime-file') parsed.installedRuntimeFile = argv[++index];
+    else if (arg === '--service-authority-file') {parsed.serviceAuthorityFile=argv[++index];if(!parsed.serviceAuthorityFile||parsed.serviceAuthorityFile.startsWith('--'))throw Error('CORE_SERVICE_AUTHORITY_FILE_REQUIRED');}
     else if (arg === '--admin-token-hash') parsed.adminTokenHash = argv[++index];
     else if (arg === '--daemon-interval-ms') parsed.daemonIntervalMs = argv[++index];
     else if (arg === '--daemon-drain-limit') parsed.daemonDrainLimit = argv[++index];

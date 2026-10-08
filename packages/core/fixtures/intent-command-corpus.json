@@ -114,10 +114,10 @@
       }
     },
     {
-      "id": "a03-upload-email-pdf",
+      "id": "a03-send-email-pdf",
       "command": "주보.pdf를 이메일로 전송해줘",
       "expected": {
-        "actionType": "UPLOAD_FILE",
+        "actionType": "SEND_EMAIL",
         "slots": {
           "destination": "email",
           "fileName": "주보.pdf",
@@ -145,10 +145,10 @@
       }
     },
     {
-      "id": "a03-upload-named-recipient",
+      "id": "a03-send-email-named-recipient",
       "command": "민수에게 메일로 회의 메모 전송해줘",
       "expected": {
-        "actionType": "UPLOAD_FILE",
+        "actionType": "SEND_EMAIL",
         "slots": {
           "destination": "email",
           "recipientHint": "민수",

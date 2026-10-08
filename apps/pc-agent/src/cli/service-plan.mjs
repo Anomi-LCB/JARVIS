@@ -28,7 +28,7 @@ export async function runServicePlanCli(argv = process.argv.slice(2)) {
       console.log(JSON.stringify(report, null, 2));
       return report;
     }
-    console.log('# JARVIS PC Agent service verification');
+    console.log('# JARVIS PC 에이전트 서비스 검증');
     console.log(`Status: ${report.status}`);
     console.log(`Service: ${report.serviceName}`);
     console.log(`Endpoint: ${report.endpoint}`);
@@ -48,7 +48,7 @@ export async function runServicePlanCli(argv = process.argv.slice(2)) {
     console.log(JSON.stringify(plan, null, 2));
     return plan;
   }
-  console.log(`# JARVIS PC Agent service plan`);
+  console.log('# JARVIS PC 에이전트 서비스 계획');
   console.log(`Action: ${plan.action}`);
   console.log(`Mode: ${plan.dryRun ? 'dry-run' : 'execute-requested'}`);
   console.log(`Service: ${plan.serviceName}`);

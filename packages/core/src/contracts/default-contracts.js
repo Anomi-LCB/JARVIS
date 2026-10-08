@@ -206,6 +206,27 @@ export const ContextSnapshotContract = {
       { pass: Array.isArray(value?.recentFiles), message: 'ContextSnapshot.recentFiles must be an array.' },
       { pass: value?.recentFiles?.every?.((item) => isNonEmptyString(item.name) && isNonEmptyString(item.path) && typeof item.sizeBytes === 'number' && isIsoDate(item.modifiedAt)), message: 'ContextSnapshot.recentFiles must contain metadata-only file entries.' },
       { pass: Array.isArray(value?.userPreferences), message: 'ContextSnapshot.userPreferences must be an array.' },
+      { pass: value?.memoryEvidence === undefined || (Array.isArray(value.memoryEvidence)
+        && value.memoryEvidence.every(item => isNonEmptyString(item?.memoryId) && typeof item.summary === 'string'
+          && ['user-confirmed-preference','user-statement','historical-execution-observation','historical-failure-observation','system-inference','unattributed-context'].includes(item.basis)
+          && Array.isArray(item.sourceEventIds) && item.sourceEventIds.every(isNonEmptyString)
+          && Array.isArray(item.observedAt) && item.observedAt.every(at=>typeof at==='string')
+          && (item.validity === undefined || (['unspecified','declared-expiry'].includes(item.validity?.basis)
+            && (item.validity.basis === 'unspecified' ? item.validity.validUntil === null : isIsoDate(item.validity.validUntil))))
+          && (item.usageScopes === undefined || (Array.isArray(item.usageScopes) && item.usageScopes.every(scope =>
+            isNonEmptyString(scope?.userId) && isNonEmptyString(scope.workspaceRoot)
+            && (scope.conversationId === null || isNonEmptyString(scope.conversationId)))))
+          && (item.revisionReference === undefined || (item.revisionReference !== null
+            && (item.revisionReference.revision === null || (Number.isInteger(item.revisionReference.revision) && item.revisionReference.revision > 0))
+            && (item.revisionReference.supersedesEventId === null || isNonEmptyString(item.revisionReference.supersedesEventId))))
+          && (item.revisionHistory === undefined || (Array.isArray(item.revisionHistory)
+            && item.revisionHistory.every(entry=>isNonEmptyString(entry?.action) && isIsoDate(entry.at))))
+          && (item.scopePolicy === undefined || item.scopePolicy === null || (typeof item.scopePolicy === 'object'
+            && !Array.isArray(item.scopePolicy) && isNonEmptyString(item.scopePolicy.userScope)
+            && isNonEmptyString(item.scopePolicy.workspaceScope)))
+          && typeof item.requiresUserResolution === 'boolean' && item.executionAuthority === false
+          && item.independentlyVerifiedOutcome === false && item.currentArtifactVerified === false)),
+        message: 'ContextSnapshot.memoryEvidence must preserve basis and must not assert current verification or authority.' },
       { pass: value?.workflow && typeof value.workflow === 'object', message: 'ContextSnapshot.workflow is required.' },
       { pass: value?.environment && typeof value.environment === 'object', message: 'ContextSnapshot.environment is required.' },
       { pass: value?.environment?.workspace?.contentRead === false, message: 'ContextSnapshot.environment.workspace.contentRead must be false.' },

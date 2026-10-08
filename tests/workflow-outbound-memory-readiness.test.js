@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createAgRuntime} from '../apps/runtime-compose/src/create-runtime.js';
+import {PersonalOperationsStore} from '../packages/core/src/personal-operations/operations-store.js';
+import {SqliteMissionStore} from '../packages/core/src/mission/sqlite-mission-store.js';
+import {SqliteMemoryStore} from '../apps/growth-memory/src/db/sqlite-store.js';
+import {PcOutboundMailbox} from '../packages/core/src/client/pc-outbound-mailbox.js';
+import {PcOutboundCommandMailbox} from '../packages/core/src/client/pc-outbound-command-mailbox.js';
+import {PcOutboundExecutionClient} from '../packages/core/src/client/pc-outbound-execution-client.js';
+
+for(const mode of ['ready-memory','missing-memory'])test(`outbound workflow does not advertise unsupported recovery readiness (${mode})`,async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-outbound-workflow-readiness-'));
+ const operations=new PersonalOperationsStore({dbPath:join(root,'operations.sqlite')});
+ const memoryStore=mode==='ready-memory'?new SqliteMemoryStore({dbPath:join(root,'growth.sqlite'),reviewDir:join(root,'reviews'),backupDir:join(root,'backups')}):null;
+ const mailbox=new PcOutboundMailbox({dbPath:join(root,'outbound.sqlite'),authorityGuard:()=>({token:1})});
+ const commands=new PcOutboundCommandMailbox({mailbox});
+ const executor=new PcOutboundExecutionClient({commands,deviceId:'synthetic-pc'});
+ const runtime=createAgRuntime({missionStore:new SqliteMissionStore({operationsStore:operations}),memoryStore,pcAgentExecutor:executor,allowedRoots:[root],auditRoot:join(root,'audit'),workerDaemonEnabled:false,env:{JARVIS_TEST_MODE:'1',JARVIS_LLM_INTENT:'0',JARVIS_LLM_PLANNER:'0',JARVIS_LLM_CONTENT:'0'}});
+ t.after(async()=>{runtime.coreFacade.cognition.close();memoryStore?.close();operations.close();mailbox.close();await rm(root,{recursive:true,force:true});});
+ const readiness=runtime.missionRuntime.effectCoordinator.memoryReadiness({plan:{action:{toolName:'workflow.execute'}}});
+ assert.equal(readiness.required,true);assert.equal(readiness.available,false);
+ assert.equal(readiness.code,'A_MISSION_WORKFLOW_RECOVERY_CHANNEL_UNSUPPORTED');
+ assert.equal(readiness.reason,'outbound-workflow-recovery-not-implemented');
+ assert.match(readiness.nextAction,/외향 연결/);assert.equal(JSON.stringify(readiness).includes(root),false);
+ assert.equal(mailbox.db.prepare('SELECT count(*) AS n FROM pc_commands').get().n,0);
+ assert.equal(operations.db.prepare('SELECT count(*) AS n FROM workflow_cognition_intents').get().n,0);
+ assert.deepEqual(runtime.missionRuntime.effectCoordinator.memoryReadiness({plan:{action:{toolName:'filesystem.listFiles'}}}),{required:false,available:true});
+});

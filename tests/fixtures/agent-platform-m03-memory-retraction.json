@@ -1,0 +1,7 @@
+{
+  "fixtureId": "m03-memory-retraction-synthetic-v1",
+  "sourceStatement": "회의 자료에는 개인 연락처를 넣지 말고 공개된 일정만 정리해줘",
+  "decisionReason": "연락처는 사적인 정보라 공유 자료에서 제외",
+  "query": "연락처",
+  "deleteEventId": "m03-source-1"
+}

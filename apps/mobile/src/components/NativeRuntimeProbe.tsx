@@ -13,6 +13,22 @@ type ProbeState = {
   checkedAt: string | null;
 };
 
+const probeStatusLabel: Record<string, string> = {
+  checking: '확인 중',
+  available: '사용 가능',
+  unavailable: '사용 불가',
+  error: '오류',
+  granted: '허용됨',
+  denied: '거부됨',
+  undetermined: '미결정'
+};
+
+function platformLabel(platform: string) {
+  if (platform === 'android') return '안드로이드';
+  if (platform === 'ios') return 'iOS';
+  return platform;
+}
+
 export function NativeRuntimeProbe() {
   const [state, setState] = useState<ProbeState>({
     secureStore: 'checking',
@@ -60,22 +76,22 @@ export function NativeRuntimeProbe() {
   return (
     <View
       testID="native-runtime-probe"
-      accessibilityLabel={`native runtime probe ${state.secureStore} ${state.notifications} ${state.sharing}`}
+      accessibilityLabel={`기기 기능 점검, 보안 저장소 ${probeStatusLabel[state.secureStore]}, 알림 ${probeStatusLabel[state.notifications]}, 공유 ${probeStatusLabel[state.sharing]}`}
       style={{ padding: spacing.sm, borderColor: colors.line, borderWidth: 1, gap: spacing.xs }}
     >
-      <Text style={{ color: colors.text }}>Native runtime probe</Text>
+      <Text style={{ color: colors.text }}>기기 기능 점검</Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
         <Text testID="native-probe-secure-store" style={{ color: colors.muted }}>
-          SecureStore native: {state.secureStore}
+          보안 저장소: {probeStatusLabel[state.secureStore]}
         </Text>
         <Text testID="native-probe-notifications" style={{ color: colors.muted }}>
-          Notifications native: {state.notifications}
+          알림: {probeStatusLabel[state.notifications]}
         </Text>
         <Text testID="native-probe-sharing" style={{ color: colors.muted }}>
-          Sharing native: {state.sharing}
+          공유: {probeStatusLabel[state.sharing]}
         </Text>
         <Text style={{ color: colors.muted }}>
-          Platform: {Platform.OS}
+          운영체제: {platformLabel(Platform.OS)}
         </Text>
       </View>
     </View>

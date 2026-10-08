@@ -1,0 +1,59 @@
+apply from: '../../apps/mobile/android/app/distribution-policy.gradle'
+
+tasks.register('verifyObservedArtifacts') {
+    doLast {
+        def results = ['debug': 'private-lab', 'release': 'play-store'].collect { variant, channel ->
+            def title = variant.capitalize()
+            def manifestFile = file("../../apps/mobile/android/app/build/intermediates/merged_manifest/${variant}/process${title}MainManifest/AndroidManifest.xml")
+            def configFile = file("../../apps/mobile/android/app/build/generated/source/buildConfig/${variant}/local/eureka/jarvis/BuildConfig.java")
+            def result = validateJarvisDistribution(manifestFile, configFile, channel)
+            return result + [manifest: manifestFile.name, manifestModifiedAt: manifestFile.lastModified(), configModifiedAt: configFile.lastModified()]
+        }
+        println groovy.json.JsonOutput.toJson([actualGeneratedArtifacts: true, results: results])
+    }
+}
+
+tasks.register('verifyDistributionFixtures') {
+    doLast {
+        def directory = java.nio.file.Files.createTempDirectory('jarvis-distribution-fixtures').toFile()
+        def manifestFile = new File(directory, 'AndroidManifest.xml')
+        def configFile = new File(directory, 'BuildConfig.java')
+        def wrap = { permissions, app, namespace = 'a' ->
+            """<manifest xmlns:${namespace}="http://schemas.android.com/apk/res/android">${permissions}<application ${namespace}:usesCleartextTraffic="false">${app}</application></manifest>"""
+        }
+        def valid = wrap('<uses-permission a:name="android.permission.INTERNET"/>', '')
+        def checks = []
+        def run = { name, xml, channel = 'play-store', field = 'play-store', expected = true ->
+            manifestFile.write(xml, 'UTF-8')
+            configFile.write("public static final String JARVIS_DISTRIBUTION_CHANNEL = \"${field}\";\n", 'UTF-8')
+            boolean passed = false
+            try {
+                passed = validateJarvisDistribution(manifestFile, configFile, channel).passed
+            } catch (Exception error) {
+                if (expected) throw error
+                passed = false
+            }
+            assert passed == expected : "Unexpected distribution result: ${name}"
+            checks.add([name: name, expectedAllowed: expected, observedAllowed: passed])
+        }
+        try {
+            run('normal notification/audio permissions', wrap('<uses-permission a:name="android.permission.POST_NOTIFICATIONS"/><uses-permission a:name="android.permission.RECORD_AUDIO"/>', ''))
+            run('namespace alias', wrap('', '', 'different'))
+            run('comment is not permission', wrap('<!-- <uses-permission a:name="android.permission.SYSTEM_ALERT_WINDOW"/> -->', ''))
+            ['SYSTEM_ALERT_WINDOW', 'READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE', 'MANAGE_EXTERNAL_STORAGE', 'QUERY_ALL_PACKAGES', 'BIND_ACCESSIBILITY_SERVICE'].each {
+                run("deny ${it}", wrap("<uses-permission-sdk-23 a:name=\"android.permission.${it}\"/>", ''), 'play-store', 'play-store', false)
+            }
+            run('accessibility binding', wrap('', '<service a:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"/>'), 'play-store', 'play-store', false)
+            run('accessibility action', wrap('', '<service><intent-filter><action a:name="android.accessibilityservice.AccessibilityService"/></intent-filter></service>'), 'play-store', 'play-store', false)
+            run('cleartext true', valid.replace('Traffic="false"', 'Traffic="true"'), 'play-store', 'play-store', false)
+            run('cleartext omitted', valid.replace('a:usesCleartextTraffic="false"', ''), 'play-store', 'play-store', false)
+            run('wrong channel field', valid, 'play-store', 'private-lab', false)
+            run('unknown channel', valid, 'unknown', 'unknown', false)
+            run('private path preserved', wrap('<uses-permission a:name="android.permission.SYSTEM_ALERT_WINDOW"/>', '').replace('Traffic="false"', 'Traffic="true"'), 'private-lab', 'private-lab', true)
+            run('DTD rejected', '<!DOCTYPE manifest [<!ENTITY x "test">]>' + valid, 'play-store', 'play-store', false)
+            println groovy.json.JsonOutput.toJson([passed: checks.size(), failed: 0, checks: checks])
+        } finally {
+            directory.deleteDir()
+        }
+    }
+}

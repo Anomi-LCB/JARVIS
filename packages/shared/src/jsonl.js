@@ -3,6 +3,8 @@ import { mkdirSync, appendFileSync, statSync, renameSync, rmSync, copyFileSync }
 import { dirname, basename, join } from 'node:path';
 
 const transientFileLockCodes = new Set(['EBUSY', 'EPERM', 'EACCES']);
+let activeSyncBatch = null;
+let syncBatchSequence = 0;
 
 // 로그 파일 크기 상한. 초과 시 D:\Jarvis_LogArchive로 통째로 이동(무손실)하고 새로 시작한다.
 // EventBus replay는 활성 파일의 마지막 16MB만 읽으므로 로테이션해도 복구 동작에 영향 없음.
@@ -69,13 +71,87 @@ export async function appendJsonl(filePath, event) {
 }
 
 export function appendJsonlSync(filePath, event) {
+  const line = `${JSON.stringify(event)}\n`;
+  if (activeSyncBatch) {
+    queueSyncBatchLine(activeSyncBatch, filePath, line);
+    return;
+  }
+  appendSerializedJsonlSync(filePath, line);
+}
+
+// Hash-chained journals must reach disk while their file lock is held. They cannot
+// wait for an unrelated operation batch to commit without exposing a stale head.
+export function appendJsonlImmediateSync(filePath, event) {
+  appendSerializedJsonlSync(filePath, `${JSON.stringify(event)}\n`);
+}
+
+export function appendJsonlBatchSync(filePath, events = []) {
+  if (!Array.isArray(events) || events.length === 0) return;
+  const lines = events.map((event) => `${JSON.stringify(event)}\n`);
+  if (activeSyncBatch) {
+    for (const line of lines) queueSyncBatchLine(activeSyncBatch, filePath, line);
+    return;
+  }
+  appendSerializedJsonlSync(filePath, lines.join(''));
+}
+
+export function beginJsonlBatchSync({ operation = 'jsonl-batch' } = {}) {
+  const batch = {
+    batchId: `jsonl_batch_${++syncBatchSequence}`,
+    operation,
+    parent: activeSyncBatch,
+    recordsByPath: new Map(),
+    logicalRecordCount: 0,
+    startedAtNs: process.hrtime.bigint(),
+    state: 'active'
+  };
+  activeSyncBatch = batch;
+  return batch;
+}
+
+export function commitJsonlBatchSync(batch) {
+  assertActiveSyncBatch(batch);
+  activeSyncBatch = batch.parent;
+  batch.state = 'committing';
+
+  if (batch.parent) {
+    for (const [filePath, lines] of batch.recordsByPath) {
+      for (const line of lines) queueSyncBatchLine(batch.parent, filePath, line);
+    }
+    batch.state = 'committed';
+    return batchSummary(batch, { nested: true, physicalWriteCount: 0 });
+  }
+
+  let physicalWriteCount = 0;
+  try {
+    for (const [filePath, lines] of batch.recordsByPath) {
+      appendSerializedJsonlSync(filePath, lines.join(''));
+      physicalWriteCount += 1;
+    }
+    batch.state = 'committed';
+    return batchSummary(batch, { nested: false, physicalWriteCount });
+  } catch (error) {
+    batch.state = 'failed';
+    error.jsonlBatch = batchSummary(batch, { nested: false, physicalWriteCount });
+    throw error;
+  }
+}
+
+export function discardJsonlBatchSync(batch) {
+  assertActiveSyncBatch(batch);
+  activeSyncBatch = batch.parent;
+  batch.state = 'discarded';
+  return batchSummary(batch, { nested: Boolean(batch.parent), physicalWriteCount: 0 });
+}
+
+function appendSerializedJsonlSync(filePath, body) {
+  if (!body) return;
   mkdirSync(dirname(filePath), { recursive: true });
   rotateIfOversized(filePath);
-  const line = `${JSON.stringify(event)}\n`;
   let lastError = null;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
-      appendFileSync(filePath, line, 'utf8');
+      appendFileSync(filePath, body, 'utf8');
       return;
     } catch (error) {
       if (!isTransientJsonlWriteError(error)) throw error;
@@ -84,6 +160,36 @@ export function appendJsonlSync(filePath, event) {
     }
   }
   throw lastError;
+}
+
+function queueSyncBatchLine(batch, filePath, line) {
+  const lines = batch.recordsByPath.get(filePath) ?? [];
+  lines.push(line);
+  batch.recordsByPath.set(filePath, lines);
+  batch.logicalRecordCount += 1;
+}
+
+function assertActiveSyncBatch(batch) {
+  if (!batch || batch.state !== 'active' || activeSyncBatch !== batch) {
+    throw new Error('JSONL sync batches must be completed in last-in-first-out order.');
+  }
+}
+
+function batchSummary(batch, { nested, physicalWriteCount }) {
+  const durationMs = Number(process.hrtime.bigint() - batch.startedAtNs) / 1_000_000;
+  return {
+    batchId: batch.batchId,
+    operation: batch.operation,
+    state: batch.state,
+    nested,
+    logicalRecordCount: batch.logicalRecordCount,
+    physicalWriteCount,
+    fileCount: batch.recordsByPath.size,
+    writeReductionRatio: batch.logicalRecordCount > 0
+      ? 1 - physicalWriteCount / batch.logicalRecordCount
+      : 0,
+    durationMs
+  };
 }
 
 export async function readJsonl(filePath) {

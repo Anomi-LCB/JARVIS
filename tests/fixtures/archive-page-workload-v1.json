@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "counts": [1000, 10000, 20000],
+  "pageSize": 50,
+  "repetitions": 3,
+  "queries": [
+    { "id": "absent", "query": "없는내용", "matchingRows": 0 },
+    { "id": "rare", "query": "희귀", "matchingRows": 5 },
+    { "id": "dense", "query": "자료", "matchingRows": 125 }
+  ]
+}

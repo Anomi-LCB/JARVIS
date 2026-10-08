@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, mkdtempSync,rmSync } from 'node:fs';
+import {join} from 'node:path';import {tmpdir} from 'node:os';
+import {GrowthRuntime,SkillDraftRegistry} from '../apps/growth-memory/src/growth-runtime.js';
+import {SqliteMemoryStore} from '../apps/growth-memory/src/db/sqlite-store.js';
+import {createProcedureLifecycle,procedureLifecycleIssue} from '../apps/growth-memory/src/skill-procedure-lifecycle.js';
+const f=JSON.parse(readFileSync(new URL('./fixtures/agent-platform-g05-cross-material.json',import.meta.url),'utf8'));
+const start='2026-10-04T00:00:00.000Z';
+test('procedure lifecycle seals applicability, verifier, failure, recovery and bounded expiry',()=>{
+ const c=createProcedureLifecycle(f.procedureDefinition,{},start);assert.equal(c.expiresAt,'2026-10-11T00:00:00.000Z');
+ assert.equal(c.verifier.runtimeId,'g-tabular-result-v1');assert.equal(c.failure.preserveOriginalInput,true);assert.equal(c.recovery.allowAutomaticRetry,false);
+ const rev={procedureDefinition:f.procedureDefinition,createdAt:start,procedureLifecycle:c};assert.equal(procedureLifecycleIssue(rev,start),null);
+ assert.equal(procedureLifecycleIssue(rev,c.expiresAt),'F_SKILL_PROCEDURE_EXPIRED');
+ assert.equal(procedureLifecycleIssue({...rev,procedureLifecycle:{...c,failure:{action:'ignore'}}},start),'F_SKILL_PROCEDURE_LIFECYCLE_INVALID');
+ assert.equal(procedureLifecycleIssue({...rev,procedureLifecycle:null},start),'F_SKILL_PROCEDURE_LIFECYCLE_REQUIRED');
+ for(const opts of [{expiresAt:start},{expiresAt:'invalid'},{expiresAt:'2027-01-01T00:00:00.000Z'},{allowAutomaticRetry:true}])assert.throws(()=>createProcedureLifecycle(f.procedureDefinition,opts,start));
+});
+test('actual SQLite reopen preserves reviewed lifecycle and expired active procedure is withheld from Mission guidance',t=>{
+ const root=mkdtempSync(join(tmpdir(),'jarvis-procedure-expiry-'));const stores=[];let now=start;
+ const open=()=>{const store=new SqliteMemoryStore({dbPath:join(root,'memory.sqlite'),reviewDir:join(root,'reviews'),backupDir:join(root,'backups')});stores.push(store);return new GrowthRuntime({memoryStore:store,auditRoot:root,clock:()=>new Date(now)});};
+ t.after(()=>{for(const s of stores)try{s.close();}catch{}rmSync(root,{recursive:true,force:true});});
+ let r=open();const objective='연구 자료를 읽고 핵심 근거를 정리해줘';for(let i=0;i<3;i++)r.ingestor.ingest({eventId:`expiry-source-${i}`,eventType:'task.created',taskId:`expiry-task-${i}`,payload:{rawText:objective},learningFlags:{canBeUsedForWorkflow:true},trustBoundary:{userProvided:true,externalContent:false}});
+ const d=r.advancedLearningModels().skillDistillations[0];const initial=r.reviewSkillDraft(d.distilledSkillId,{decision:'approve',decidedBy:'fixture-owner'}).registryEntry;
+ const created=r.mutateSkillRevision('create',{skillId:initial.skillId,expectedActiveRevisionId:initial.activeRevisionId,suggestedSteps:['원문 필드를 확인한다.','그룹 합계를 검증한다.'],procedureDefinition:f.procedureDefinition,procedureLifecycle:{expiresAt:'2026-10-05T00:00:00.000Z'}});assert.equal(created.success,true);
+ const payload={skillId:initial.skillId,revisionId:created.revision.revisionId};
+ assert.equal(r.mutateSkillRevision('evaluate',{...payload,trialCases:f.cases}).success,true);assert.equal(r.mutateSkillRevision('review',{...payload,decision:'approve'}).success,true);
+ assert.equal(r.mutateSkillRevision('promote',{...payload,expectedActiveRevisionId:initial.activeRevisionId}).success,true);assert.equal(r.missionSkillGuidance(objective).length,1);
+ stores.at(-1).close();r=open();assert.deepEqual(r.skillDraftRegistry.registry.get(initial.skillId).revisions.at(-1).procedureLifecycle,created.revision.procedureLifecycle);
+ now='2026-10-05T00:00:00.000Z';assert.deepEqual(r.missionSkillGuidance(objective),[]);
+ assert.equal(r.mutateSkillRevision('promote',{...payload,expectedActiveRevisionId:payload.revisionId}).error.code,'F_SKILL_PROCEDURE_EXPIRED');
+ assert.equal(r.mutateSkillRevision('rollback',{skillId:initial.skillId,targetRevisionId:initial.activeRevisionId,expectedActiveRevisionId:payload.revisionId}).success,true,'explicit rollback to non-executable reviewed reference remains allowed');
+ assert.equal(r.mutateSkillRevision('rollback',{skillId:initial.skillId,targetRevisionId:payload.revisionId,expectedActiveRevisionId:initial.activeRevisionId}).error.code,'F_SKILL_PROCEDURE_EXPIRED');
+});

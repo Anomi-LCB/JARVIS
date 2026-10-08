@@ -1,0 +1,11 @@
+{
+  "fixtureId": "g11-accessible-desktop-settings-layout-change-v1",
+  "targetAccessibleName": "자동 저장 사용",
+  "saveButtonAccessibleName": "설정 저장",
+  "unrelatedSettingAccessibleName": "외부로 자동 전송",
+  "storageKey": "jarvis.fixture.autosave",
+  "expectedPersistedValue": "true",
+  "layoutBefore": "before",
+  "layoutAfter": "after",
+  "layoutShiftMinimumPx": 100
+}

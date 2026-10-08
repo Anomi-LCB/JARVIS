@@ -1,0 +1,587 @@
+{
+  "requirements": {
+    "role-scoped-execution": {
+      "state": "available-local",
+      "evidence": [
+        "tests/mission-role-agent-session-pool.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "artifacts/agent-platform-20260929/independent-oracle-iteration-v1.md",
+        "artifacts/agent-platform-20260929/local-proxy-evaluation.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G12-local-20260929T013819Z-2fb77d30-09a6-4f32-b96d-31e561f3448c/report.md"
+      ],
+      "nextAction": "G01과 G12 공개 시나리오 어댑터를 로컬에 연결했다. G01은 실시간 allowlisted W3C GET을 포함해 3회, G12는 합성 역할 인계 Mission을 3회 실행했고 각 별도 프로세스 oracle 3/3 통과. G12는 같은 프로세스 내부 새 runtime 인스턴스 기반 테스트이며 실제 OS 프로세스 종료·외부 역할 worker는 검증하지 않았다. 두 시나리오 모두 실제 Grok provider는 호출하지 않았다. 다음은 공개 시나리오 어댑터 확장 및 독립 작성 홀드아웃이다."
+    },
+    "public-source-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/fixtures/agent-platform-g01-public-sources.json",
+        "tests/agent-platform-g01-role-source.test.js",
+        "artifacts/agent-platform-20260929/local-proxy-evaluation.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012758Z-5452b3ba-a7a5-47b4-bae4-97a82c946d09/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G01-live-20260929T012919Z-656b135c-6114-417a-a0fc-ef6699d1c4f0/repetition-3/oracle.json"
+      ],
+      "nextAction": "G01 공개 W3C 원문 GET + 규칙 기반 로컬 Mission을 3회 실행했고 별도 프로세스 오라클 3/3 통과를 확인했다. 첫 어댑터 실행은 식별자 불일치로 3/3 실패해 보존했고, 수정 후 전체 통과했다. 최신 관측 p50 1062ms/p95 1154ms, provider 호출 0, GET 6건, 외부 쓰기 0, 비용 미측정이다. 실제 xAI/Grok API, 외부 모델 품질, 독립 인간 평가 및 의미론적 출처 검증은 미측정이다. 다음은 독립 저자 holdout, 응답 실패 주입, 다른 공개 시나리오 어댑터다."
+    },
+    "artifact-conflict-resolution": {
+      "state": "available-local",
+      "evidence": [
+        "tests/agent-platform-g02-artifact-conflict.test.js",
+        "tests/agent-platform-g02-cross-process-conflict.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T003407779Z-ac42f567-654f-4e1d-9ead-63eaa76b9576/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T003407779Z-ac42f567-654f-4e1d-9ead-63eaa76b9576/tests.log",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T003407779Z-ac42f567-654f-4e1d-9ead-63eaa76b9576/oracle/G02X-repetition-1-evidence.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T003407779Z-ac42f567-654f-4e1d-9ead-63eaa76b9576/oracle/G02X-repetition-1-oracle.json",
+        "artifacts/agent-platform-20260929/g02-cross-process-conflict-local-evaluation.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G02-local-20260929T014250Z-13a54c98-4413-4f6f-8576-8fd83055bbba/report.md"
+      ],
+      "nextAction": "G02 공개 시나리오 로컬 어댑터를 고정 합성 파일에 연결했다. 동시 수정 2건에서 winner 하나, 보존된 conflict, revision/hash 및 undo 기록을 별도 oracle이 3회 모두 검사했다. 실행 범위는 단일 로컬 파일 어댑터이며 다른 기기/분산 스토리지·제품 UI·외부 Grok 기능은 미검증이다. 다음은 실제 사용자 동시편집 파일시스템 조건과 holdout이다."
+    },
+    "durable-routines": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/runtime/durable-routine-store.js",
+        "packages/core/src/runtime/durable-routine-scheduler.js",
+        "packages/core/src/runtime/korean-time-expression.js",
+        "packages/core/src/runtime/core-worker-daemon.js",
+        "scripts/core-service-runtime.mjs",
+        "packages/core/src/main.mjs",
+        "tests/durable-routines.test.js",
+        "tests/korean-time-expression.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "scripts/agent-platform-local-proxy-evaluation.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T220103534Z-73e3da7e-4ef7-49af-a9db-f32d0f5e5fe0/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T220103534Z-73e3da7e-4ef7-49af-a9db-f32d0f5e5fe0/report.md",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T220103534Z-73e3da7e-4ef7-49af-a9db-f32d0f5e5fe0/tests.log",
+        "artifacts/agent-platform-20260929/g03-durable-routines-iteration-v3.md",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T220543124Z-639bb891-2b72-45ac-be35-aa3d2c01f0e3/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T220543124Z-639bb891-2b72-45ac-be35-aa3d2c01f0e3/report.md",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T220543124Z-639bb891-2b72-45ac-be35-aa3d2c01f0e3/tests.log",
+        "artifacts/agent-platform-20260929/g03-durable-routines-iteration-v4.md",
+        "artifacts/agent-platform-20260929/g03-full-suite-final.log",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T221115776Z-5fe0281e-20f2-45d7-8ddf-a1c43a345944/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T221115776Z-5fe0281e-20f2-45d7-8ddf-a1c43a345944/tests.log",
+        "artifacts/agent-platform-20260929/g03-durable-routines-iteration-v2.md",
+        "artifacts/agent-platform-20260929/g03-durable-routines-iteration-v1.md",
+        "artifacts/agent-platform-20260929/g03-natural-time-focused-tests.log",
+        "artifacts/agent-platform-20260929/g03-natural-time-core-service-smoke.log",
+        "artifacts/agent-platform-20260929/g03-natural-time-full-suite-report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G03-local-20260929T014608Z-a38ef1c4-71ae-42c4-abc6-19120d9bccd2/report.md"
+      ],
+      "nextAction": "G03 공개 시나리오 어댑터에서 로컬 routine scheduler + 합성 Mission + SQLite 재시작 후 중복 방지와 missed notification을 3회 수행했고 별도 oracle 3/3 통과. p50 732ms/p95 863ms. 실제 Windows Service uptime·절전/복귀·캘린더 계정·사용자 UI 편집은 별도 검증 대상이다."
+    },
+    "mail-event-sandbox": {
+      "state": "blocked",
+      "evidence": [],
+      "nextAction": "메일 제공자 sandbox 및 전용 시험 계정을 준비한다."
+    },
+    "skill-revision-runtime": {
+      "state": "available-local",
+      "evidence": [
+        "apps/growth-memory/src/skill-procedure-runtime.js",
+        "tests/agent-platform-g05-skill-evaluation.test.js",
+        "tests/fixtures/agent-platform-g05-cross-material.json",
+        "scripts/agent-platform-g05-skill-evaluation-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/public-scenarios/G05-local-20260929T125545Z-48081c5c-141e-44a2-94c1-4895a96e0f5a/report.md"
+      ],
+      "nextAction": "결정적 표 그룹 합계 절차에 한해 고정 시범+다른 출처/열 이름 holdout 3회가 별도 프로세스 오라클과 통과했다. 일반 자연어 절차 추출·문서 의미 평가·실제 사용자 업무 적합성·제품 UI 연결을 검증한다."
+    },
+    "skill-revision-rollback": {
+      "state": "available-local",
+      "evidence": [
+        "tests/agent-platform-g06-skill-rollback.test.js",
+        "tests/fixtures/agent-platform-g06-skill-rollback.json",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "세 차례 합성 Skill revision 승격·회귀 격리·이전 revision 복원을 시험했다. 외부 업무 결과의 품질 평가는 포함하지 않는다."
+    },
+    "authorized-model-pilot": {
+      "state": "blocked",
+      "evidence": [],
+      "nextAction": "승인된 모델 공급자 자격증명과 공개자료 전용 파일럿 범위를 준비한다."
+    },
+    "cancellation-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/mission-runtime.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "scripts/agent-platform-local-proxy-evaluation.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T231348258Z-1cce3bf0-49fb-4963-9078-24ca6aba54f9/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T231348258Z-1cce3bf0-49fb-4963-9078-24ca6aba54f9/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-1/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-2/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/repetition-3/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G08-local-20260929T020504Z-b54407d6-7883-4fc7-a13e-44724c1465c3/report.md"
+      ],
+      "nextAction": "G08 공개 시나리오 로컬 adapter에서 Core API 취소·진행 중 planner 지연·이미 완료된 draft 보존·후속 파일 효과 fence를 3회 실행했고 별도 oracle 3/3. 실제 외부 provider streaming, UI/voice 정정과 write race는 미검증."
+    },
+    "revocation-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/mission-runtime.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "scripts/agent-platform-local-proxy-evaluation.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T231348258Z-1cce3bf0-49fb-4963-9078-24ca6aba54f9/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T231348258Z-1cce3bf0-49fb-4963-9078-24ca6aba54f9/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-1/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-2/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/repetition-3/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G09-local-20260929T020506Z-41ba6bd4-0031-4e99-8eaf-534204c8a4be/report.md"
+      ],
+      "nextAction": "G09 공개 시나리오 로컬 adapter에서 grant revision 축소 뒤 철회된 쓰기 0회·남은 읽기 G검증을 3회 실행했고 별도 oracle 3/3. OAuth scope token 철회, 서비스 사용자 변경·원격 실행은 미검증."
+    },
+    "injection-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/fixtures/agent-platform-g10-injected-web-source.json",
+        "tests/agent-platform-g10-injection.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T233134378Z-12c54bef-fd7a-4706-93e3-011ce3d0c715/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T233134378Z-12c54bef-fd7a-4706-93e3-011ce3d0c715/tests.log",
+        "artifacts/agent-platform-20260929/g10-injection-local-evaluation.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-1/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-2/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-3/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/report.md"
+      ],
+      "nextAction": "G10 공개 시나리오 로컬 어댑터는 고정 synthetic web injection을 untrusted로 격리하고 facts를 로컬 보고서에 보존하며 외부 egress dispatch 0을 3회 수행; 별도 oracle 3/3 통과. 실제 웹 변형·provider transport·OS 네트워크 egress 격리는 미검증이다."
+    },
+    "structured-article-metadata-screening": {
+      "state": "available-local",
+      "evidence": [
+        "tests/fixtures/agent-platform-g11-article-metadata.json",
+        "tests/mission-observation-prompt-injection.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T234433148Z-05dc675a-fb91-4a87-b896-0c89710a2c5d/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T234433148Z-05dc675a-fb91-4a87-b896-0c89710a2c5d/tests.log",
+        "artifacts/agent-platform-20260929/g10b-metadata-screening-test.log",
+        "artifacts/agent-platform-20260929/g10b-metadata-screening-local-evaluation.md",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-1/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-2/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/repetition-3/mission-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/G10-local-20260929T020752Z-80e56ab4-ec2b-4f81-b287-aa1350539f3b/report.md"
+      ],
+      "nextAction": "G10 공개 시나리오 로컬 어댑터는 고정 synthetic web injection을 untrusted로 격리하고 facts를 로컬 보고서에 보존하며 외부 egress dispatch 0을 3회 수행; 별도 oracle 3/3 통과. 실제 웹 변형·provider transport·OS 네트워크 egress 격리는 미검증이다."
+    },
+    "desktop-fixture-app": {
+      "state": "available-local",
+      "evidence": [
+        "apps/pc-agent/fixtures/g11-settings-fixture/index.html",
+        "packages/core/fixtures/g11-desktop-settings.json",
+        "scripts/agent-platform-g11-desktop-fixture.py",
+        "scripts/agent-platform-g11-desktop-fixture-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "격리 Chromium fixture에서 레이아웃이 196px 이동해도 접근성 이름으로 같은 설정만 저장하고 재조회하는 시험을 3회 수행했다. 실제 Windows UIA와 타사 앱은 별도 검증 대상이다."
+    },
+    "long-goal-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/mission/mission-goal-revision.js",
+        "packages/core/src/mission/goal-contract.js",
+        "tests/mission-goal-revision.test.js",
+        "scripts/agent-platform-m01-long-goal-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/public-scenarios/M01-local-20260929T131412Z-9cdbe68e-ee0a-4dea-9614-8cbae990e487/report.md"
+      ],
+      "nextAction": "기한 파싱, SQLite-backed 다단계 Mission의 우선순위 revision, 기존 결정 사유 보존 및 의존 순서 재계획을 합성 시나리오 3회와 별도 oracle로 확인했다. 자동 milestone 추론, 프로세스 kill/restart, 다중 프로젝트 일정 최적화와 장기 실제 업무 품질은 미검증이다."
+    },
+    "process-restart-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/managed-agent-outbox-process-recovery.test.js",
+        "tests/mission-action-recovery.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "artifacts/agent-platform-20260929/independent-oracle-iteration-v1.md",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-1/processes.log",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-2/processes.log",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/repetition-3/processes.log",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M02-local-20260929T021814Z-99438df0-619b-462f-98ed-a57dbcf18d0f/report.md"
+      ],
+      "nextAction": "M02 공개 시나리오에서 별도 제품 runtime Node 프로세스 둘을 순차 실행했다. 프로세스1이 PC file effect 뒤 PAUSED로 종료되고 프로세스2가 durable Mission/receipt로 재개해 write 재실행 없이 G 완료했다. 서로 다른 PID·Mission ID·artifact hash를 oracle이 3회 확인(3/3; p50 799ms/p95 800ms). GUI 앱/강제 OS kill·다른 PC·상시 서비스는 미검증."
+    },
+    "synthetic-memory-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/agent-platform-m03-memory-retraction.test.js",
+        "tests/fixtures/agent-platform-m03-memory-retraction.json",
+        "artifacts/agent-platform-20260929/continuation-round-v13/report.md"
+      ],
+      "nextAction": "합성 선호의 출처 이벤트 삭제 뒤 파생 기억이 조회에서 사라지고 SQLite 재시작 뒤에도 회수되지 않음을 오라클로 검사한다. 본문이 DB에서 물리 제거되는 실험이 아니며 원본 영구 삭제를 주장하지 않는다."
+    },
+    "preference-revision-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/agent-platform-m04-preference-revision.test.js",
+        "tests/fixtures/agent-platform-m04-preference-revision.json",
+        "artifacts/agent-platform-20260929/continuation-round-v12/report.md"
+      ],
+      "nextAction": "합성 선호의 정정 후 SQLite 재개, 새 계획 맥락 반영, 과거 표현의 활성 회수 배제, owner scope 분리를 공개 M04 어댑터와 별도 오라클로 검사한다. 삭제된 개인 기억의 검색 제외(M03)는 별도 시험 대상이다."
+    },
+    "proactivity-runtime": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/personal-operations/operations-store.js",
+        "packages/core/src/personal-operations/reminder-scheduler.js",
+        "packages/core/src/runtime/core-worker-daemon.js",
+        "scripts/core-service-runtime.mjs",
+        "packages/core/src/main.mjs",
+        "tests/personal-operations-reminder-scheduler.test.js",
+        "artifacts/agent-platform-20260929/continuation-round-v15/report.md"
+      ],
+      "nextAction": "로컬 Personal Operations의 기한 임박 확인을 Core daemon 주기 실행에 연결했다. 24시간 이내의 미해결 commitment마다 안정 event ID를 가진 durable outbox 알림을 한 번 생성하고, 동일 반복 tick에서 재발송하지 않으며 전달 장애 뒤 재시작 시 같은 ID로 재전달한다. 완료·취소된 commitment의 미전달 알림도 철회한다. 기한 알림은 로컬 Core event bus이며 Google/메일·모바일 푸시·OS 알림으로 전달하는 기능은 확인되지 않았다. blocked Mission의 상태 변화 감지 및 의미 있는 중복 억제는 별도 미구현 요구로 남긴다."
+    },
+    "proactivity-blocker-state-monitor": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/personal-operations/operations-store.js",
+        "packages/core/src/personal-operations/reminder-scheduler.js",
+        "tests/personal-operations-reminder-scheduler.test.js",
+        "tests/agent-platform-m05-proactivity.test.js",
+        "scripts/agent-platform-m05-proactivity-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/continuation-round-v15/report.md"
+      ],
+      "nextAction": "로컬 Core worker의 합성 deadline 및 Mission 차단·변경·해제 전이를 6개 tick과 별도 프로세스 오라클로 반복 검증했다. 실계정 캘린더와 외부 알림 채널은 연결 후 별도 검증한다."
+    },
+    "os-enforced-sandbox": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/runtime/container-execution-environment.js",
+        "tests/agent-platform-m06-container-sandbox.test.js",
+        "scripts/agent-platform-m06-container-sandbox-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/public-scenarios/M06-local-20260929T081159Z-5d3a2c33-1571-4606-b1a8-87061f7fdd5a/report.md",
+        "artifacts/agent-platform-20260929/public-scenarios/M06-local-20260929T081159Z-5d3a2c33-1571-4606-b1a8-87061f7fdd5a/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M06-local-20260929T081159Z-5d3a2c33-1571-4606-b1a8-87061f7fdd5a/repetition-1/oracle.json"
+      ],
+      "nextAction": "고정된 Docker 격리 M06은 로컬 3회 관측을 완료했다. 이후 Mission 실행 경로와 장기 부하·별도 VM 격리를 연결하고 별도 보안 평가를 받는다."
+    },
+    "managed-environment-sandbox": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/fixtures/m07-managed-environment-loss.json",
+        "packages/core/src/mission/managed-agent-session-broker.js",
+        "tests/agent-platform-m07-remote-unavailable.test.js",
+        "scripts/agent-platform-m07-environment-recovery-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "원격 404 감지, durable local binding 보존, 합성 local snapshot 복원, 원격 전용 결과의 손실 표시를 3회 검증했다. 실제 제공자·운영 Mission store의 snapshot 복원 검증은 별도 관문이다."
+    },
+    "interactive-handoff-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "apps/pc-agent/src/browser-handoff-manager.js",
+        "tests/agent-platform-m08-browser-handoff.test.js",
+        "scripts/agent-platform-m08-browser-handoff-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "M08 합성 adapter를 3회 실행한다. 제품의 지속형 브라우저 드라이버와 UI 인계 연결은 별도 구현·현장 검증 전까지 미구현이다."
+    },
+    "artifact-semantic-oracle": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/mission/artifact-consistency.js",
+        "packages/core/src/mission/criteria-evidence.js",
+        "tests/mission-criteria-evidence.test.js",
+        "tests/agent-platform-m09-artifact-consistency.test.js",
+        "scripts/agent-platform-m09-artifact-consistency-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "M09 Mission-bound adapter를 반복 실행해 네 개 G-bound JSON artifact 재개방과 출처·revision·facts 일치를 검사한다. 자연어 의미·렌더된 문서·표·이미지 카드는 실제 생성 경로와 별도 oracle 평가 전까지 미구현이다."
+    },
+    "egress-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/fixtures/agent-platform-g10-injected-web-source.json",
+        "tests/agent-platform-g10-injection.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T233134378Z-12c54bef-fd7a-4706-93e3-011ce3d0c715/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260928T233134378Z-12c54bef-fd7a-4706-93e3-011ce3d0c715/tests.log",
+        "artifacts/agent-platform-20260929/g10-injection-local-evaluation.md",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/M10-local-20260929T023405Z-e7728f09-65e8-433f-adea-398eada681f1/report.md"
+      ],
+      "nextAction": "M10 공개 시나리오에서 실제 managed-agent dispatcher 출력(모의 provider submit)을 계측했다. D2 공개+개인 혼합 자료는 연락처를 최소화한 payload만 제출했고, D3 계좌 fixture는 정책 콜백 0회·민감 원문 payload 0으로 차단됐다. 세 반복 및 별도 오라클 모두 통과. 실제 외부 session/network 호출·분류기 전수성·사용자 승인 UI는 미검증."
+    },
+    "model-transport-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "tests/agent-platform-m11-transport.test.js",
+        "scripts/agent-platform-m11-transport-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/public-scenarios/M11-local-20260929T075606Z-078ec59e-88bd-43f3-ae08-5ea2284cc24d/report.md"
+      ],
+      "nextAction": "429 후 bounded retry 및 usage 없는 응답의 null 계측을 3회·별도 프로세스 오라클로 검증했다. timeout, provider 내부 재시도와 실계정 rate limit은 별도 범위다."
+    },
+    "tool-promotion-runtime": {
+      "state": "available-local",
+      "evidence": [
+        "tests/capability-package-container-evaluator.test.js",
+        "tests/capability-package-promotion-journal.test.js",
+        "tests/capability-package-runtime-integration.test.js",
+        "scripts/agent-platform-m12-capability-promotion-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "격리 컨테이너와 합성 fixture의 3회 promotion/rollback 검증은 준비됐다. 다음은 실제 Core child 재시작 시나리오의 제품 연결 범위, 운영 서비스 identity·ACL, 별도 관리 VM 보장과 GUI 승인 경로를 검증하며 실운영 패키지를 승격하지 않는다."
+    },
+    "google-read-pilot": {
+      "state": "blocked",
+      "evidence": [],
+      "nextAction": "최소 읽기 권한의 Google OAuth 계정과 승인된 읽기 파일럿을 연결한다."
+    },
+    "calendar-write-sandbox": {
+      "state": "blocked",
+      "evidence": [],
+      "nextAction": "제거 가능한 임시 일정만 쓰는 공식 sandbox 또는 전용 캘린더를 준비한다."
+    },
+    "source-revision-inbox": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/runtime/source-revision-inbox.js",
+        "packages/core/src/runtime/core-worker-daemon.js",
+        "apps/pc-agent/src/adapters/workflow/local-workflow-adapter.js",
+        "tests/source-revision-inbox.test.js",
+        "tests/local-workflow-adapter.test.js",
+        "scripts/agent-platform-s03-source-revision-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "SQLite latest-revision inbox는 worker tick에서 실행 가능하고 synthetic event 주입으로 중복·역순 억제, claim lease 복구, workflow source 변경 보상, 최종 manifest 정합을 검사했다. 아직 OS 파일 감시기, 사용자 지정 watch 등록·해제 및 Core service의 승인된 등록 경로와 연결되지 않았으므로 일반 폴더 자동 감시로 간주하지 않는다."
+    },
+    "travel-sandbox": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/personal-operations/travel-quote-sandbox.js",
+        "packages/core/fixtures/travel-quote-price-change-sandbox.json",
+        "tests/agent-platform-s04-travel-sandbox.test.js",
+        "scripts/agent-platform-s04-travel-sandbox-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260930/public-scenarios/S04-local-20260929T225307Z-2b6853b7-7040-4bfb-85a7-8196096d4a91/report.md",
+        "artifacts/agent-platform-20260930/public-scenarios/S04-local-20260929T225307Z-2b6853b7-7040-4bfb-85a7-8196096d4a91/report.json"
+      ],
+      "nextAction": "S04 합성 견적 sandbox의 3회 반복과 별도 프로세스 oracle 3/3을 통과했다. 가격 revision·수수료 합계·환불 조건·현지 시각을 로컬에서 비교한다. 실제 항공사·철도 요금 및 예약은 미연동이며, 다음에는 공급자 API 자격·샌드박스 약관을 별도 확인한다."
+    },
+    "always-on-node-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "scripts/agent-platform-s05-node-partition-fixture.mjs",
+        "scripts/agent-platform-s05-node-partition-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "tests/agent-platform-s05-node-partition.test.js"
+      ],
+      "nextAction": "S05 공개 평가에서 3회 반복 실행하고 실제 분리 호스트 파일럿은 별도 준비한다."
+    },
+    "google-oauth-sandbox": {
+      "state": "blocked",
+      "evidence": [],
+      "nextAction": "Google OAuth 테스트 프로젝트와 계정 연결 수명주기를 준비한다."
+    },
+    "korean-audio-fixture": {
+      "state": "blocked",
+      "evidence": [
+        "apps/mobile/src/voice/voiceMode.ts",
+        "apps/mobile/src/voice/voice-command-turn.js",
+        "packages/core/fixtures/s07-korean-correction-transcript-events.json",
+        "tests/agent-platform-s07-voice-command-turn.test.js",
+        "artifacts/agent-platform-20260930/s07-voice-partial/report.md"
+      ],
+      "nextAction": "한국어 인식기 result 이벤트의 교정 전달은 로컬 시험 가능하지만, 이 PC에는 ko-KR System.Speech recognizer가 없고 Android emulator에서 확인한 것은 TTS 패키지뿐이다. 실제 한국어 음성 녹음과 인식 전사 정확도·지연이 검증될 때까지 S07 완료로 처리하지 않는다."
+    },
+    "interruptible-execution": {
+      "state": "available-local",
+      "evidence": [
+        "apps/mobile/src/voice/voice-command-turn.js",
+        "apps/mobile/src/App.tsx",
+        "tests/agent-platform-s07-voice-command-turn.test.js",
+        "artifacts/agent-platform-20260930/s07-voice-partial/report.md"
+      ],
+      "nextAction": "모바일 음성 결과 라우팅에서 비최종 partial은 draft만 갱신하고 dispatch하지 않으며, 확정 transcript 내 명시적 한국어 정정 marker 뒤의 지시만 제출한다. 테스트는 실제 STT acoustic 입력이나 Mission 실행 도중 취소를 증명하지 않는다."
+    },
+    "dual-browser-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "apps/pc-agent/src/browser-handoff-manager.js",
+        "packages/core/fixtures/s08-dual-browser-contexts.json",
+        "tests/agent-platform-s08-dual-browser-contexts.test.js",
+        "scripts/agent-platform-s08-dual-browser-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260930/public-scenarios/S08-local-20260929T231052Z-a53cde8f-ce8b-49f7-9f18-bfbce215be79/report.md",
+        "artifacts/agent-platform-20260930/public-scenarios/S08-local-20260929T231052Z-a53cde8f-ce8b-49f7-9f18-bfbce215be79/report.json"
+      ],
+      "nextAction": "S08 두 synthetic driver의 context/account binding·교차 환경 거부·인계를 3회 반복하고 oracle 3/3 통과했다. 실제 BrowserContext 쿠키·localStorage 분리, 로그인 계정의 실체 확인 및 이 handoff manager의 상시 제품 runtime 연결은 추가 검증 전까지 완료로 보지 않는다."
+    },
+    "weekly-routine-timezone-revision": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/runtime/weekly-routine-time.js",
+        "packages/core/src/runtime/durable-routine-scheduler.js",
+        "packages/core/src/runtime/durable-routine-store.js",
+        "packages/core/src/main.mjs",
+        "src/ui/routine-control-panel.js",
+        "src/ui/app.js",
+        "scripts/dev-server.mjs",
+        "tests/durable-routines.test.js",
+        "tests/routine-control-panel.test.js",
+        "tests/agent-platform-s09-isolated-browser.test.js",
+        "artifacts/agent-platform-20260929/s09-natural-command-integration/report.md",
+        "artifacts/browser-qa/s09-natural-routine-20260929/report.json",
+        "scripts/agent-platform-s09-isolated-browser.mjs",
+        "scripts/agent-platform-s09-isolated-browser.py",
+        "artifacts/agent-platform-20260929/s09-isolated-browser-runtime/report.md",
+        "artifacts/agent-platform-20260929/s09-isolated-browser-runtime/report.json",
+        "artifacts/agent-platform-20260929/s09-isolated-browser-runtime/browser-flow.json",
+        "tests/agent-platform-s09-weekly-revision.test.js",
+        "scripts/agent-platform-s09-weekly-revision-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260930/public-scenarios/S09-local-20260929T233007Z-43fec1b5-d9d0-4fb5-830c-1f375eadc741/report.md",
+        "artifacts/agent-platform-20260930/public-scenarios/S09-local-20260929T233007Z-43fec1b5-d9d0-4fb5-830c-1f375eadc741/report.json"
+      ],
+      "nextAction": "S09 local readiness is now available: a fixed adapter passed three repetitions combining two SQLite service connections, timezone revision that retires the old occurrence, exactly-once dispatch of the revised occurrence, DST gap/overlap rules, an isolated real Core+UI browser create/read/revise/cancel flow, and a separate-process oracle. Do not extrapolate this to the user product runtime: still verify Windows service identity, persisted state across actual service restart/sleep, recurrent dispatch under product configuration, and live account/calendar only when those conditions are configured."
+    },
+    "capability-contract-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/src/capabilities/external-capability-catalog.js",
+        "tests/agent-platform-s10-capability-catalog.test.js",
+        "tests/agent-platform-independent-oracle.test.js",
+        "scripts/agent-platform-independent-oracle.mjs",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T005829360Z-388fc68d-7cb0-4572-8904-36c71b72d893/report.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T005829360Z-388fc68d-7cb0-4572-8904-36c71b72d893/tests.log",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T005829360Z-388fc68d-7cb0-4572-8904-36c71b72d893/oracle/S10-repetition-1-oracle.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T005829360Z-388fc68d-7cb0-4572-8904-36c71b72d893/oracle/S10-repetition-2-oracle.json",
+        "artifacts/agent-platform-20260929/local-proxy-runs/20260929T005829360Z-388fc68d-7cb0-4572-8904-36c71b72d893/oracle/S10-repetition-3-oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-1/catalog-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-1/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-1/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-2/catalog-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-2/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-2/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-3/catalog-test.log",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-3/evidence.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/repetition-3/oracle.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/report.json",
+        "artifacts/agent-platform-20260929/public-scenarios/S10-local-20260929T022812Z-07a79ed1-a792-4fba-b9d7-0259122d917a/report.md"
+      ],
+      "nextAction": "S10 공개 시나리오 로컬 capability catalog 어댑터를 실제 실행해 3회 모두 지역·한국어 미지원, provider→JARVIS 방향과 JARVIS→provider 역방향 불일치, 부분 대안만 제시, 실행 권한 미부여를 별도 오라클로 확인했다(3/3; p50 497ms/p95 554ms). provider/network/external writes 0, 비용 미측정. 고정 catalog·이전 공식 페이지 확인에 대한 로컬 동작이며 이번 실행 중 현재 Google 사이트나 계정을 재조회하지 않았고, 지속 capability UI 및 독립 작성 holdout은 미완료."
+    },
+    "wearable-record-fixture": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/fixtures/s11-synthetic-wearable-records.json",
+        "apps/wearable-hud/src/health-record-summary.js",
+        "tests/agent-platform-s11-health-summary.test.js",
+        "scripts/agent-platform-s11-health-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "S11 합성 기록 어댑터를 3회 실행하고 별도 프로세스 고정 oracle을 확인했다. 실계정·Health Connect·기기 연결과 센서 정확성은 별도 차단으로 유지한다."
+    },
+    "physical-device-simulator": {
+      "state": "available-local",
+      "evidence": [
+        "packages/core/fixtures/s12-isolated-physical-device.json",
+        "apps/pc-agent/src/adapters/smart-home/isolated-device-simulator.js",
+        "tests/agent-platform-s12-isolated-device.test.js",
+        "scripts/agent-platform-s12-device-adapter.mjs",
+        "scripts/agent-platform-independent-oracle.mjs"
+      ],
+      "nextAction": "격리 시뮬레이터 3회와 별도 프로세스 오라클을 실행했다. 실제 기기·계정·허브는 별도 연결 검증이 필요하다."
+    }
+  }
+}

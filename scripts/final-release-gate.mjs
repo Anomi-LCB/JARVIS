@@ -62,7 +62,8 @@ export async function runFinalReleaseGate({
     wormManifest,
     wormProof,
     mobileDevice,
-    mobileLiveBridge
+    mobileLiveBridge,
+    wearablePhysicalField
   ] = await Promise.all([
     readJson(workspacePath(workspaceRoot, 'dist/ag-product-readiness-gate.json')),
     readJson(workspacePath(workspaceRoot, 'dist/ag-strict-gap-audit.json')),
@@ -72,7 +73,8 @@ export async function runFinalReleaseGate({
     readJson(workspacePath(workspaceRoot, 'dist/worm-promotion/manifest.json')),
     readJson(workspacePath(workspaceRoot, 'dist/worm-promotion/external-sync-proof.json')),
     readJson(workspacePath(workspaceRoot, 'dist/mobile-device-smoke-report.json')),
-    readJson(workspacePath(workspaceRoot, 'dist/mobile-live-bridge-e2e-report.json'))
+    readJson(workspacePath(workspaceRoot, 'dist/mobile-live-bridge-e2e-report.json')),
+    readJson(workspacePath(workspaceRoot, 'dist/wearable-physical-field-gate.json'))
   ]);
 
   const validationItems = externalValidationItems(handoff);
@@ -95,7 +97,8 @@ export async function runFinalReleaseGate({
     'dist/field-validation-kit-report.json',
     'dist/field-validation/field-validation-run-summary.json',
     'dist/worm-promotion/manifest.json',
-    'dist/worm-promotion/external-sync-proof.json'
+    'dist/worm-promotion/external-sync-proof.json',
+    'dist/wearable-physical-field-gate.json'
   ];
   const artifactPresence = await Promise.all(artifactPaths.map(async (path) => ({
     path,
@@ -148,6 +151,15 @@ export async function runFinalReleaseGate({
       status: mobileLiveBridge?.status ?? 'missing',
       liveBridgeVerified: mobileLiveBridge?.liveBridgeVerified ?? null
     }),
+    check('wearable_physical_field_verified', wearablePhysicalField?.status === 'passed'
+      && wearablePhysicalField?.physicalValidationPassed === true
+      && wearablePhysicalField?.integrity?.passed === true
+      && wearablePhysicalField?.evaluation?.status === 'passed', {
+      status: wearablePhysicalField?.status ?? 'missing',
+      physicalValidationPassed: wearablePhysicalField?.physicalValidationPassed ?? false,
+      evidenceState: wearablePhysicalField?.evidence?.state ?? 'missing',
+      integrityState: wearablePhysicalField?.integrity?.state ?? 'missing'
+    }),
     check('no_raw_operator_secret_or_command_stored', preflight?.generatedArtifacts?.rawAdminTokenStored === false
       && preflight?.generatedArtifacts?.rawWormCredentialStored === false
       && preflight?.generatedArtifacts?.rawExternalCommandStored === false
@@ -192,6 +204,7 @@ export async function runFinalReleaseGate({
       handoffStatus: handoff?.status ?? 'missing',
       preflightStatus: preflight?.status ?? 'missing',
       fieldValidationKitStatus: fieldKit?.status ?? 'missing',
+      wearablePhysicalFieldStatus: wearablePhysicalField?.status ?? 'missing',
       wormSyncStatus: wormProof?.status ?? 'missing',
       externalValidationTotal: validationItems.length,
       externalValidationPending: pendingValidation.length,
@@ -235,7 +248,9 @@ function buildRecommendedActions({ preflight, pendingValidation, blockingChecks 
   })).concat(blockingChecks.map((item) => ({
     actionId: `resolve-${item.checkId}`,
     title: `Resolve ${item.checkId}`,
-    command: 'npm run product:evidence; npm run ops:preflight; npm run ops:final-gate',
+    command: item.checkId === 'wearable_physical_field_verified'
+      ? 'npm run wearable:field-kit; node dist/wearable-hud-field-kit/field-server.mjs --host 0.0.0.0 --port 4176; npm run wearable:physical-gate; npm run ops:final-gate'
+      : 'npm run product:evidence; npm run ops:preflight; npm run ops:final-gate',
     source: 'final-release-gate'
   })));
 }
@@ -250,6 +265,7 @@ function renderMarkdown(report) {
     `Product readiness: ${report.summary.productReadinessScore}`,
     `Preflight: ${report.summary.preflightStatus}`,
     `Field validation: ${report.summary.fieldValidationKitStatus}`,
+    `Wearable physical field: ${report.summary.wearablePhysicalFieldStatus}`,
     `External WORM sync: ${report.summary.wormSyncStatus}`,
     `Pending external validation: ${report.summary.externalValidationPending}/${report.summary.externalValidationTotal}`,
     '',

@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { ApprovalDecision, createTaskRequest, stableId } from '../../../packages/shared/src/types.js';
 import { approvalExpiryState } from './approval/approval-expiry.js';
+import {officialDocumentViewUri} from './api/android-official-intents.js';
 
 export class SecureTokenStore {
   constructor({ key = randomBytes(32), backendName = 'node-sealed-memory-store', nativeAdapter = null } = {}) {
@@ -1677,7 +1678,9 @@ export class NativeDocumentActionAdapter {
   }
 
   async preview({ taskId, preview }) {
-    const action = this.createAction({ taskId, preview, actionType: 'preview' });
+    // Capture the selected URI once; app/deep-link commands are not document viewers.
+    const viewUri=officialDocumentViewUri(preview?.uri);
+    const action = this.createAction({ taskId, preview:{...preview,uri:viewUri}, actionType: 'preview' });
     const capability = this.capability();
     action.capability = capability;
     if (!preview?.openable) {
@@ -1688,6 +1691,7 @@ export class NativeDocumentActionAdapter {
         error: { code: 'C_FILE_PREVIEW_NOT_AVAILABLE' }
       });
     }
+    if(!viewUri)return this.record({...action,success:false,status:'blocked',error:{code:'C_DOCUMENT_VIEW_URI_DENIED'}});
     if (!capability.nativePreviewAvailable) {
       return this.record({
         ...action,
@@ -1697,7 +1701,7 @@ export class NativeDocumentActionAdapter {
       });
     }
     try {
-      await this.linkingModule.openURL(preview.uri);
+      await this.linkingModule.openURL(viewUri);
       return this.record({
         ...action,
         success: true,
@@ -3367,7 +3371,8 @@ export class MobileAppRuntime {
     const result = await this.bridgeRuntime.rollbackResult({
       taskId,
       token: this.token(),
-      reason
+      reason,
+      confirmed: true
     });
     if (result?.success !== false) {
       this.latestResult = result.result ?? this.latestResult;
@@ -3619,6 +3624,25 @@ export class MobileAppRuntime {
         eventType: 'growth.preference.decided',
         title: decision === 'confirm' ? '선호 확정' : '선호 거절',
         body: hypothesisId,
+        severity: 'success'
+      });
+    }
+    return result;
+  }
+
+  async mutateGrowthSkillRevision({ action, skillId, revisionId = null, payload = {} } = {}) {
+    if (!['create', 'evaluate', 'review', 'promote', 'rollback'].includes(action)
+      || typeof this.bridgeRuntime.mutateGrowthSkillRevision !== 'function') {
+      return { success: false, error: { code: 'C_GROWTH_SKILL_REVISION_UNAVAILABLE' } };
+    }
+    const result = await this.bridgeRuntime.mutateGrowthSkillRevision({
+      token: this.token(), action, skillId, revisionId, payload
+    });
+    if (result?.success !== false) {
+      this.notifications.push({
+        eventType: `growth.skill_revision.${action}`,
+        title: '업무 절차 변경 기록',
+        body: `${action}: ${skillId}`,
         severity: 'success'
       });
     }

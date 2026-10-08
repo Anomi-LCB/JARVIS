@@ -1,0 +1,31 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {createGoalContract} from '../packages/core/src/mission/goal-contract.js';import {clarificationReadBinding,independentClarificationRead,clarificationDispatchAllowed} from '../packages/core/src/mission/mission-clarification.js';
+import {createAgRuntime} from '../apps/runtime-compose/src/create-runtime.js';import {createWorkbookBuffer} from '../apps/pc-agent/src/adapters/excel/xlsx-writer.js';
+const tools=[['document.readPdf','source.pdf'],['excel.readWorkbook','source.xlsx']];
+for(const [tool,path] of tools)test(`explicit ${tool} is independently readable but conditional/unrequested/mismatched files are not`,async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-document-binding-'));t.after(()=>rm(root,{recursive:true,force:true}));await writeFile(join(root,path),'binding only');
+ const mission=objective=>({objective,goalContract:createGoalContract({objective})});
+ assert.ok(clarificationReadBinding(mission(`'${path}'를 읽어`),tool,{path:join(root,path)},[root]));
+ await writeFile(join(root,'wrong.txt'),'not a native document');
+ assert.equal(clarificationReadBinding(mission("'wrong.txt'를 읽어"),tool,{path:join(root,'wrong.txt')},[root]),null);
+ for(const objective of [`승인하면 '${path}'를 읽어`,`'other.txt'를 읽어`,`'${path}'는 삭제하지 마`])assert.equal(clarificationReadBinding(mission(objective),tool,{path:join(root,path)},[root]),null);
+ assert.equal(independentClarificationRead({expectedToolName:tool,clarificationIndependent:true,dependencies:[]}),true);
+ assert.equal(independentClarificationRead({expectedToolName:tool,clarificationIndependent:true,dependencies:['answer']}),false);
+ const action={expectedToolName:tool,actualToolName:tool},profile={contractReadOnly:true,readOnly:true,mutatesSystem:false,externalTransfer:false,externalNetwork:false,executionClass:'read_only'};
+ assert.equal(clarificationDispatchAllowed({clarificationGateId:'pending'},action,profile),true);assert.equal(clarificationDispatchAllowed({clarificationGateId:'pending'},action,{...profile,externalNetwork:true}),false);
+});
+for(const [tool,file] of tools)test(`actual Core E B G reads ${file} while one question batch waits; never writes or repeats`,async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-document-question-'));let runtime;
+ t.after(async()=>{runtime?.coreFacade.cognition.close();await rm(root,{recursive:true,force:true});});
+ const bytes=file.endsWith('.pdf')?await readFile('artifacts/workbook-native-pdf-20261003-mission-fenced/report.pdf'):createWorkbookBuffer({columns:['자료','금액'],rows:[['고정자료',42]]});await writeFile(join(root,file),bytes);
+ const env={JARVIS_TEST_MODE:'0',JARVIS_LLM_INTENT:'0',JARVIS_LLM_PLANNER:'0',JARVIS_LLM_CONTENT:'0',JARVIS_MISSION_EXECUTIVE:'0'};let calls=0;
+ const questions=['보고서에 어느 분석 범위를 포함할까요?','최종 보고서의 독자는 누구인가요?'];
+ runtime=createAgRuntime({allowedRoots:[root],auditRoot:join(root,'audit'),cwd:()=>root,env,taskEnv:env,workerDaemonEnabled:false,missionPlanner:{async planNextWave({mission}){calls++;return {decision:'ask_user',questions,actions:[{id:'observe',title:'독립 자료 읽기',command:`'${file}'를 읽어`,expectedToolName:tool,arguments:{path:join(root,file)},dependencies:[],clarificationIndependent:true,requirementIds:[mission.goalContract.requirements[0].requirementId]}]};}}});
+ const owner=runtime.personalOwnerSession.activate({requestedBy:'isolated-document-question',durationMinutes:5});
+ const created=runtime.missionRuntime.createMission({objective:`'${file}'를 읽어; 분석 범위와 독자를 확인한 뒤 보고서를 작성해`,authorization:{mode:'trusted_session',ownerSessionId:owner.session.sessionId,grants:['read_only']}});
+ const result=await runtime.missionRuntime.runMission(created.missionId);assert.equal(result.status,'WAITING_APPROVAL',JSON.stringify({status:result.status,reason:result.stopReason,observations:result.observations}));assert.equal(result.metrics.successfulActions,1);assert.equal(result.pendingGates.length,1);assert.deepEqual(result.pendingGates[0].questions,questions);
+ const observation=result.observations.find(o=>o.toolName===tool);assert.equal(observation.verification.status,'passed');assert.equal(calls,1);assert.deepEqual(await readFile(join(root,file)),bytes);
+ const again=await runtime.missionRuntime.runMission(created.missionId);assert.equal(again.metrics.successfulActions,1);assert.equal(calls,1);assert.equal(again.pendingGates.length,1);
+ assert.equal(runtime.missionRuntime.decideGate(created.missionId,result.pendingGates[0].gateId,{decision:'reject'}).success,true);assert.equal(runtime.missionRuntime.getMission(created.missionId).status,'CANCELLED');
+ console.log(JSON.stringify({tool,successfulReads:1,questionBatches:1,questions:2,plannerCalls:calls,actualG:true,originalPreserved:true,externalModelCalls:0}));
+});

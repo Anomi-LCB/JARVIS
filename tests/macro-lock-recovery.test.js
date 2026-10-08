@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {fork} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {MacroStore} from '../packages/core/src/macro-store.js';
+for(const boundary of ['lock','stage','published'])test(`actual macro SIGKILL lock recovery ${boundary}`,{timeout:15000},async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-macro-kill-')),path=join(root,'macros.json');let child;
+ t.after(async()=>{if(child&&child.exitCode===null&&child.signalCode===null){const ended=once(child,'exit');child.kill('SIGKILL');await ended;}await rm(root,{recursive:true,force:true});});
+ assert.equal(new MacroStore({path}).save('old','original'),true);
+ child=fork(new URL('./fixtures/macro-lock-process-child.mjs',import.meta.url),[path,boundary],{windowsHide:true,stdio:['ignore','ignore','pipe','ipc']});
+ const [ready]=await once(child,'message');assert.equal(ready.type,'ready');const paused=once(child,'message');child.send('run');const [message]=await paused;assert.equal(message.type,'boundary');
+ const owner=JSON.parse(await readFile(path+'.lock','utf8'));assert.equal(owner.pid,message.pid);assert.equal(owner.version,'jarvis-macro-lock-v1');
+ const live=new MacroStore({path});assert.equal(live.save('other','must not save'),false);assert.equal(live.lastError,'MACRO_LOCK_OWNER_ACTIVE');assert.equal(live.resolveRun('other'),null);
+ const ended=once(child,'exit');child.kill('SIGKILL');await ended;
+ const recovered=new MacroStore({path});assert.equal(recovered.save('after','after command'),true,recovered.lastError);
+ const reopened=new MacroStore({path});assert.equal(reopened.resolveRun('old').command,'original');assert.equal(reopened.resolveRun('after').command,'after command');assert.equal(Boolean(reopened.resolveRun('pending')),boundary==='published');
+ t.diagnostic(JSON.stringify({boundary,terminatedPid:message.pid,recoveryPid:process.pid,pendingAlreadyPublished:boundary==='published'}));
+});
+test('unknown stale lock is not deleted based only on age or content',async t=>{const root=await mkdtemp(join(tmpdir(),'jarvis-macro-lock-'));t.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'macros.json');await writeFile(path+'.lock','foreign');const store=new MacroStore({path});assert.equal(store.save('new','command'),false);assert.equal(await readFile(path+'.lock','utf8'),'foreign');});
+test('a lock bound to another store is preserved',async t=>{const root=await mkdtemp(join(tmpdir(),'jarvis-macro-lock-binding-'));t.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'macros.json'),text=JSON.stringify({version:'jarvis-macro-lock-v1',pid:process.pid,nonce:'12345678-1234-1234-1234-123456789abc',binding:'another-store'});await writeFile(path+'.lock',text);const store=new MacroStore({path});assert.equal(store.save('new','command'),false);assert.equal(store.lastError,'MACRO_LOCK_UNVERIFIED');assert.equal(await readFile(path+'.lock','utf8'),text);});

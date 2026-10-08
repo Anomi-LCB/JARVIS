@@ -1,8 +1,17 @@
+import { createProcedureLifecycle, procedureLifecycleIssue } from './skill-procedure-lifecycle.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { ModuleId, stableId } from '../../../packages/shared/src/types.js';
 import { JsonlAuditLog } from '../../../packages/shared/src/audit-log.js';
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { failureTaxonomyCorpusId, failureTaxonomyFixtureCorpus } from './fixtures/failure-taxonomy-corpus.js';
+import { executionObservations, indexMemorySources, memoryProvenance, memoryScopeMatches, normalizeMemoryScope, preferenceScopeMatches, preferenceSourcesMatch, sourceRecallAllowed } from './memory-provenance.js';
+import { memoryItemRelevant } from './memory-relevance.js';
+import { searchPersonalMemory } from './personal-memory-search.js';
+import { selectMemoryResults } from './memory-result-selection.js';
+import { projectPersonalKnowledge, isPersonalKnowledgeSource } from './personal-knowledge-projection.js';
+import {parseMemoryRelationshipQuestion,queryPersonalRelationships,relationshipMemoryReferences} from './personal-relationship-query.js';
+import { SelectedConversationArchive } from './selected-conversation-archive.js';
+import { runTabularProcedure, evaluateTabularProcedureTrials, validateTabularProcedureDefinition } from './skill-procedure-runtime.js';
 
 export const MEMORY_EVENT_SCHEMA_VERSION = 'f-memory-event-union-v1';
 const defaultSensitiveMinimizerFixturePath = 'apps/growth-memory/fixtures/sensitive-minimizer-fixtures.json';
@@ -358,6 +367,7 @@ export class MemoryEventIngestor {
   constructor({ clock = () => new Date(), store = null, auditLog = null, sensitiveMinimizer = new SensitiveMemoryMinimizer(), schemaRegistry = new MemoryEventSchemaRegistry() } = {}) {
     this.clock = clock;
     this.store = store;
+    this.restoreGeneration = store?.restoreGeneration?.();
     this.auditLog = auditLog;
     this.sensitiveMinimizer = sensitiveMinimizer;
     this.schemaRegistry = schemaRegistry;
@@ -371,8 +381,31 @@ export class MemoryEventIngestor {
     }
   }
 
-  ingest(event) {
+  ingest(event, { recoveredScopeProof, expectedKnowledgeSource = null } = {}) {
+    const active = this.beforeUse?.();
+    if (active === null) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    if (active && active !== this) return active.ingest(event, { recoveredScopeProof, expectedKnowledgeSource });
     const normalized = this.schemaRegistry.normalize(event, this.clock());
+    if (this.sourceScopeResolver) {
+      let scope;
+      try { scope = normalizeMemoryScope(this.sourceScopeResolver(normalized.taskId, { event, recoveredScopeProof })); }
+      catch (error) {
+        this.auditLog?.write('memory.event.rejected', { eventId: normalized.eventId, code: error.code, reason: error.reason });
+        return { success: false, stored: false, error: { code: error.code ?? 'F_MEMORY_SCOPE_UNAVAILABLE', reason: error.reason ?? null } };
+      }
+      if (scope) normalized.source.memoryScope = scope;
+      else delete normalized.source.memoryScope;
+    }
+    const scope = normalizeMemoryScope(normalized.source.memoryScope);
+    if (normalized.eventType === 'execution.completed' && scope && this.all().some(previous =>
+      previous.eventType === 'feedback.do_not_remember' && previous.learningFlags?.doNotRemember
+      && previous.taskId === normalized.taskId && memoryScopeMatches(previous, scope))) {
+      // A delayed durable append must honor a user retraction already persisted
+      // for this task. Keep the event identity for dedup/ACK, not its old payload.
+      normalized.learningFlags.doNotRemember = true;
+      normalized.payload = { summary: 'Previously retracted task; recovery payload omitted.',
+        sourceRetraction: { reason: 'scoped-task-do-not-remember' } };
+    }
     const validation = this.schemaRegistry.validate(normalized);
     if (!validation.valid) {
       this.auditLog?.write('memory.event.rejected', {
@@ -399,12 +432,29 @@ export class MemoryEventIngestor {
       this.store?.hasFingerprint?.(fingerprint) ||
       [...this.events.values()].some((candidate) => candidate.fingerprint === fingerprint)
     ) {
+      try { this.store?.assertRestoreGeneration?.(this.restoreGeneration); }
+      catch (error) {
+        if (error.code !== 'F_MEMORY_GENERATION_CONFLICT') throw error;
+        return this.generationConflictResult(minimized);
+      }
       this.auditLog?.write('memory.event.duplicate', { eventId: minimized.eventId, fingerprint });
       return { success: true, stored: false, reason: 'duplicate-event' };
     }
     minimized.fingerprint = fingerprint;
+    // Publish only after persistence succeeds; otherwise an in-memory duplicate
+    // would suppress the retry of an event that never reached the store.
+    try {
+      if (this.store?.saveEvent?.(minimized, { expectedGeneration: this.restoreGeneration, expectedKnowledgeSource }) === false) {
+        throw Object.assign(new Error('Memory event persistence did not complete.'), { code: 'F_MEMORY_EVENT_NOT_PERSISTED' });
+      }
+    } catch (error) {
+      if (error.code !== 'F_MEMORY_GENERATION_CONFLICT') throw error;
+      return this.generationConflictResult(minimized);
+    }
     this.events.set(minimized.eventId, minimized);
-    this.store?.saveEvent?.(minimized);
+    if (!minimized.learningFlags.doNotRemember) {
+      this.learningQueue.push(minimized);
+    }
     this.auditLog?.write('memory.event.stored', {
       eventId: minimized.eventId,
       eventType: minimized.eventType,
@@ -415,9 +465,6 @@ export class MemoryEventIngestor {
       schemaVariant: minimized.schema?.variant,
       minimization: minimized.payload?.minimization
     });
-    if (!minimized.learningFlags.doNotRemember) {
-      this.learningQueue.push(minimized);
-    }
     return {
       success: true,
       stored: true,
@@ -427,7 +474,17 @@ export class MemoryEventIngestor {
     };
   }
 
+  generationConflictResult(event) {
+    const result = { success: false, stored: false, error: { code: 'F_MEMORY_GENERATION_CONFLICT' }, retryAfterRefresh: true };
+    const prepared = { ...event, ...(event.learningFlags?.doNotRemember ? { payload: { summary: '[기억 금지 사건]' } } : {}), fingerprint: event.fingerprint ?? this.fingerprint(event) };
+    Object.defineProperty(result, 'preparedRetryEvent', { value: structuredClone(prepared), enumerable: false });
+    return result;
+  }
+
   all() {
+    const active = this.beforeUse?.();
+    if (active === null) return [];
+    if (active && active !== this) return active.all();
     return [...this.events.values()];
   }
 
@@ -1147,13 +1204,15 @@ export class PatternMiner {
       const signature = this.workflowSignature(event);
       if (!signature) continue;
       if (this.isUnsafeEvidence(event)) continue;
+      const memoryScope = normalizeMemoryScope(event.source?.memoryScope);
+      const scopeKey = JSON.stringify(memoryScope);
       if (this.negativeEvents.has(event.eventType)) {
-        negativeEvidence.push({ event, signature });
+        negativeEvidence.push({ event, signature, scopeKey });
         continue;
       }
-      const existing = positiveGroups.find((group) => group.signature.key === signature.key);
+      const existing = positiveGroups.find((group) => group.scopeKey === scopeKey && group.signature.key === signature.key);
       if (existing) existing.items.push({ event, signature });
-      else positiveGroups.push({ signatureKey: signature.key, signature, items: [{ event, signature }] });
+      else positiveGroups.push({ signatureKey: signature.key, signature, memoryScope, scopeKey, items: [{ event, signature }] });
     }
     const mergedGroups = this.mergeSimilarGroups(positiveGroups);
     const patterns = mergedGroups
@@ -1162,11 +1221,12 @@ export class PatternMiner {
         const eventsForPattern = group.items.map((item) => item.event);
         const signature = group.signature;
         const negativeEvents = negativeEvidence
-          .filter((item) => this.signaturesSimilar(signature, item.signature))
+          .filter((item) => item.scopeKey === group.scopeKey && this.signaturesSimilar(signature, item.signature))
           .map((item) => item.event);
         const confidence = this.confidence({ events: eventsForPattern, negativeEvents });
         return {
-          patternId: `pattern_${index + 1}`,
+          patternId: group.memoryScope ? `scoped_pattern_${createHash('sha256').update(JSON.stringify([group.scopeKey, [...group.mergedSignatureKeys].sort()])).digest('hex')}` : `pattern_${index + 1}`,
+          memoryScope: group.memoryScope,
           patternType: 'repeated_command',
           description: signature.displayText,
           normalizedDescription: signature.normalizedText,
@@ -1179,7 +1239,8 @@ export class PatternMiner {
             approvedCount: eventsForPattern.filter((event) => this.positiveEvents.has(event.eventType)).length
           },
           semanticCluster: {
-            clusterId: stableId('pattern_cluster', signature.key, group.mergedSignatureKeys.join(':')),
+            clusterId: group.memoryScope ? `scoped_cluster_${createHash('sha256').update(JSON.stringify([group.scopeKey, [...group.mergedSignatureKeys].sort()])).digest('hex')}`
+              : stableId('pattern_cluster', signature.key, group.mergedSignatureKeys.join(':')),
             algorithm: 'local-token-vector-cosine-v1',
             similarityThreshold: this.similarityThreshold,
             mergedSignatureKeys: group.mergedSignatureKeys,
@@ -1215,9 +1276,11 @@ export class PatternMiner {
   mergeSimilarGroups(groups) {
     const clusters = [];
     for (const group of groups) {
-      const target = clusters.find((cluster) => this.signaturesSimilar(cluster.signature, group.signature));
+      const target = clusters.find((cluster) => cluster.scopeKey === group.scopeKey && this.signaturesSimilar(cluster.signature, group.signature));
       if (!target) {
         clusters.push({
+          scopeKey: group.scopeKey,
+          memoryScope: group.memoryScope,
           signature: group.signature,
           items: [...group.items],
           mergedSignatureKeys: [group.signature.key],
@@ -1558,19 +1621,24 @@ export class PreferenceHypothesisEngine {
   create(events) {
     const edits = events.filter((event) => event.eventType === 'approval.edited'
       && event.payload?.editRequest
+      && !event.learningFlags?.doNotRemember
       && !event.learningFlags?.containsSensitiveData
       && !event.trustBoundary?.externalContent);
     const groups = new Map();
     for (const event of edits) {
-      const key = event.payload.editRequest.trim().toLowerCase();
+      const key = JSON.stringify([event.payload.editRequest.trim().toLowerCase(), normalizeMemoryScope(event.source?.memoryScope)]);
       groups.set(key, [...(groups.get(key) ?? []), event.eventId]);
     }
     return [...groups.entries()]
       .filter(([, evidenceEventIds]) => evidenceEventIds.length >= 3)
       .map(([statement, evidenceEventIds], index) => {
+        const groupKey = statement;
+        const [sourceStatement, memoryScope] = JSON.parse(groupKey);
+        statement = sourceStatement;
         const evidenceEvents = edits.filter((event) => evidenceEventIds.includes(event.eventId));
         const profile = preferenceSignalProfile(statement);
         const conflictClassifications = edits
+          .filter(event => JSON.stringify(normalizeMemoryScope(event.source?.memoryScope)) === JSON.stringify(memoryScope))
           .filter((event) => !evidenceEventIds.includes(event.eventId))
           .map((event) => ({
             eventId: event.eventId,
@@ -1579,7 +1647,8 @@ export class PreferenceHypothesisEngine {
           .filter((item) => item.classification.conflicts.length > 0);
         const contradictingEventIds = conflictClassifications.map((item) => item.eventId);
         return {
-          hypothesisId: `pref_h_${index + 1}`,
+          hypothesisId: `pref_h_${createHash('sha256').update(groupKey).digest('hex').slice(0, 32)}`,
+          memoryScope,
           statement,
           appliesTo: ['general'],
           confidence: Math.min(0.9, Number((0.5 + evidenceEventIds.length * 0.04 - contradictingEventIds.length * 0.03).toFixed(2))),
@@ -1753,10 +1822,12 @@ export class PreferenceHypothesisEngine {
 }
 
 export class ConfirmedPreferenceRegistry {
-  constructor({ clock = () => new Date(), store = null, auditLog = null } = {}) {
+  constructor({ clock = () => new Date(), store = null, auditLog = null, recallAllowed = () => true } = {}) {
     this.clock = clock;
     this.store = store;
+    this.memoryGeneration = store?.restoreGeneration?.();
     this.auditLog = auditLog;
+    this.recallAllowed = recallAllowed;
     this.conflictClassifier = new PreferenceSemanticConflictClassifier();
     this.confirmed = new Map();
     this.rejected = new Map();
@@ -1768,8 +1839,9 @@ export class ConfirmedPreferenceRegistry {
   scopePolicyFor({ candidate = {}, scopePolicy = {} } = {}) {
     return {
       policyVersion: 'f-confirmed-preference-scope-policy-v1',
-      userScope: scopePolicy.userScope ?? 'default-user',
-      workspaceScope: scopePolicy.workspaceScope ?? 'default-workspace',
+      userScope: scopePolicy.userScope ?? candidate.memoryScope?.userId ?? 'default-user',
+      workspaceScope: scopePolicy.workspaceScope ?? candidate.memoryScope?.workspaceRoot ?? 'default-workspace',
+      conversationScope: scopePolicy.conversationScope ?? candidate.memoryScope?.conversationId ?? null,
       taskFamily: scopePolicy.taskFamily ?? candidate.appliesTo ?? 'general',
       appliesTo: scopePolicy.appliesTo ?? candidate.appliesTo ?? 'general',
       precedence: scopePolicy.precedence ?? 'workspace_then_user',
@@ -1779,6 +1851,8 @@ export class ConfirmedPreferenceRegistry {
   }
 
   decide({ hypothesisId, decision = 'confirm', preferenceCandidates = [], decidedBy = 'user_review', reason = '', allowConflict = false, scopePolicy = {}, conflictResolution = null } = {}) {
+    const generationConflict = this.checkMemoryGeneration();
+    if (generationConflict) return generationConflict;
     const candidate = preferenceCandidates.find((item) => item.hypothesisId === hypothesisId);
     if (!candidate) return { success: false, error: { code: 'F_PREFERENCE_HYPOTHESIS_NOT_FOUND' } };
     if (decision === 'reject') {
@@ -1794,9 +1868,11 @@ export class ConfirmedPreferenceRegistry {
       this.auditLog?.write('preference.rejected', { hypothesisId, decidedBy, reason });
       return { success: true, item: rejected };
     }
-    const existing = [...this.confirmed.values()].find((item) => item.hypothesisId === hypothesisId || item.statement === candidate.statement);
-    if (existing) return { success: true, item: existing, duplicate: true };
-    const conflicts = this.conflictsForCandidate(candidate);
+    const effectiveScope = this.scopePolicyFor({ candidate, scopePolicy });
+    const sameScope = item => preferenceScopeMatches(item.scopePolicy, effectiveScope);
+    const existing = this.all({ includeInactive: true }).find((item) => sameScope(item) && (item.hypothesisId === hypothesisId || item.statement === candidate.statement));
+    if (existing) return { success: true, item: this.publicPreference(existing), duplicate: true };
+    const conflicts = this.conflictsForCandidate(candidate, effectiveScope);
     if (conflicts.length && !allowConflict) {
       return {
         success: false,
@@ -1805,7 +1881,7 @@ export class ConfirmedPreferenceRegistry {
       };
     }
     const confirmed = {
-      preferenceId: stableId('pref', `${hypothesisId}:${candidate.statement}`, this.clock().toISOString()),
+      preferenceId: stableId('pref', hashJsonValue([hypothesisId, candidate.statement, effectiveScope]), this.clock().toISOString()),
       hypothesisId,
       statement: candidate.statement,
       appliesTo: candidate.appliesTo,
@@ -1817,6 +1893,7 @@ export class ConfirmedPreferenceRegistry {
       scopePolicy: this.scopePolicyFor({ candidate, scopePolicy }),
       conflictResolution,
       revision: 1,
+      validUntil: null,
       history: [{
         action: 'confirm',
         at: this.clock().toISOString(),
@@ -1830,8 +1907,9 @@ export class ConfirmedPreferenceRegistry {
       decidedBy,
       reason
     };
+    const saved = this.persistPreference(confirmed, 0);
+    if (!saved.success) return saved;
     this.confirmed.set(confirmed.preferenceId, confirmed);
-    this.store?.saveConfirmedPreference?.(confirmed);
     this.auditLog?.write('preference.confirmed', {
       preferenceId: confirmed.preferenceId,
       hypothesisId,
@@ -1840,13 +1918,68 @@ export class ConfirmedPreferenceRegistry {
     return { success: true, item: confirmed };
   }
 
-  update({ preferenceId, patch = {}, decidedBy = 'user_review', reason = '' } = {}) {
-    const current = this.confirmed.get(preferenceId);
+  currentPreference(preferenceId) {
+    if (!this.store?.getConfirmedPreference) return this.confirmed.get(preferenceId);
+    const current = this.store.getConfirmedPreference(preferenceId);
+    if (current) this.confirmed.set(preferenceId, current);
+    else this.confirmed.delete(preferenceId);
+    return current;
+  }
+
+  persistPreference(preference, expectedRevision) {
+    try { this.store?.saveConfirmedPreference?.(preference, { expectedRevision, expectedGeneration: this.memoryGeneration }); return { success: true }; }
+    catch (error) {
+      if (error.code === 'F_MEMORY_GENERATION_CONFLICT') return { success: false, retryAfterRefresh: true,
+        error: { code: error.code } };
+      if (['F_MEMORY_REVISION_CONFLICT', 'F_MEMORY_REVISION_INVALID'].includes(error.code)) return { success: false, error: {
+        code: error.code, ...(Number.isSafeInteger(error.currentRevision) ? { currentRevision: error.currentRevision } : {})
+      } };
+      throw error;
+    }
+  }
+
+  checkMemoryGeneration() {
+    if (this.store?.restoreGeneration && this.store.restoreGeneration() !== this.memoryGeneration) {
+      return { success: false, retryAfterRefresh: true, error: { code: 'F_MEMORY_GENERATION_CONFLICT' } };
+    }
+    return null;
+  }
+
+  checkPreferenceRevision(current, expectedRevision) {
+    if (expectedRevision === undefined) return null; // Legacy callers still use a fresh durable snapshot.
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) return { success: false, error: { code: 'F_MEMORY_REVISION_INVALID' } };
+    if (expectedRevision !== (current.revision ?? 1)) return { success: false, error: { code: 'F_MEMORY_REVISION_CONFLICT', currentRevision: current.revision ?? 1 } };
+    return null;
+  }
+
+  publicPreference(preference) {
+    if (this.recallAllowed(preference)) return preference;
+    return { preferenceId: preference.preferenceId, hypothesisId: preference.hypothesisId,
+      status: 'source_review_required', revision: preference.revision ?? 1,
+      statement: '[철회된 원자료에 연결된 기억]', confidence: 0, contentWithheld: true,
+      evidenceEventIds: [...(preference.evidenceEventIds ?? [])],
+      history: (preference.history ?? []).map(item => ({ action: item.action, at: item.at, by: item.by })) };
+  }
+
+  update({ preferenceId, patch = {}, decidedBy = 'user_review', reason = '', expectedRevision } = {}) {
+    const generationConflict = this.checkMemoryGeneration();
+    if (generationConflict) return generationConflict;
+    const current = this.currentPreference(preferenceId);
     if (!current) return { success: false, error: { code: 'F_CONFIRMED_PREFERENCE_NOT_FOUND' } };
+    const conflict = this.checkPreferenceRevision(current, expectedRevision);
+    if (conflict) return conflict;
+    if (!this.recallAllowed(current) && !(decidedBy === 'source-retraction'
+      && patch.status === 'source_review_required' && Object.keys(patch).length === 1)) {
+      return { success: false, error: { code: 'F_MEMORY_SOURCE_RETRACTED' } };
+    }
+    if (patch.validUntil !== undefined && patch.validUntil !== null && (typeof patch.validUntil !== 'string'
+      || !Number.isFinite(Date.parse(patch.validUntil)) || new Date(patch.validUntil).toISOString() !== patch.validUntil))
+      return {success:false,error:{code:'F_MEMORY_EXPIRY_INVALID'}};
     const nextStatement = patch.statement ?? current.statement;
     const updated = {
       ...current,
       statement: nextStatement,
+      validUntil: patch.validUntil === undefined ? (current.validUntil ?? null) : patch.validUntil,
       appliesTo: patch.appliesTo ?? current.appliesTo,
       scopePolicy: {
         ...(current.scopePolicy ?? this.scopePolicyFor({ candidate: current })),
@@ -1869,15 +2002,20 @@ export class ConfirmedPreferenceRegistry {
         }
       ]
     };
+    const saved = this.persistPreference(updated, current.revision ?? 1);
+    if (!saved.success) return saved;
     this.confirmed.set(preferenceId, updated);
-    this.store?.saveConfirmedPreference?.(updated);
     this.auditLog?.write('preference.updated', { preferenceId, decidedBy, reason });
-    return { success: true, item: updated };
+    return { success: true, item: this.publicPreference(updated) };
   }
 
-  revoke({ preferenceId, decidedBy = 'user_review', reason = '' } = {}) {
-    const current = this.confirmed.get(preferenceId);
+  revoke({ preferenceId, decidedBy = 'user_review', reason = '', expectedRevision } = {}) {
+    const generationConflict = this.checkMemoryGeneration();
+    if (generationConflict) return generationConflict;
+    const current = this.currentPreference(preferenceId);
     if (!current) return { success: false, error: { code: 'F_CONFIRMED_PREFERENCE_NOT_FOUND' } };
+    const conflict = this.checkPreferenceRevision(current, expectedRevision);
+    if (conflict) return conflict;
     const revoked = {
       ...current,
       status: 'revoked',
@@ -1895,10 +2033,11 @@ export class ConfirmedPreferenceRegistry {
         }
       ]
     };
+    const saved = this.persistPreference(revoked, current.revision ?? 1);
+    if (!saved.success) return saved;
     this.confirmed.set(preferenceId, revoked);
-    this.store?.saveConfirmedPreference?.(revoked);
     this.auditLog?.write('preference.revoked', { preferenceId, decidedBy, reason });
-    return { success: true, item: revoked };
+    return { success: true, item: this.publicPreference(revoked) };
   }
 
   batchDecide({ decisions = [], preferenceCandidates = [], decidedBy = 'batch_review', reason = 'batch preference review' } = {}) {
@@ -2111,8 +2250,8 @@ export class ConfirmedPreferenceRegistry {
     return preferenceCandidates.flatMap((candidate) => this.conflictsForCandidate(candidate));
   }
 
-  conflictsForCandidate(candidate) {
-    return this.all().flatMap((preference) => {
+  conflictsForCandidate(candidate, scopePolicy = this.scopePolicyFor({ candidate })) {
+    return this.all().filter(preference => preferenceScopeMatches(preference.scopePolicy, scopePolicy)).flatMap((preference) => {
       const conflict = this.conflictClassifier.classify(preference.statement, candidate.statement);
       if (!conflict.conflicts.length) return [];
       return [{
@@ -2131,9 +2270,15 @@ export class ConfirmedPreferenceRegistry {
     });
   }
 
-  all({ includeInactive = false } = {}) {
+  all({ includeInactive = false, includeRetractedContent = false } = {}) {
+    if (this.store?.allConfirmedPreferences) this.confirmed = new Map(this.store.allConfirmedPreferences().map(item => [item.preferenceId, item]));
     const items = [...this.confirmed.values()];
-    return includeInactive ? items : items.filter((item) => item.status === 'confirmed');
+    const isExpired = item => item.validUntil != null && (!Number.isFinite(Date.parse(item.validUntil))
+      || Date.parse(item.validUntil) <= this.clock().getTime());
+    return includeInactive ? items.map(item => {
+      const visible = includeRetractedContent ? item : this.publicPreference(item);
+      return visible.status === 'confirmed' && isExpired(item) ? {...visible,status:'expired'} : visible;
+    }) : items.filter((item) => item.status === 'confirmed' && !isExpired(item) && this.recallAllowed(item));
   }
 }
 
@@ -2164,17 +2309,46 @@ export class FailureMemoryBuilder {
   constructor({ clock = () => new Date(), store = null, auditLog = null } = {}) {
     this.clock = clock;
     this.store = store;
+    this.memoryGeneration = store?.restoreGeneration?.();
     this.auditLog = auditLog;
     this.failureEvents = new Set(['approval.rejected', 'execution.failed', 'verification.failed', 'policy.blocked']);
     this.guardrailReviews = new Map();
+    this.guardrailReviewHistory = new Map();
     this.trendHistory = [];
+    this.sourceDigest = store?.sourceRetractionDigest?.();
+    this.withheldReviewCount = 0;
     for (const review of this.store?.allFailureGuardrailReviews?.() ?? []) {
-      this.guardrailReviews.set(review.failureId, review);
+      if (review.contentWithheld) this.withheldReviewCount++;
+      else this.rememberGuardrailReview(review);
     }
   }
 
+  rememberGuardrailReview(review) {
+    this.guardrailReviews.set(review.failureId,review);
+    const entries=this.guardrailReviewHistory.get(review.failureId)??[];
+    if(!entries.some(entry=>entry.reviewId===review.reviewId))entries.push({reviewId:review.reviewId,action:review.decision,at:review.reviewedAt});
+    this.guardrailReviewHistory.set(review.failureId,entries);
+  }
+
+  refreshSourceReviews() {
+    if (this.store?.restoreGeneration && this.store.restoreGeneration() !== this.memoryGeneration) throw Object.assign(new Error('Memory generation changed.'), { code: 'F_MEMORY_GENERATION_CONFLICT' });
+    const digest=this.store?.sourceRetractionDigest?.();
+    if(this.store?.allFailureGuardrailReviews){
+      const reviews=this.store.allFailureGuardrailReviews();
+      this.guardrailReviews=new Map();this.guardrailReviewHistory=new Map();
+      for(const review of reviews)if(!review.contentWithheld)this.rememberGuardrailReview(review);
+      this.withheldReviewCount=reviews.filter(review=>review.contentWithheld).length;
+    }
+    if(digest!==this.sourceDigest){this.trendHistory=[];this.sourceDigest=digest;}
+  }
+
+  failureIdFor(event) {
+    return `failure_${createHash('sha256').update(JSON.stringify([event.eventId, normalizeMemoryScope(event.source?.memoryScope)])).digest('hex').slice(0, 32)}`;
+  }
+
   build(events, { patterns = [] } = {}) {
-    const failures = events.filter((event) => this.failureEvents.has(event.eventType));
+    this.refreshSourceReviews();
+    const failures = events.filter((event) => this.failureEvents.has(event.eventType) && sourceRecallAllowed(event) && !this.store?.hasSourceRetraction?.(event.eventId));
     const lessons = failures
       .map((event, index) => {
         const cause = this.classifyCause(event);
@@ -2187,7 +2361,7 @@ export class FailureMemoryBuilder {
         ));
         const recurrence = this.preventedRecurrenceMetric({ failure: event, events, cause, workflowSignature });
         const baseLesson = {
-          failureId: `failure_${index + 1}`,
+          failureId: this.failureIdFor(event),
           taskId: event.taskId,
           failureType: event.eventType.replace('.', '_'),
           cause,
@@ -2328,6 +2502,8 @@ export class FailureMemoryBuilder {
       futureGuardrail: review.patch?.futureGuardrail ?? lesson.futureGuardrail,
       guardrailChecklist,
       guardrailReview: review,
+      revision: (this.guardrailReviewHistory.get(lesson.failureId)??[]).length,
+      history: (this.guardrailReviewHistory.get(lesson.failureId)??[]).map(({action,at})=>({action,at})),
       status: review.decision === 'disable' ? 'guardrail_disabled_by_review' : 'guardrail_reviewed'
     };
     return {
@@ -2345,8 +2521,12 @@ export class FailureMemoryBuilder {
     if (!['update', 'disable', 'keep'].includes(decision)) {
       return { success: false, error: { code: 'F_FAILURE_GUARDRAIL_DECISION_INVALID' } };
     }
+    const sourceDigest = this.store?.sourceRetractionDigest?.();
+    const source = this.store?.allEvents?.().find(event => this.failureEvents.has(event.eventType) && this.failureIdFor(event) === failureId);
+    if (source && this.store?.hasSourceRetraction?.(source.eventId)) return { success: false, error: { code: 'F_MEMORY_SOURCE_RETRACTED' } };
     const review = {
-      reviewId: stableId('failure_guardrail_review', failureId, decision, this.clock().toISOString()),
+      evidenceEventIds: source ? [source.eventId] : [],
+      reviewId: `failure_guardrail_review_${randomUUID()}`,
       failureId,
       decision,
       patch,
@@ -2354,8 +2534,14 @@ export class FailureMemoryBuilder {
       reason,
       reviewedAt: this.clock().toISOString()
     };
-    this.guardrailReviews.set(failureId, review);
-    this.store?.saveFailureGuardrailReview?.(review);
+    try {
+      this.store?.saveFailureGuardrailReview?.(review, { expectedGeneration: this.memoryGeneration, expectedSourceRetractionDigest: sourceDigest });
+    } catch (error) {
+      if (['F_MEMORY_GENERATION_CONFLICT', 'F_MEMORY_SOURCE_CHANGED', 'F_MEMORY_SOURCE_RETRACTED'].includes(error.code)) return { success: false, retryAfterRefresh: true,
+        error: { code: error.code } };
+      throw error;
+    }
+    this.rememberGuardrailReview(review);
     this.auditLog?.write('failure.guardrail.review.persisted', {
       reviewId: review.reviewId,
       failureId,
@@ -2391,15 +2577,18 @@ export class FailureMemoryBuilder {
   }
 
   trendStatus() {
+    this.refreshSourceReviews();
     const latest = this.trendHistory[0] ?? null;
     return {
       latest,
       history: [...this.trendHistory],
       reviewCount: this.guardrailReviews.size,
+      withheldReviewCount: this.withheldReviewCount,
       dashboard: {
         dashboardVersion: 'f-failure-recurrence-dashboard-v1',
-        status: latest?.recurrenceDetectedCount > 0 ? 'review_required' : 'guardrails_holding',
+        status: this.withheldReviewCount > 0 ? 'source_review_required' : latest?.recurrenceDetectedCount > 0 ? 'review_required' : 'guardrails_holding',
         reviewedGuardrailCount: this.guardrailReviews.size,
+        withheldReviewCount: this.withheldReviewCount,
         recurrenceDetectedCount: latest?.recurrenceDetectedCount ?? 0,
         guardrailHoldingCount: latest?.guardrailHoldingCount ?? 0,
         averageRecurrenceScore: latest?.averageRecurrenceScore ?? 0
@@ -2705,7 +2894,7 @@ export class MemoryHygieneManager {
     };
   }
 
-  decide({ targetType = 'memory_event', targetId, action, reason = '', decidedBy = 'user_review' } = {}) {
+  decide({ targetType = 'memory_event', targetId, action, reason = '', decidedBy = 'user_review' } = {}, { publish = true } = {}) {
     const allowed = ['keep', 'delete', 'redact', 'defer'];
     if (!targetId || !allowed.includes(action)) {
       return { success: false, error: { code: 'F_HYGIENE_DECISION_INVALID' } };
@@ -2720,7 +2909,7 @@ export class MemoryHygieneManager {
       decidedAt: this.clock().toISOString(),
       status: action === 'defer' ? 'deferred' : 'applied'
     };
-    this.decisions.set(targetId, decision);
+    if (publish) this.decisions.set(targetId, decision);
     return { success: true, decision };
   }
 
@@ -2925,7 +3114,7 @@ export class CloneEvidenceBuilder {
 export class StyleGenomeBuilder {
   build(events, confirmedPreferences = []) {
     const texts = events
-      .filter((event) => !event.learningFlags?.containsSensitiveData && !event.trustBoundary?.externalContent)
+      .filter(sourceRecallAllowed)
       .map((event) => `${event.payload?.rawText ?? ''} ${event.payload?.text ?? ''} ${event.payload?.editRequest ?? ''}`)
       .filter((text) => text.trim() && !text.includes('[sensitive-summary]'));
     const joined = texts.join(' ');
@@ -2952,31 +3141,41 @@ export class StyleGenomeBuilder {
 }
 
 export class SkillDistillationEngine {
-  distill({ patterns, confirmedPreferences, styleGenome }) {
+  distill({ patterns, confirmedPreferences, styleGenome, events }) {
     return patterns
       .filter((pattern) => pattern.occurrenceCount >= 3)
-      .map((pattern, index) => ({
-        distilledSkillId: `skill_distill_${index + 1}`,
+      .map((pattern, index) => {
+        const scope = normalizeMemoryScope(pattern.memoryScope);
+        const scopedEvents = Array.isArray(events) ? events.filter(event => scope
+          ? memoryScopeMatches(event, scope) : !normalizeMemoryScope(event.source?.memoryScope)) : null;
+        const scopedPreferences = scopedEvents ? confirmedPreferences.filter(preference => scope
+          ? preferenceSourcesMatch(preference, scopedEvents, scope)
+          : (preference.evidenceEventIds ?? []).length > 0 && preference.evidenceEventIds.every(id => scopedEvents.some(event => event.eventId === id && sourceRecallAllowed(event)))) : confirmedPreferences;
+        const scopedStyle = scopedEvents ? new StyleGenomeBuilder().build(scopedEvents, scopedPreferences) : styleGenome;
+        return {
+        distilledSkillId: scope ? `scoped_skill_distill_${createHash('sha256').update(pattern.patternId).digest('hex')}` : `skill_distill_${index + 1}`,
+        memoryScope: scope,
         title: `${pattern.description} 보조 스킬 초안`,
         sourcePatternId: pattern.patternId,
         evidenceEventIds: pattern.evidenceEventIds,
-        confirmedPreferenceIds: confirmedPreferences.map((preference) => preference.preferenceId),
+        confirmedPreferenceIds: scopedPreferences.map((preference) => preference.preferenceId),
         suggestedSteps: [
           '반복 작업 의도를 확인한다.',
           '확정 선호와 스타일 genome을 작업 초안에만 적용한다.',
           'E 정책 승인 전에는 실행하지 않는다.'
         ],
-        styleHints: styleGenome.guidance,
-        confidence: Math.min(0.88, Number((pattern.confidence + confirmedPreferences.length * 0.04).toFixed(2))),
+        styleHints: scopedStyle.guidance,
+        confidence: Math.min(0.88, Number((pattern.confidence + scopedPreferences.length * 0.04).toFixed(2))),
         status: 'draft_requires_review',
         safetyConstraints: ['requires_user_review', 'requires_policy_check', 'no_sensitive_reconstruction']
-      }));
+      }; });
   }
 }
 
 export class SkillDraftRegistry {
-  constructor({ clock = () => new Date(), restoredState = null } = {}) {
+  constructor({ clock = () => new Date(), restoredState = null, recallAllowed = () => true } = {}) {
     this.clock = clock;
+    this.recallAllowed = recallAllowed;
     this.reviews = new Map((restoredState?.reviews ?? []).map((item) => [item.draftId, item]));
     this.registry = new Map((restoredState?.registryEntries ?? []).map((item) => [item.skillId, item]));
     this.usefulness = new Map((restoredState?.usefulnessScores ?? [])
@@ -2987,6 +3186,10 @@ export class SkillDraftRegistry {
   review({ draftId, decision = 'approve', drafts = [], decidedBy = 'user_review', reason = '' } = {}) {
     const draft = drafts.find((item) => item.distilledSkillId === draftId);
     if (!draft) return { success: false, error: { code: 'F_SKILL_DRAFT_NOT_FOUND' } };
+    if (!this.recallAllowed(draft)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
+    if (!['approve', 'reject'].includes(decision)) return { success: false, error: { code: 'F_SKILL_REVIEW_DECISION_INVALID' } };
+    const existing = [...this.registry.values()].find((item) => item.sourceDraftId === draftId);
+    if (existing && decision === 'approve') return { success: false, error: { code: 'F_SKILL_DRAFT_ALREADY_REGISTERED' } };
     const reviewedAt = this.clock().toISOString();
     const review = {
       draftId,
@@ -3000,10 +3203,12 @@ export class SkillDraftRegistry {
     this.reviews.set(draftId, review);
     if (decision === 'approve') {
       const skillId = stableId('distilled_skill', `${draftId}:${draft.title}`, reviewedAt);
+      const revisionId = createSkillRevisionId(skillId, 1, draft.suggestedSteps, reviewedAt);
       const usefulness = this.initialUsefulness(entryUsefulnessKey(draftId, draft.title), skillId);
       const entry = {
         skillId,
         sourceDraftId: draftId,
+        evidenceEventIds: [...(draft.evidenceEventIds ?? [])],
         title: draft.title,
         status: 'approved_for_skill_registry',
         registeredAt: reviewedAt,
@@ -3011,6 +3216,12 @@ export class SkillDraftRegistry {
         suggestedSteps: draft.suggestedSteps,
         styleHints: draft.styleHints,
         safetyConstraints: draft.safetyConstraints,
+        activeRevisionId: revisionId,
+        revisions: [{ revisionId, version: 1, parentRevisionId: null, status: 'active',
+          suggestedSteps: draft.suggestedSteps, reason: 'initial_user_approval', createdBy: decidedBy,
+          createdAt: reviewedAt, evaluatedAt: reviewedAt, evaluation: { mode: 'initial-reviewed-draft', status: 'passed' },
+          review: { decision: 'approve', decidedBy, reason, reviewedAt }, promotedAt: reviewedAt }],
+        lifecycleEvents: [{ type: 'initial_revision_activated', revisionId, actor: decidedBy, reason, occurredAt: reviewedAt }],
         policy: {
           requiresUserReview: true,
           requiresPolicyCheck: true,
@@ -3023,6 +3234,186 @@ export class SkillDraftRegistry {
       return { success: true, review, registryEntry: entry };
     }
     return { success: true, review, registryEntry: null };
+  }
+
+  sourceEvidenceIds(entry) {
+    // Older persisted entries kept provenance on the review, not the entry.
+    const ids = entry.evidenceEventIds ?? this.reviews.get(entry.sourceDraftId)?.evidenceEventIds;
+    return Array.isArray(ids) ? [...ids] : [];
+  }
+
+  sourceAvailable(entry) {
+    return entry.status !== 'source_review_required'
+      && this.recallAllowed({ ...entry, evidenceEventIds: this.sourceEvidenceIds(entry) });
+  }
+
+  publicEntry(entry) {
+    if (this.sourceAvailable(entry)) return entry;
+    return { skillId: entry.skillId, sourceDraftId: entry.sourceDraftId,
+      evidenceEventIds: this.sourceEvidenceIds(entry), status: 'source_review_required',
+      title: '[철회된 원자료에 연결된 절차]', contentWithheld: true,
+      activeRevisionId: entry.activeRevisionId, pendingRevisionId: null,
+      suggestedSteps: [], revisions: [], confidence: 0,
+      policy: { executableByDefault: false, requiresUserReview: true, requiresPolicyCheck: true } };
+  }
+
+  createRevision({ skillId, expectedActiveRevisionId, suggestedSteps, procedureDefinition = null, procedureLifecycle = {}, createdBy = 'user_review', reason = '' } = {}) {
+    const entry = this.registry.get(skillId);
+    if (!entry) return { success: false, error: { code: 'F_SKILL_REGISTRY_ENTRY_NOT_FOUND' } };
+    if (!this.sourceAvailable(entry)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
+    if (expectedActiveRevisionId !== entry.activeRevisionId) return { success: false, error: { code: 'F_SKILL_REVISION_STALE_BASE' } };
+    if (entry.pendingRevisionId) return { success: false, error: { code: 'F_SKILL_REVISION_PENDING_EXISTS' } };
+    const validation = validateSkillRevisionSteps(suggestedSteps);
+    if (!validation.valid) return { success: false, error: { code: 'F_SKILL_REVISION_INVALID', issues: validation.issues } };
+    if (procedureDefinition !== null) {
+      const procedureValidation = validateTabularProcedureDefinition(procedureDefinition);
+      if (!procedureValidation.valid) return { success: false, error: { code: 'F_SKILL_REVISION_PROCEDURE_INVALID', issues: procedureValidation.issues } };
+    }
+    if (typeof reason !== 'string' || reason.length > 500 || typeof createdBy !== 'string' || createdBy.length > 80) {
+      return { success: false, error: { code: 'F_SKILL_REVISION_METADATA_INVALID' } };
+    }
+    const now = this.clock().toISOString();
+    let lifecycle = null;
+    if (procedureDefinition) {
+      try { lifecycle = createProcedureLifecycle(procedureDefinition, procedureLifecycle, now); }
+      catch { return { success:false, error:{code:'F_SKILL_PROCEDURE_LIFECYCLE_INVALID'} }; }
+    }
+    const revisions = entry.revisions ?? [];
+    const version = Math.max(0, ...revisions.map((item) => item.version ?? 0)) + 1;
+    const revisionId = createSkillRevisionId(skillId, version, suggestedSteps, now, procedureDefinition);
+    const revision = { revisionId, version, parentRevisionId: entry.activeRevisionId, status: 'draft',
+      suggestedSteps: [...suggestedSteps], ...(procedureDefinition ? { procedureDefinition: structuredClone(procedureDefinition), procedureLifecycle: lifecycle } : {}),
+      reason, createdBy, createdAt: now, evaluation: null, review: null };
+    const updated = { ...entry, revisions: [...revisions, revision], pendingRevisionId: revisionId,
+      lifecycleEvents: [...(entry.lifecycleEvents ?? []), { type: 'revision_created', revisionId,
+        actor: createdBy, reason, occurredAt: now }] };
+    this.registry.set(skillId, updated);
+    return { success: true, revision, registryEntry: updated };
+  }
+
+  evaluateRevision({ skillId, revisionId, trialCases = null } = {}) {
+    const entry = this.registry.get(skillId);
+    if (!entry) return { success: false, error: { code: 'F_SKILL_REGISTRY_ENTRY_NOT_FOUND' } };
+    if (!this.sourceAvailable(entry)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
+    const revision = (entry.revisions ?? []).find((item) => item.revisionId === revisionId);
+    if (!revision) return { success: false, error: { code: 'F_SKILL_REVISION_NOT_FOUND' } };
+    const lifecycleIssue = procedureLifecycleIssue(revision, this.clock().toISOString());
+    if (lifecycleIssue) return { success:false,error:{code:lifecycleIssue} };
+    if (revision.status !== 'draft') return { success: false, error: { code: 'F_SKILL_REVISION_NOT_EVALUABLE' } };
+    let trialEvaluation = null;
+    if (revision.procedureDefinition) {
+      if (!Array.isArray(trialCases)) return { success: false, error: { code: 'F_SKILL_REVISION_TRIALS_REQUIRED' } };
+      trialEvaluation = evaluateTabularProcedureTrials(revision.procedureDefinition, trialCases);
+      if (!trialEvaluation.success) return { success: false, error: { code: 'F_SKILL_REVISION_TRIALS_INVALID', issues: trialEvaluation.issues } };
+    }
+    const validation = validateSkillRevisionSteps(revision.suggestedSteps);
+    const checks = [
+      { id: 'steps_nonempty_and_bounded', status: validation.valid ? 'passed' : 'failed', issues: validation.issues },
+      { id: 'required_review_policy_preserved', status: entry.policy?.requiresUserReview === true
+          && entry.policy?.requiresPolicyCheck === true && entry.policy?.executableByDefault === false
+          ? 'passed' : 'failed' },
+      { id: 'safety_constraints_preserved', status: ['requires_user_review', 'requires_policy_check', 'no_sensitive_reconstruction']
+          .every((item) => entry.safetyConstraints?.includes(item)) ? 'passed' : 'failed' },
+      { id: 'revision_parent_is_known', status: (entry.revisions ?? []).some((item) => item.revisionId === revision.parentRevisionId)
+          ? 'passed' : 'failed' }
+    ];
+    const status = checks.every((item) => item.status === 'passed') && (trialEvaluation === null || trialEvaluation.status === 'passed')
+      ? 'passed' : 'failed';
+    const now = this.clock().toISOString();
+    const evaluatedRevision = { ...revision, status: status === 'passed' ? 'awaiting_user_review' : 'evaluation_failed',
+      evaluatedAt: now, evaluation: { evaluationVersion: trialEvaluation ? 'f-skill-revision-cross-material-v1' : 'f-skill-revision-static-contract-v1',
+        mode: trialEvaluation?.mode ?? 'static-contract-only', status, checks,
+        ...(trialEvaluation ? { trialEvaluation } : {}) } };
+    const revisions = entry.revisions.map((item) => item.revisionId === revisionId ? evaluatedRevision : item);
+    const updated = { ...entry, revisions, pendingRevisionId: status === 'passed' ? revisionId : null,
+      lifecycleEvents: [...(entry.lifecycleEvents ?? []), { type: 'revision_evaluated', revisionId, status, occurredAt: now }] };
+    this.registry.set(skillId, updated);
+    return { success: true, revision: evaluatedRevision, registryEntry: updated };
+  }
+
+  reviewRevision({ skillId, revisionId, decision, decidedBy = 'user_review', reason = '' } = {}) {
+    const entry = this.registry.get(skillId);
+    if (!entry) return { success: false, error: { code: 'F_SKILL_REGISTRY_ENTRY_NOT_FOUND' } };
+    if (!this.sourceAvailable(entry)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
+    const revision = (entry.revisions ?? []).find((item) => item.revisionId === revisionId);
+    if (!revision) return { success: false, error: { code: 'F_SKILL_REVISION_NOT_FOUND' } };
+    const lifecycleIssue = procedureLifecycleIssue(revision, this.clock().toISOString());
+    if (lifecycleIssue) return { success:false,error:{code:lifecycleIssue} };
+    if (revision.procedureDefinition && (revision.evaluation?.mode !== 'cross-material-deterministic-procedure-trials-v1'
+        || revision.evaluation?.status !== 'passed' || revision.evaluation?.trialEvaluation?.status !== 'passed')) {
+      return { success: false, error: { code: 'F_SKILL_REVISION_TRIALS_REQUIRED' } };
+    }
+    if (!['approve', 'reject'].includes(decision)) return { success: false, error: { code: 'F_SKILL_REVIEW_DECISION_INVALID' } };
+    if (revision.status !== 'awaiting_user_review') return { success: false, error: { code: 'F_SKILL_REVISION_NOT_REVIEWABLE' } };
+    if (typeof reason !== 'string' || reason.length > 500 || typeof decidedBy !== 'string' || decidedBy.length > 80) {
+      return { success: false, error: { code: 'F_SKILL_REVISION_METADATA_INVALID' } };
+    }
+    const now = this.clock().toISOString();
+    const reviewedRevision = { ...revision, status: decision === 'approve' ? 'review_approved' : 'review_rejected',
+      review: { decision, decidedBy, reason, reviewedAt: now } };
+    const updated = { ...entry, revisions: entry.revisions.map((item) => item.revisionId === revisionId ? reviewedRevision : item),
+      pendingRevisionId: decision === 'approve' ? revisionId : null,
+      lifecycleEvents: [...(entry.lifecycleEvents ?? []), { type: 'revision_reviewed', revisionId, decision,
+        actor: decidedBy, reason, occurredAt: now }] };
+    this.registry.set(skillId, updated);
+    return { success: true, revision: reviewedRevision, registryEntry: updated };
+  }
+
+  promoteRevision({ skillId, revisionId, expectedActiveRevisionId, promotedBy = 'user_review', reason = '' } = {}) {
+    const entry = this.registry.get(skillId);
+    if (!entry) return { success: false, error: { code: 'F_SKILL_REGISTRY_ENTRY_NOT_FOUND' } };
+    if (!this.sourceAvailable(entry)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
+    if (expectedActiveRevisionId !== entry.activeRevisionId) return { success: false, error: { code: 'F_SKILL_REVISION_STALE_BASE' } };
+    const revision = (entry.revisions ?? []).find((item) => item.revisionId === revisionId);
+    if (!revision) return { success: false, error: { code: 'F_SKILL_REVISION_NOT_FOUND' } };
+    const lifecycleIssue = procedureLifecycleIssue(revision, this.clock().toISOString());
+    if (lifecycleIssue) return { success:false,error:{code:lifecycleIssue} };
+    if (revision.procedureDefinition && (revision.evaluation?.mode !== 'cross-material-deterministic-procedure-trials-v1'
+        || revision.evaluation?.status !== 'passed' || revision.evaluation?.trialEvaluation?.status !== 'passed')) {
+      return { success: false, error: { code: 'F_SKILL_REVISION_TRIALS_REQUIRED' } };
+    }
+    if (revision.status !== 'review_approved' || revision.review?.decision !== 'approve') {
+      return { success: false, error: { code: 'F_SKILL_REVISION_REVIEW_REQUIRED' } };
+    }
+    if (revision.parentRevisionId !== entry.activeRevisionId) return { success: false, error: { code: 'F_SKILL_REVISION_PARENT_MISMATCH' } };
+    const now = this.clock().toISOString();
+    const revisions = entry.revisions.map((item) => item.revisionId === revisionId
+      ? { ...item, status: 'active', promotedAt: now }
+      : item.revisionId === entry.activeRevisionId && item.status === 'active'
+        ? { ...item, status: 'superseded', supersededAt: now }
+        : item);
+    const active = revisions.find((item) => item.revisionId === revisionId);
+    const updated = { ...entry, activeRevisionId: revisionId, pendingRevisionId: null,
+      suggestedSteps: active.suggestedSteps, revisions, policy: { ...entry.policy, executableByDefault: false,
+        requiresUserReview: true, requiresPolicyCheck: true },
+      lifecycleEvents: [...(entry.lifecycleEvents ?? []), { type: 'revision_promoted', revisionId,
+        actor: promotedBy, reason, occurredAt: now }] };
+    this.registry.set(skillId, updated);
+    return { success: true, activeRevision: active, registryEntry: updated };
+  }
+
+  rollbackRevision({ skillId, targetRevisionId, expectedActiveRevisionId, rolledBackBy = 'user_review', reason = '' } = {}) {
+    const entry = this.registry.get(skillId);
+    if (!entry) return { success: false, error: { code: 'F_SKILL_REGISTRY_ENTRY_NOT_FOUND' } };
+    if (!this.sourceAvailable(entry)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
+    if (expectedActiveRevisionId !== entry.activeRevisionId) return { success: false, error: { code: 'F_SKILL_REVISION_STALE_BASE' } };
+    const target = (entry.revisions ?? []).find((item) => item.revisionId === targetRevisionId);
+    if (!target || !['superseded', 'active'].includes(target.status)) return { success: false, error: { code: 'F_SKILL_ROLLBACK_TARGET_INVALID' } };
+    const lifecycleIssue = procedureLifecycleIssue(target, this.clock().toISOString());
+    if (lifecycleIssue) return {success:false,error:{code:lifecycleIssue}};
+    if (targetRevisionId === entry.activeRevisionId) return { success: false, error: { code: 'F_SKILL_ROLLBACK_ALREADY_ACTIVE' } };
+    const now = this.clock().toISOString();
+    const revisions = entry.revisions.map((item) => item.revisionId === targetRevisionId
+      ? { ...item, status: 'active', restoredAt: now }
+      : item.revisionId === entry.activeRevisionId && item.status === 'active'
+        ? { ...item, status: 'superseded', supersededAt: now }
+        : item);
+    const updated = { ...entry, activeRevisionId: targetRevisionId, pendingRevisionId: null,
+      suggestedSteps: target.suggestedSteps, revisions,
+      lifecycleEvents: [...(entry.lifecycleEvents ?? []), { type: 'revision_rolled_back', fromRevisionId: entry.activeRevisionId,
+        toRevisionId: targetRevisionId, actor: rolledBackBy, reason, occurredAt: now }] };
+    this.registry.set(skillId, updated);
+    return { success: true, activeRevision: revisions.find((item) => item.revisionId === targetRevisionId), registryEntry: updated };
   }
 
   initialUsefulness(seed, skillId = null) {
@@ -3043,6 +3434,7 @@ export class SkillDraftRegistry {
   recordUsefulness({ skillId, outcome = 'helpful', taskId = null, decidedBy = 'user_feedback', reason = '' } = {}) {
     const entry = this.registry.get(skillId);
     if (!entry) return { success: false, error: { code: 'F_SKILL_REGISTRY_ENTRY_NOT_FOUND' } };
+    if (!this.sourceAvailable(entry)) return { success: false, error: { code: 'F_SKILL_SOURCE_RETRACTED' } };
     const current = this.usefulness.get(skillId) ?? this.initialUsefulness(skillId, skillId);
     const next = {
       ...current,
@@ -3064,12 +3456,15 @@ export class SkillDraftRegistry {
   }
 
   usefulnessReport() {
-    const items = [...this.registry.values()].map((entry) => ({
+    const items = [...this.registry.values()].map((rawEntry) => {
+      const entry = this.publicEntry(rawEntry);
+      return ({
       skillId: entry.skillId,
       title: entry.title,
       status: entry.status,
-      usefulness: this.usefulness.get(entry.skillId) ?? entry.usefulness ?? this.initialUsefulness(entry.skillId, entry.skillId)
-    }));
+      usefulness: entry.contentWithheld ? { score: 0, contentWithheld: true }
+        : this.usefulness.get(entry.skillId) ?? entry.usefulness ?? this.initialUsefulness(entry.skillId, entry.skillId)
+    }); });
     return {
       reportVersion: 'f-skill-usefulness-report-v1',
       generatedAt: this.clock().toISOString(),
@@ -3097,6 +3492,8 @@ export class SkillDraftRegistry {
       generatedAt: this.clock().toISOString(),
       drafts: drafts.map((draft) => {
         const review = this.reviews.get(draft.distilledSkillId);
+        if (!this.recallAllowed(draft)) return { distilledSkillId: draft.distilledSkillId,
+          status: 'source_review_required', contentWithheld: true, suggestedSteps: [] };
         return {
           ...draft,
           review,
@@ -3107,7 +3504,7 @@ export class SkillDraftRegistry {
               : draft.status
         };
       }),
-      registryEntries: [...this.registry.values()],
+      registryEntries: [...this.registry.values()].map(entry => this.publicEntry(entry)),
       usefulnessReport: this.usefulnessReport(),
       persistence: {
         snapshotVersion: 'f-approved-skill-registry-snapshot-v1',
@@ -3115,6 +3512,34 @@ export class SkillDraftRegistry {
       }
     };
   }
+}
+
+function validateSkillRevisionSteps(steps) {
+  const issues = [];
+  if (!Array.isArray(steps) || steps.length < 1 || steps.length > 24) {
+    return { valid: false, issues: ['steps must contain between 1 and 24 items'] };
+  }
+  if (steps.some((item) => typeof item !== 'string' || item.trim().length === 0 || item.length > 320)) {
+    issues.push('every step must be a nonempty string of at most 320 characters');
+  }
+  if (new Set(steps).size !== steps.length) issues.push('steps must not contain exact duplicates');
+  return { valid: issues.length === 0, issues };
+}
+
+function createSkillRevisionId(skillId, version, suggestedSteps, createdAt, procedureDefinition = null) {
+  const identity = JSON.stringify({ skillId, version, suggestedSteps, procedureDefinition, createdAt });
+  const digest = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 32);
+  return `skill_revision_v${version}_${digest}`;
+}
+
+function missionSkillTerms(value) {
+  const stopWords = new Set(['그리고', '그대로', '기존', '사용', '업무', '절차', '진행', '적용', '방식', '따라', '대해', '해서', '있는', '이번', '다시']);
+  return new Set(String(value ?? '').normalize('NFC').toLocaleLowerCase('ko-KR')
+    .split(/[^\p{L}\p{N}]+/u)
+    .map(term => term
+      .replace(/(?:해주세요|해줘|해주|합니다|한다|하기|하는|하여|해서|했어|해)$/u, '')
+      .replace(/(?:으로|에서|까지|에게|부터|처럼|보다|이라|이며|은|는|이|가|을|를|에|의|도|만|로|와|과)$/u, ''))
+    .filter(term => term.length >= 2 && !stopWords.has(term)));
 }
 
 function entryUsefulnessKey(draftId, title) {
@@ -3402,6 +3827,7 @@ export class GrowthRuntime {
   constructor({ clock = () => new Date(), memoryStore = null, auditLog = null, auditRoot, policyRuntime = null } = {}) {
     this.clock = clock;
     this.memoryStore = memoryStore;
+    this.memoryGeneration = memoryStore?.restoreGeneration?.() ?? 0;
     this.policyRuntime = policyRuntime;
     this.auditLog = auditLog ?? new JsonlAuditLog({
       filePath: auditRoot ? `${auditRoot}/memory-audit.jsonl` : 'apps/growth-memory/logs/memory-audit.jsonl',
@@ -3430,34 +3856,49 @@ export class GrowthRuntime {
       patternMiner: this.patternMiner
     });
     this.preferenceEngine = new PreferenceHypothesisEngine();
-    this.confirmedPreferenceRegistry = new ConfirmedPreferenceRegistry({ clock, store: memoryStore, auditLog: this.auditLog });
+    this.confirmedPreferenceRegistry = new ConfirmedPreferenceRegistry({ clock, store: memoryStore, auditLog: this.auditLog,
+      recallAllowed: preference => (preference.evidenceEventIds ?? []).every(id => {
+        const decision = this.hygieneManager?.decisionFor(id);
+        const event = this.ingestor.events.get(id);
+        return !this.memoryStore?.hasSourceRetraction?.(id)
+          && !(decision?.targetType === 'memory_event' && ['delete', 'redact'].includes(decision.action))
+          && (!event || sourceRecallAllowed(event));
+      }) });
     this.failureBuilder = new FailureMemoryBuilder({ clock, store: memoryStore, auditLog: this.auditLog });
     this.hygieneManager = new MemoryHygieneManager({
       clock,
       decisions: memoryStore?.allHygieneDecisions?.() ?? []
     });
+    this.applyPersistedSourceRetractions();
     this.autonomyCandidateGenerator = new AutonomyCandidateGenerator({ clock });
     this.genomeBuilder = new GenomeBuilder();
     const restoredGenomeRecords = memoryStore?.allTrendSnapshots?.({ trendType: 'genome' }) ?? [];
     const restoredMaturityRecords = memoryStore?.allTrendSnapshots?.({ trendType: 'maturity' }) ?? [];
-    const restoredSkillRegistryRecords = memoryStore?.allTrendSnapshots?.({ trendType: 'skill_registry' }) ?? [];
+    const restoredSkillRegistryRecords = memoryStore?.allTrendSnapshots?.({ trendType: 'skill_registry', includeRetractedContent: true }) ?? [];
     const restoredAutonomyRecords = memoryStore?.allTrendSnapshots?.({ trendType: 'autonomy_candidate' }) ?? [];
-    const restoredGenomeSnapshots = restoredGenomeRecords.map((item) => item.snapshot);
-    const restoredMaturitySnapshots = restoredMaturityRecords.map((item) => item.snapshot);
+    const restoredGenomeSnapshots = restoredGenomeRecords.filter(item => !item.contentWithheld && item.snapshot).map((item) => item.snapshot);
+    const restoredMaturitySnapshots = restoredMaturityRecords.filter(item => !item.contentWithheld && item.snapshot).map((item) => item.snapshot);
     const restoredSkillRegistryState = restoredSkillRegistryRecords.at(-1)?.snapshot ?? null;
     this.genomeTrendTracker = new GenomeTrendTracker({ clock, snapshots: restoredGenomeSnapshots });
     this.cloneEvidenceBuilder = new CloneEvidenceBuilder();
     this.styleGenomeBuilder = new StyleGenomeBuilder();
     this.skillDistillationEngine = new SkillDistillationEngine();
-    this.skillDraftRegistry = new SkillDraftRegistry({ clock, restoredState: restoredSkillRegistryState });
+    this.skillDraftRegistry = new SkillDraftRegistry({ clock, restoredState: restoredSkillRegistryState,
+      recallAllowed: entry => this.confirmedPreferenceRegistry.recallAllowed(entry) });
     this.maturityScoreEngine = new MaturityScoreEngine({ clock, trendHistory: restoredMaturitySnapshots });
+    this.derivedTrendSourceDigest = memoryStore?.sourceRetractionDigest?.();
+    this.derivedTrendPreferenceDigest = memoryStore?.preferenceStateDigest?.();
     this.learningVerifier = null;
     this.submittedAutonomyCandidates = [];
-    this.autonomyCandidateLedger = new Map(restoredAutonomyRecords
+    this.autonomyCandidateLedger = new Map(restoredAutonomyRecords.filter(item => !item.contentWithheld && item.snapshot)
       .map((record) => record.snapshot)
       .filter((item) => item?.candidateId)
       .map((item) => [item.candidateId, item]));
     this.retentionSchedulerRuns = [];
+    this.selectedConversationImports = memoryStore?.db ? new SelectedConversationArchive({ store: memoryStore,
+      clock, sensitiveText: text => this.sensitiveMinimizer.containsSensitive({ text }) }) : null;
+    if ((memoryStore?.restoreGeneration?.() ?? 0) !== this.memoryGeneration) throw new Error('Memory generation changed during construction.');
+    this.bindMemoryGenerationGuard();
   }
 
   minimizePreview(event = {}) {
@@ -5266,6 +5707,7 @@ export class GrowthRuntime {
   }
 
   storageStatus() {
+    if (this.memoryRecoveryState?.status === 'restart_required') return { ...this.memoryStore?.storageStatus?.(), memoryRecovery: this.memoryRecoveryState };
     return this.memoryStore?.storageStatus?.() ?? {
       dbPath: null,
       schemaVersion: null,
@@ -5281,7 +5723,7 @@ export class GrowthRuntime {
     };
   }
 
-  persistTrendSnapshot(trendType, snapshot, metadata = {}) {
+  persistTrendSnapshot(trendType, snapshot, metadata = {}, { expectedSourceRetractionDigest = this.memoryStore?.sourceRetractionDigest?.(), expectedPreferenceStateDigest = this.memoryStore?.preferenceStateDigest?.() } = {}) {
     if (!this.memoryStore?.saveTrendSnapshot || !snapshot) return { success: false, persisted: false };
     const snapshotId = snapshot.snapshotId ?? snapshot.reportId ?? stableId('growth_trend', trendType, this.clock().toISOString());
     const result = this.memoryStore.saveTrendSnapshot({
@@ -5290,7 +5732,7 @@ export class GrowthRuntime {
       generatedAt: snapshot.generatedAt ?? this.clock().toISOString(),
       snapshot: { ...snapshot, snapshotId },
       metadata
-    });
+    }, { expectedGeneration: this.memoryGeneration, expectedSourceRetractionDigest, expectedPreferenceStateDigest });
     if (result.success) {
       this.auditLog.write('growth.trend_snapshot.persisted', {
         trendType,
@@ -5307,17 +5749,20 @@ export class GrowthRuntime {
       ...(trendType && trendType !== 'genome' ? [] : this.genomeTrendTracker.snapshots.map((snapshot) => ({ trendType: 'genome', snapshotId: snapshot.snapshotId, generatedAt: snapshot.generatedAt, snapshot, metadata: {} }))),
       ...(trendType && trendType !== 'maturity' ? [] : this.maturityScoreEngine.trendHistory.map((snapshot) => ({ trendType: 'maturity', snapshotId: snapshot.snapshotId, generatedAt: snapshot.generatedAt, snapshot, metadata: {} })))
     ];
+    const availableItems = items.filter(item => !item.contentWithheld && item.snapshot);
     return {
       archiveVersion: 'f-growth-trend-archive-v1',
       generatedAt: this.clock().toISOString(),
       persisted: Boolean(persistedItems),
       trendType,
       total: items.length,
-      countsByType: this.countBy(items, (item) => item.trendType),
+      availableCount: availableItems.length,
+      withheldCount: items.length - availableItems.length,
+      countsByType: this.countBy(availableItems, (item) => item.trendType),
       latestByType: Object.fromEntries(
-        Object.entries(this.countBy(items, (item) => item.trendType))
+        Object.entries(this.countBy(availableItems, (item) => item.trendType))
           .map(([type]) => {
-            const latest = items.filter((item) => item.trendType === type).at(-1) ?? null;
+            const latest = availableItems.filter((item) => item.trendType === type).at(-1) ?? null;
             return [type, latest ? { snapshotId: latest.snapshotId, generatedAt: latest.generatedAt, metadata: latest.metadata } : null];
           })
       ),
@@ -5440,11 +5885,78 @@ export class GrowthRuntime {
     return dossier;
   }
 
+  bindMemoryGenerationGuard() {
+    this.ingestor.beforeUse = () => this.ensureMemoryGeneration() ? this.ingestor : null;
+  }
+
+  ensureMemoryGeneration() {
+    if (this.memoryReloadInProgress) return true;
+    if (this.memoryRecoveryState?.status === 'restart_required') return false;
+    if (!this.memoryStore?.restoreGeneration) return true;
+    try {
+      if (this.memoryStore.restoreGeneration() === this.memoryGeneration) return true;
+      return this.reloadRestoredMemoryState().success;
+    } catch {
+      this.memoryRecoveryState = { status: 'restart_required', reasonCode: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' };
+      return false;
+    }
+  }
+
+  reloadRestoredMemoryState() {
+    const fields = ['ingestor', 'patternMiner', 'patternCorpusBuilder', 'patternClusterReviewEngine',
+      'preferenceEngine', 'confirmedPreferenceRegistry', 'failureBuilder', 'hygieneManager',
+      'autonomyCandidateGenerator', 'genomeBuilder', 'genomeTrendTracker', 'cloneEvidenceBuilder',
+      'styleGenomeBuilder', 'skillDistillationEngine', 'skillDraftRegistry', 'maturityScoreEngine',
+      'derivedTrendSourceDigest', 'derivedTrendPreferenceDigest',
+      'submittedAutonomyCandidates', 'autonomyCandidateLedger', 'retentionSchedulerRuns', 'selectedConversationImports'];
+    const resolver = this.ingestor.sourceScopeResolver;
+    this.memoryReloadInProgress = true;
+    const swap = recovered => {
+      for (const field of fields) this[field] = recovered[field];
+      this.setSourceScopeResolver(resolver);
+      this.confirmedPreferenceRegistry.recallAllowed = preference => (preference.evidenceEventIds ?? []).every(id => {
+        const decision = this.hygieneManager.decisionFor(id), event = this.ingestor.events.get(id);
+        return !this.memoryStore?.hasSourceRetraction?.(id)
+          && !(decision?.targetType === 'memory_event' && ['delete', 'redact'].includes(decision.action))
+          && (!event || sourceRecallAllowed(event));
+      });
+      this.skillDraftRegistry.recallAllowed = entry => this.confirmedPreferenceRegistry.recallAllowed(entry);
+      this.deliveredSourceRetractions = new Set();
+      this.sourceRetractionHandlerRevision = (this.sourceRetractionHandlerRevision ?? 0) + 1;
+      this.inFlightSourceRetractions = new Map();
+      this.memoryGeneration = recovered.memoryGeneration;
+      this.bindMemoryGenerationGuard();
+    };
+    try {
+      const recovered = new GrowthRuntime({ clock: this.clock, memoryStore: this.memoryStore,
+        auditLog: this.auditLog, policyRuntime: this.policyRuntime });
+      swap(recovered);
+      this.synchronizeSourceRetractions();
+      if ((this.memoryStore?.restoreGeneration?.() ?? 0) !== this.memoryGeneration) throw new Error('Restore changed while reloading.');
+      this.memoryRecoveryState = { status: 'ready', observedAt: this.clock().toISOString() };
+      return { success: true, loadedEventCount: this.ingestor.events.size, executionAuthority: false };
+    } catch {
+      // Do not continue serving pre-restore caches after a committed DB restore.
+      swap(new GrowthRuntime({ clock: this.clock, auditLog: this.auditLog, policyRuntime: this.policyRuntime }));
+      this.memoryRecoveryState = { status: 'restart_required', reasonCode: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' };
+      this.ingestor.ingest = () => ({ success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } });
+      return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    } finally { this.memoryReloadInProgress = false; }
+  }
+
   restoreStorage(options = {}) {
     if (!this.memoryStore?.restore) {
       return { success: false, error: { code: 'F_STORAGE_RESTORE_NOT_CONFIGURED' } };
     }
     const restored = this.memoryStore.restore(options);
+    if (restored.success) {
+      const reloaded = this.reloadRestoredMemoryState();
+      if (!reloaded.success) {
+        this.auditLog.write('storage.backup.reload_failed', { databaseRestored: true, errorCode: reloaded.error.code });
+        return { ...reloaded, databaseRestored: true, restartRequired: true };
+      }
+      restored.memoryReload = reloaded;
+    }
     this.auditLog.write('storage.backup.restored', {
       success: restored.success,
       restoredFrom: restored.restoredFrom,
@@ -5489,13 +6001,17 @@ export class GrowthRuntime {
     return drill;
   }
 
-  decideHygiene(payload = {}) {
-    const result = this.hygieneManager.decide(payload);
+  decideHygiene(payload = {}, { batchMetadata = null, generateReport = true } = {}) {
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    const generation = this.memoryGeneration;
+    const result = this.hygieneManager.decide(payload, { publish: false });
     if (!result.success) return result;
     const { decision } = result;
+    if (batchMetadata) Object.assign(decision, batchMetadata);
     let updatedEvent = null;
     if (decision.targetType === 'memory_event') {
-      const event = this.ingestor.events.get(decision.targetId);
+      const existing = this.ingestor.events.get(decision.targetId);
+      const event = existing ? structuredClone(existing) : null;
       if (event) {
         if (decision.action === 'delete') {
           event.learningFlags = {
@@ -5509,7 +6025,6 @@ export class GrowthRuntime {
             summary: 'Hygiene decision removed this memory from active learning.',
             hygieneDecision: decision
           };
-          this.ingestor.learningQueue = this.ingestor.learningQueue.filter((item) => item.eventId !== event.eventId);
           updatedEvent = event;
         } else if (decision.action === 'redact') {
           const minimized = this.sensitiveMinimizer.minimize({
@@ -5523,8 +6038,6 @@ export class GrowthRuntime {
               hygieneDecision: decision
             }
           };
-          this.ingestor.events.set(event.eventId, updatedEvent);
-          this.ingestor.learningQueue = this.ingestor.learningQueue.map((item) => item.eventId === event.eventId ? updatedEvent : item);
         } else if (decision.action === 'defer') {
           event.hygieneDecision = decision;
           event.learningFlags = {
@@ -5538,21 +6051,70 @@ export class GrowthRuntime {
         }
       }
     }
-    this.memoryStore?.saveHygieneDecision?.(decision);
-    if (updatedEvent) {
-      this.memoryStore?.updateEvent?.(updatedEvent);
+    try {
+      if (this.memoryStore) {
+        if (!this.memoryStore.applyHygieneDecision) return { success: false, error: { code: 'F_HYGIENE_ATOMIC_STORAGE_REQUIRED' } };
+        this.memoryStore.applyHygieneDecision(decision, updatedEvent, { expectedGeneration: generation });
+      }
+    } catch (error) {
+      return { success: false, applied: false, persisted: false, retryAfterRefresh: error?.code === 'F_MEMORY_GENERATION_CONFLICT', error: {
+        code: ['F_MEMORY_GENERATION_CONFLICT', 'F_MEMORY_SOURCE_RETRACTED', 'F_MEMORY_EVENT_NOT_FOUND'].includes(error?.code)
+          ? error.code : 'F_HYGIENE_PERSISTENCE_FAILED'
+      } };
     }
-    this.auditLog.write('memory.hygiene.decision', {
-      targetType: decision.targetType,
-      targetId: decision.targetId,
-      action: decision.action,
-      decidedBy: decision.decidedBy
-    });
+    this.hygieneManager.decisions.set(decision.targetId, decision);
+    if (updatedEvent) {
+      this.ingestor.events.set(updatedEvent.eventId, updatedEvent);
+      this.ingestor.learningQueue = decision.action === 'delete'
+        ? this.ingestor.learningQueue.filter(item => item.eventId !== updatedEvent.eventId)
+        : this.ingestor.learningQueue.map(item => item.eventId === updatedEvent.eventId ? updatedEvent : item);
+    }
+    const followUp = this.hygieneFollowUp({ generateReport });
+    try {
+      this.auditLog.write('memory.hygiene.decision', {
+        targetType: decision.targetType, targetId: decision.targetId,
+        action: decision.action, decidedBy: decision.decidedBy
+      });
+      followUp.followUps.audit = { status: 'completed' };
+    } catch {
+      followUp.followUps.audit = { status: 'requires_retry', error: { code: 'F_HYGIENE_AUDIT_UNAVAILABLE' } };
+    }
     return {
       success: true,
+      applied: true,
+      persisted: Boolean(this.memoryStore),
       decision,
-      hygiene: this.latestReview().hygiene
+      ...followUp
     };
+  }
+
+  hygieneFollowUp({ generateReport = true } = {}) {
+    const followUps = {};
+    if(this.memoryStore?.reviewExportStatus)followUps.reportExport={...this.memoryStore.reviewExportStatus};
+    try {
+      const result = this.synchronizeSourceRetractions();
+      followUps.sourceProjection = { status: result.deliveries?.some(item => !item.propagated) ? 'requires_retry' : 'checked',
+        reviewRequiredCount: result.reviewRequired?.length ?? 0,
+        skillsReviewRequiredCount: result.skillsReviewRequired?.length ?? 0,
+        deliveryCount: result.deliveries?.length ?? 0,
+        pendingDeliveryCount: result.deliveries?.filter(item => !item.propagated).length ?? 0,
+        executionAuthority: false };
+    } catch {
+      followUps.sourceProjection = { status: 'requires_retry', error: { code: 'F_HYGIENE_PROJECTION_UNAVAILABLE' }, executionAuthority: false };
+    }
+    if (!generateReport) return { hygiene: null, followUps: { ...followUps, report: { status: 'not_requested' } } };
+    try {
+      const review = this.latestReview();
+      if(review.exportStatus)followUps.reportExport={...review.exportStatus};
+      if (review.success === false || !review.hygiene) {
+        const code = ['F_MEMORY_GENERATION_CONFLICT', 'F_MEMORY_SOURCE_CHANGED', 'F_MEMORY_RESTORE_RELOAD_REQUIRED'].includes(review.error?.code)
+          ? review.error.code : 'F_HYGIENE_REPORT_UNAVAILABLE';
+        return { hygiene: null, followUps: { ...followUps, report: { status: 'requires_retry', error: { code } } } };
+      }
+      return { hygiene: review.hygiene, followUps: { ...followUps, report: { status: 'completed' } } };
+    } catch {
+      return { hygiene: null, followUps: { ...followUps, report: { status: 'requires_retry', error: { code: 'F_HYGIENE_REPORT_UNAVAILABLE' } } } };
+    }
   }
 
   decideHygieneBatch({ decisions = [], decidedBy = 'batch_review', reason = 'batch hygiene review' } = {}) {
@@ -5571,26 +6133,19 @@ export class GrowthRuntime {
         action: item.action,
         reason: item.reason ?? reason,
         decidedBy: item.decidedBy ?? decidedBy
-      })
+      }, { batchMetadata: { batchId, batchIndex: index, batchLinkVersion: 'f-hygiene-batch-decision-history-link-v1' }, generateReport: false })
     }));
     const failed = results.filter((item) => item.result.success === false);
     const succeeded = results.filter((item) => item.result.success !== false);
-    for (const item of succeeded) {
-      const decision = item.result.decision;
-      if (!decision) continue;
-      decision.batchId = batchId;
-      decision.batchIndex = item.index;
-      decision.batchLinkVersion = 'f-hygiene-batch-decision-history-link-v1';
-      this.hygieneManager.decisions.set(decision.targetId, decision);
-      this.memoryStore?.saveHygieneDecision?.(decision);
-    }
-    this.auditLog.write('memory.hygiene.batch_decision', {
+    const followUp = this.hygieneFollowUp();
+    try { this.auditLog.write('memory.hygiene.batch_decision', {
       batchId,
       requestedCount: decisions.length,
       appliedCount: succeeded.length,
       failedCount: failed.length,
       decidedBy
-    });
+    }); followUp.followUps.audit = { status: 'completed' }; }
+    catch { followUp.followUps.audit = { status: 'requires_retry', error: { code: 'F_HYGIENE_AUDIT_UNAVAILABLE' } }; }
     return {
       success: failed.length === 0,
       batchId,
@@ -5603,14 +6158,69 @@ export class GrowthRuntime {
         targetId: item.targetId,
         action: item.action,
         success: item.result.success !== false,
+        applied: item.result.applied === true,
+        persisted: item.result.persisted === true,
+        followUps: item.result.followUps ?? null,
         decision: item.result.decision ?? null,
         error: item.result.error ?? null
       })),
-      hygiene: this.latestReview().hygiene
+      ...followUp
     };
   }
 
+  ingest(event, options = {}) {
+    if (!options.deferredReplay && !this.pendingDrainInProgress) this.drainPendingMemory();
+    const original = event && typeof event === 'object' && !Array.isArray(event)
+      ? { ...event, createdAt: event.createdAt ?? this.clock().toISOString() } : event;
+    let result;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (!this.ensureMemoryGeneration()) return { success: false, stored: false,
+        error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' }, retryable: true };
+      result = this.ingestor.ingest(original, options);
+      if (result.error?.code !== 'F_MEMORY_GENERATION_CONFLICT') return { ...result, ingestAttempts: attempt };
+    }
+    const queued = !options.deferredReplay && result.preparedRetryEvent && this.memoryStore?.queueMemoryEvent
+      ? this.memoryStore.queueMemoryEvent(result.preparedRetryEvent) : null;
+    return { ...result, ingestAttempts: 3, retryable: true, queued: queued?.queued === true,
+      ...(queued?.success === false ? { queueError: queued.error } : {}) };
+  }
+
+  drainPendingMemory({ limit = 10 } = {}) {
+    if (!this.memoryStore?.drainPendingMemoryEvents || this.pendingDrainInProgress) return { success: true, pendingCount: 0 };
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    this.pendingDrainInProgress = true;
+    try { return this.memoryStore.drainPendingMemoryEvents(event => {
+      const result = this.ingest(event, { deferredReplay: true });
+      if (result.success && event.eventType === 'feedback.do_not_remember') this.retractScopedTaskSource(event);
+      return result;
+    }, { limit }); }
+    finally { this.pendingDrainInProgress = false; }
+  }
+
+  retractScopedTaskSource(stored) {
+    const scope = normalizeMemoryScope(stored?.source?.memoryScope);
+    let affectedEvents = 0;
+    if (scope) for (const event of this.ingestor.all()) {
+      if (event.taskId === stored.taskId && memoryScopeMatches(event, scope) && !event.learningFlags?.doNotRemember) {
+        this.decideHygiene({ targetId: event.eventId, action: 'delete', decidedBy: 'user-feedback', reason: 'Explicit do-not-remember feedback for this scoped task.' });
+        affectedEvents++;
+      }
+    }
+    this.synchronizeSourceRetractions();
+    return { affectedEvents, scopeKnown: !!scope };
+  }
+
   recordFeedback(feedback) {
+    // After a Core restart, an old task may no longer have an authenticated
+    // request scope. Do not accept a no-op opt-out as successful deletion or
+    // trust caller-supplied ownership. Existing scoped source deletion remains
+    // available through the hygiene path.
+    if(feedback.feedbackType==='do_not_remember' && this.ingestor.sourceScopeResolver){
+      let scope;
+      try{scope=normalizeMemoryScope(this.ingestor.sourceScopeResolver(feedback.taskId,{event:{taskId:feedback.taskId,eventType:'feedback.do_not_remember'}}));}
+      catch{return {success:false,stored:false,error:{code:'F_MEMORY_SCOPE_UNAVAILABLE'},nextAction:'select-authenticated-memory-source'};}
+      if(!scope)return {success:false,stored:false,error:{code:'F_MEMORY_SCOPE_REQUIRED'},nextAction:'select-authenticated-memory-source'};
+    }
     const typeMap = {
       result_good: 'feedback.good',
       needs_edit: 'feedback.needs_edit',
@@ -5621,7 +6231,7 @@ export class GrowthRuntime {
       asked_followup: 'approval.responded'
     };
     const eventType = typeMap[feedback.feedbackType] ?? 'feedback.good';
-    return this.ingestor.ingest({
+    const result = this.ingest({
       eventId: stableId('mem_evt', `${feedback.taskId}:${eventType}:${feedback.text ?? ''}`, this.clock().toISOString()),
       eventType,
       taskId: feedback.taskId,
@@ -5644,12 +6254,244 @@ export class GrowthRuntime {
         systemGenerated: false
       }
     });
+    if (result.success === false) return result;
+    if (eventType === 'feedback.do_not_remember') {
+      const stored = this.ingestor.events.get(result.eventId);
+      return { ...result, sourceRetraction: this.retractScopedTaskSource(stored) };
+    }
+    return result;
   }
 
-  query(query) {
-    const events = this.ingestor.all();
-    const confirmedPreferences = this.confirmedPreferenceRegistry.all()
-      .filter((item) => JSON.stringify(item).includes(String(query).split(' ')[0]))
+  setSourceScopeResolver(resolver) {
+    this.ingestor.sourceScopeResolver = typeof resolver === 'function' ? resolver : null;
+  }
+
+  setSourceRetractionHandler(handler, { receiverId = null, verify = null } = {}) {
+    if (receiverId !== null && (typeof receiverId !== "string" || !receiverId || receiverId.length > 200 || typeof verify !== "function")) throw new Error("F_RETRACTION_RECEIVER_INVALID");
+    this.sourceRetractionReceiverId = receiverId;
+    this.sourceRetractionVerifier = typeof verify === "function" ? verify : null;
+    this.sourceRetractionHandler = typeof handler === 'function' ? handler : null;
+    this.deliveredSourceRetractions = new Set();
+    this.sourceRetractionHandlerRevision = (this.sourceRetractionHandlerRevision ?? 0) + 1;
+    this.inFlightSourceRetractions = new Map();
+    return this.synchronizeSourceRetractions();
+  }
+
+  applyPersistedSourceRetractions() {
+    const durableRetractions = new Map((this.memoryStore?.allHygieneDecisions?.() ?? [])
+      .filter(item => item.targetType === 'memory_event' && ['delete', 'redact'].includes(item.action))
+      .map(item => [item.targetId, item]));
+    const retractedIds = new Set();
+    for (const event of this.ingestor.all()) {
+      const decision = durableRetractions.get(event.eventId) ?? this.hygieneManager.decisionFor(event.eventId);
+      if (decision?.targetType !== 'memory_event' || !['delete', 'redact'].includes(decision.action)) continue;
+      // The durable decision remains authoritative if updating the source row failed.
+      // This is a recall fence, not physical erasure of database or backup bytes.
+      event.learningFlags = { ...event.learningFlags, doNotRemember: true,
+        canBeUsedForPreference: false, canBeUsedForWorkflow: false, canBeUsedForAutonomy: false };
+      event.payload = decision.action === 'delete'
+        ? { summary: 'Hygiene decision removed this memory from active learning.', hygieneDecision: decision }
+        : { ...this.sensitiveMinimizer.minimize({ ...event,
+          learningFlags: { ...event.learningFlags, containsSensitiveData: true } }).payload, hygieneDecision: decision };
+      retractedIds.add(event.eventId);
+    }
+    this.ingestor.learningQueue = this.ingestor.learningQueue.filter(item => !retractedIds.has(item.eventId));
+  }
+
+  synchronizeSourceRetractions({ deliveryLimit = Infinity } = {}) {
+    if (deliveryLimit !== Infinity && (!Number.isSafeInteger(deliveryLimit) || deliveryLimit < 1 || deliveryLimit > 100)) {
+      throw new RangeError("Invalid source retraction delivery limit.");
+    }
+    this.applyPersistedSourceRetractions();
+    const removed = this.ingestor.all().filter(event => event.learningFlags?.doNotRemember || event.payload?.hygieneDecision?.action === 'redact');
+    const removedIds = new Set(removed.map(event => event.eventId));
+    const reviewRequired = [];
+    let preferenceUpdateFailedCount = 0;
+    const skillsReviewRequired = [];
+    for (const entry of this.skillDraftRegistry.registry.values()) {
+      if (entry.status !== 'approved_for_skill_registry') continue;
+      const revokedEvidence = this.skillDraftRegistry.sourceEvidenceIds(entry).filter(id => removedIds.has(id));
+      if (!revokedEvidence.length) continue;
+      this.skillDraftRegistry.registry.set(entry.skillId, { ...entry, status: 'source_review_required',
+        sourceRetraction: { reason: 'supporting-source-retracted', evidenceEventIds: revokedEvidence,
+          observedAt: this.clock().toISOString(), executionAuthority: false },
+        lifecycleEvents: [...(entry.lifecycleEvents ?? []), { type: 'supporting_source_retracted',
+          actor: 'source-retraction', occurredAt: this.clock().toISOString() }] });
+      skillsReviewRequired.push(entry.skillId);
+    }
+    if (skillsReviewRequired.length) this.persistSkillRegistrySnapshot({ action: 'supporting-source-retracted', skillIds: skillsReviewRequired });
+    for (const preference of this.confirmedPreferenceRegistry.all({ includeInactive: true, includeRetractedContent: true }).filter(item => item.status === 'confirmed')) {
+      const revokedEvidence = (preference.evidenceEventIds ?? []).filter(id => removedIds.has(id));
+      if (!revokedEvidence.length) continue;
+      const updated = this.confirmedPreferenceRegistry.update({ preferenceId: preference.preferenceId,
+        patch: { status: 'source_review_required' }, decidedBy: 'source-retraction', reason: 'Supporting source was retracted; review or replace its evidence before reuse.' });
+      if (updated.success) reviewRequired.push(preference.preferenceId);
+      else preferenceUpdateFailedCount++;
+    }
+    const deliveries = [];
+    let dispatchedCount = 0, deferredDeliveryCount = 0;
+    const offset = (this.sourceRetractionCursor ?? 0) % Math.max(removed.length, 1);
+    for (let index = 0; index < removed.length; index++) {
+      const position = (offset + index) % removed.length;
+      const event = removed[position];
+      const scope = normalizeMemoryScope(event.source?.memoryScope);
+      if (!scope || !this.sourceRetractionHandler) continue;
+      const deliveryKey = JSON.stringify([event.eventId, event.taskId, scope]);
+      const receiptInput = { deliveryKey, receiverId: this.sourceRetractionReceiverId, expectedGeneration: this.memoryGeneration };
+      const payload = { taskId: event.taskId, sourceEventId: event.eventId, scope };
+      const reconciled = typeof this.sourceRetractionReceiverId === 'string' && typeof this.sourceRetractionVerifier === 'function';
+      const recordReceipt = state => {
+        if (!reconciled) return;
+        if (!this.memoryStore?.recordSourceRetractionDelivery) throw new Error('Receipt storage unavailable');
+        this.memoryStore.recordSourceRetractionDelivery({ ...receiptInput, state });
+      };
+      if (reconciled) {
+        try {
+          if (this.sourceRetractionVerifier(payload)?.revoked === true) {
+            if (this.memoryStore?.sourceRetractionDelivery?.(receiptInput)?.state !== 'acknowledged') recordReceipt('acknowledged');
+            this.deliveredSourceRetractions?.add(deliveryKey); continue;
+          }
+          this.deliveredSourceRetractions?.delete(deliveryKey);
+        } catch {
+          deliveries.push({ sourceEventId: event.eventId, propagated: false, reason: 'source-retraction-reconciliation-unavailable' });
+          continue;
+        }
+      } else if (this.deliveredSourceRetractions?.has(deliveryKey)) continue;
+      const inFlight = this.inFlightSourceRetractions ??= new Map();
+      if (inFlight.has(deliveryKey)) {
+        deliveries.push({ sourceEventId: event.eventId, propagated: false, reason: 'source-retraction-projection-pending' });
+        continue;
+      }
+      if (dispatchedCount >= deliveryLimit) { deferredDeliveryCount++; continue; }
+      dispatchedCount++;
+      this.sourceRetractionCursor = position + 1;
+      const handler = this.sourceRetractionHandler;
+      const revision = this.sourceRetractionHandlerRevision;
+      const generation = this.memoryGeneration;
+      const entry = {};
+      inFlight.set(deliveryKey, entry);
+      const currentContext = () => this.sourceRetractionHandler === handler
+        && this.sourceRetractionHandlerRevision === revision && this.memoryGeneration === generation
+        && (this.memoryStore?.restoreGeneration?.() ?? generation) === generation
+        && this.inFlightSourceRetractions === inFlight;
+      try {
+        recordReceipt("attempted");
+        const result = handler(payload);
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).then(value => {
+            if (value?.revoked === true && currentContext() && inFlight.get(deliveryKey) === entry) {
+              if (reconciled && this.sourceRetractionVerifier(payload)?.revoked !== true) return;
+              recordReceipt("acknowledged");
+              this.deliveredSourceRetractions?.add(deliveryKey);
+            }
+          }).catch(() => {}).finally(() => {
+            if (inFlight.get(deliveryKey) === entry) inFlight.delete(deliveryKey);
+          });
+          deliveries.push({ sourceEventId: event.eventId, propagated: false, reason: 'source-retraction-projection-pending' });
+          continue;
+        }
+        inFlight.delete(deliveryKey);
+        const propagated = result?.revoked === true && currentContext()
+          && (!reconciled || this.sourceRetractionVerifier(payload)?.revoked === true);
+        if (propagated) { recordReceipt("acknowledged"); this.deliveredSourceRetractions?.add(deliveryKey); }
+        deliveries.push({ sourceEventId: event.eventId, propagated, reason: propagated ? null : result?.reason ?? 'source-retraction-not-confirmed' });
+      } catch {
+        if (inFlight.get(deliveryKey) === entry) inFlight.delete(deliveryKey);
+        deliveries.push({ sourceEventId: event.eventId, propagated: false, reason: 'source-retraction-projection-unavailable' });
+      }
+    }
+    return { reviewRequired, skillsReviewRequired, deliveries, dispatchedCount, deferredDeliveryCount, preferenceUpdateFailedCount, projectionConfigured: typeof this.sourceRetractionHandler === "function", executionAuthority: false };
+  }
+
+  currentKnowledgeSnapshot(scope){
+    const snapshot=this.memoryStore?.knowledgeSnapshot?.({scope})??{events:this.ingestor.all(),retiredSourceIds:[],retractedSourceIds:[]};
+    if(Number.isSafeInteger(snapshot.generation) && snapshot.generation!==this.memoryGeneration)
+      throw Object.assign(new Error('Memory generation changed during lookup.'),{code:'F_MEMORY_GENERATION_CONFLICT'});
+    const retracted=new Set(snapshot.retractedSourceIds);
+    return {...snapshot,events:snapshot.events.filter(event=>!retracted.has(event.eventId))};
+  }
+
+  personalKnowledge({ scope, diagnostics = null } = {}) {
+    if (!normalizeMemoryScope(scope) || !this.ensureMemoryGeneration()
+      || this.memoryRecoveryState?.status === 'restart_required') return [];
+    this.synchronizeSourceRetractions();
+    const snapshot=this.currentKnowledgeSnapshot(scope);
+    return projectPersonalKnowledge(snapshot.events.filter(event =>
+      sourceRecallAllowed(event) && memoryScopeMatches(event,scope)), {now:this.clock(),diagnostics,retiredSourceIds:snapshot.retiredSourceIds});
+  }
+
+  personalKnowledgeHistory({scope, sourceEventId} = {}) {
+    if (!normalizeMemoryScope(scope) || typeof sourceEventId !== 'string' || !sourceEventId.trim())
+      return {found:false, entries:[], complete:false, executionAuthority:false};
+    // Reuse the current scoped/retraction-aware projection, never the raw event journal.
+    const items=this.personalKnowledge({scope}), byId=new Map(items.map(item=>[item.sourceEventId,item]));
+    const entries=[], visited=new Set(); let current=byId.get(sourceEventId);
+    const found=!!current; let complete=found;
+    while(current){
+      if(visited.has(current.sourceEventId)){complete=false;break;}
+      visited.add(current.sourceEventId);
+      entries.push({...current, usageScope:normalizeMemoryScope(scope)});
+      if(!current.supersedesEventId)break;
+      const previous=byId.get(current.supersedesEventId);
+      if(!previous || ['kind','subject','predicate'].some(key=>previous[key]!==current[key])
+        || Date.parse(previous.observedAt)>=Date.parse(current.observedAt)){complete=false;break;}
+      current=previous;
+    }
+    return {found, entries:entries.reverse(), complete, executionAuthority:false};
+  }
+
+  personalRelationships({scope,entity,depth,direction,limit}={}) {
+    if(!normalizeMemoryScope(scope))throw Object.assign(new Error('Explicit memory scope required.'),{code:'F_MEMORY_SCOPE_REQUIRED'});
+    if(!this.ensureMemoryGeneration() || this.memoryRecoveryState?.status==='restart_required')
+      throw Object.assign(new Error('Memory unavailable.'),{code:'F_MEMORY_RESTORE_RELOAD_REQUIRED'});
+    return {...queryPersonalRelationships(this.personalKnowledge({scope}),{entity,depth,direction,limit}),usageScope:normalizeMemoryScope(scope)};
+  }
+
+  searchPersonalKnowledge(options={}) {
+    return searchPersonalMemory(this,options);
+  }
+
+  recalledPreferenceCandidates(events) {
+    // Once reviewed, the registry is authoritative; the old source hypothesis
+    // must not override a correction, withdrawal or expiry through another path.
+    const reviewed = this.confirmedPreferenceRegistry.all({includeInactive:true});
+    return this.preferenceEngine.create(events).filter(candidate => !reviewed.some(item => {
+      if(item.hypothesisId !== candidate.hypothesisId)return false;
+      const scope=normalizeMemoryScope(candidate.memoryScope);
+      return preferenceScopeMatches(item.scopePolicy, scope ? {userScope:scope.userId,
+        workspaceScope:scope.workspaceRoot,conversationScope:scope.conversationId} : {});
+    }));
+  }
+
+  query(query, { scope } = {}) {
+    if (!this.ensureMemoryGeneration()) return [];
+    if (this.memoryRecoveryState?.status === 'restart_required') return [];
+    const relationshipQuery=parseMemoryRelationshipQuestion(query);
+    if(relationshipQuery && normalizeMemoryScope(scope))
+      return relationshipMemoryReferences(this.personalRelationships({scope,...relationshipQuery}),normalizeMemoryScope(scope));
+    this.synchronizeSourceRetractions();
+    const registeredPreferences = this.confirmedPreferenceRegistry.all();
+    const knowledgeSnapshot=scope===undefined?null:this.currentKnowledgeSnapshot(scope);
+    const snapshot = knowledgeSnapshot?.events??this.ingestor.all();
+    const knowledge = normalizeMemoryScope(scope) ? projectPersonalKnowledge(snapshot.filter(event=>sourceRecallAllowed(event) && memoryScopeMatches(event,scope)),{now:this.clock(),retiredSourceIds:knowledgeSnapshot?.retiredSourceIds??[]})
+      .filter(item=>['active','conflict','correction-unresolved'].includes(item.status)).map(item=>({
+        ...(item.status==='active'?item:{subject:item.subject,predicate:item.predicate,status:item.status,sourceEventId:item.sourceEventId,observedAt:item.observedAt,executionAuthority:false,requiresUserResolution:true}),
+        memoryId:`knowledge:${item.sourceEventId}`,memoryType:item.status==='active'?'personal_knowledge':'personal_knowledge_issue',
+        text:item.status==='active'?[item.subject,item.predicate,item.value,item.reason??''].join(' · '):`${item.subject} · ${item.predicate} · 기억 충돌 또는 정정 출처 확인 필요`,applyMode:'user_statement_context',
+        provenance:{memoryKind:'user_statement',sourceEventIds:[item.sourceEventId],observedAt:[item.observedAt],
+          usageScopes:[normalizeMemoryScope(scope)],
+          validity:{validUntil:item.validUntil??null,basis:item.validUntil?'declared-expiry':'unspecified'},
+          revisionReference:{revision:null,supersedesEventId:item.supersedesEventId??null},
+          independentlyVerifiedOutcome:false,executionAuthority:false}}))
+      .filter(item=>memoryItemRelevant(item,query,{scope})) : [];
+    // Assertions are context, not demonstrated work or preference-learning events.
+    const allEvents = scope===undefined ? snapshot : snapshot.filter(event=>!isPersonalKnowledgeSource(event));
+    const sourceIndex = indexMemorySources(allEvents);
+    const events = allEvents.filter(event => sourceRecallAllowed(event) && memoryScopeMatches(event, scope));
+    const scopedSourceIndex = indexMemorySources(events);
+    const confirmedPreferences = registeredPreferences
+      .filter(item => preferenceSourcesMatch(item, sourceIndex, scope))
+      .filter((item) => memoryItemRelevant(item, query, {scope}))
       .map((preference) => ({
         ...preference,
         memoryId: preference.preferenceId,
@@ -5658,26 +6500,46 @@ export class GrowthRuntime {
         applyMode: 'strong_planning_hint',
         planningWeight: Number((preference.confidence * 2).toFixed(2))
       }));
-    return [
-      ...this.patternMiner.mine(events),
-      ...this.preferenceEngine.create(events),
-      ...confirmedPreferences,
-      ...this.failureBuilder.build(events, { patterns: this.patternMiner.mine(events) })
-    ]
-      .filter((item) => JSON.stringify(item).includes(String(query).split(' ')[0]))
-      .slice(0, 10);
+    const patterns = this.patternMiner.mine(events);
+    const hypotheses = this.recalledPreferenceCandidates(events);
+    const failures = this.failureBuilder.build(events, { patterns });
+    const observations = executionObservations(events, scope);
+    const prepare = items => items.filter(item => memoryItemRelevant(item, query, {scope}))
+      .map(item => ({ ...item, provenance: memoryProvenance(item, scopedSourceIndex) }));
+    const imported = this.selectedConversationImports?.query(query, { scope }) ?? [];
+    if (scope === undefined) {
+      // Preserve legacy administrative ordering; no implicit user scope.
+      return [...prepare([...patterns, ...hypotheses, ...confirmedPreferences, ...failures, ...observations]).slice(0,10), ...imported].slice(0,10);
+    }
+    return selectMemoryResults([knowledge, prepare(confirmedPreferences), prepare(failures), prepare(observations),
+      imported, prepare(patterns), prepare(hypotheses)]);
   }
 
-  memoryContext(query) {
-    const items = this.query(query);
-    const confirmedPreferences = this.confirmedPreferenceRegistry.all()
-      .filter((item) => JSON.stringify(item).includes(String(query).split(' ')[0]));
-    const planning = this.planningPreferenceContext(query);
+  importSelectedConversations(input, options = {}) {
+    if (!this.selectedConversationImports) throw Object.assign(new Error('Durable selected-conversation storage is required.'), { code: 'F_CONVERSATION_STORAGE_REQUIRED' });
+    return this.selectedConversationImports.import(input, options);
+  }
+
+  withdrawImportedConversationMessage(input) {
+    if (!this.selectedConversationImports) throw Object.assign(new Error('Durable selected-conversation storage is required.'), { code: 'F_CONVERSATION_STORAGE_REQUIRED' });
+    return this.selectedConversationImports.withdraw(input);
+  }
+
+  memoryContext(query, options = {}) {
+    const items = this.query(query, options);
+    const registeredPreferences = this.confirmedPreferenceRegistry.all();
+    const sourceIndex = indexMemorySources(this.ingestor.all().filter(event=>options.scope===undefined || !isPersonalKnowledgeSource(event)));
+    const confirmedPreferences = registeredPreferences
+      .filter(item => preferenceSourcesMatch(item, sourceIndex, options.scope))
+      .filter((item) => memoryItemRelevant(item, query, {scope:options.scope}))
+      .map(item => ({ ...item, provenance: memoryProvenance(item, sourceIndex) }));
+    const planning = this.planningPreferenceContext(query, options);
     return {
       query,
-      items: [...items, ...confirmedPreferences].slice(0, 10),
+      items: options.scope === undefined ? [...items, ...confirmedPreferences].slice(0, 10)
+        : selectMemoryResults([confirmedPreferences, items]),
       workflowHints: items.filter((item) => item.patternType === 'repeated_command'),
-      preferenceHints: items.filter((item) => item.hypothesisId),
+      preferenceHints: items.filter((item) => item.hypothesisId && !item.preferenceId),
       confirmedPreferenceHints: confirmedPreferences,
       failureGuardrails: items.filter((item) => item.failureId),
       planning
@@ -6006,7 +6868,8 @@ export class GrowthRuntime {
   }
 
   reviewFailureGuardrail(failureId, payload = {}) {
-    const result = this.failureBuilder.reviewGuardrail({ failureId, ...payload });
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    const result = this.failureBuilder.reviewGuardrail({ ...payload, failureId });
     this.auditLog.write('failure.guardrail.reviewed', {
       failureId,
       decision: payload.decision ?? 'update',
@@ -6436,7 +7299,24 @@ export class GrowthRuntime {
     };
   }
 
+  refreshDerivedTrendSources() {
+    if (!this.ensureMemoryGeneration()) throw Object.assign(new Error('Memory reload required.'), { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' });
+    this.synchronizeSourceRetractions();
+    const digest = this.memoryStore?.sourceRetractionDigest?.();
+    const preferenceDigest = this.memoryStore?.preferenceStateDigest?.();
+    if ((this.derivedTrendSourceDigest !== undefined && digest !== this.derivedTrendSourceDigest)
+      || (this.derivedTrendPreferenceDigest !== undefined && preferenceDigest !== this.derivedTrendPreferenceDigest)) {
+      this.genomeTrendTracker.snapshots = [];
+      this.maturityScoreEngine.trendHistory = [];
+    }
+    this.derivedTrendSourceDigest = digest;
+    this.derivedTrendPreferenceDigest = preferenceDigest;
+    return digest;
+  }
+
   buildGenomeSnapshot() {
+    const sourceDigest = this.refreshDerivedTrendSources();
+    const preferenceDigest = this.memoryStore?.preferenceStateDigest?.();
     const events = this.ingestor.all();
     const patterns = this.patternMiner.mine(events);
     const preferenceCandidates = this.preferenceEngine.create(events);
@@ -6449,7 +7329,7 @@ export class GrowthRuntime {
       riskPosture: genomes.riskCalibration.posture,
       workflowCount: genomes.workflowGenome.length,
       preferenceCount: genomes.preferenceGenome.length
-    });
+    }, { expectedSourceRetractionDigest: sourceDigest, expectedPreferenceStateDigest: preferenceDigest });
     return { events, patterns, preferenceCandidates, confirmedPreferences, failureLessons, genomes, trend };
   }
 
@@ -6893,13 +7773,18 @@ export class GrowthRuntime {
     };
   }
 
-  planningPreferenceContext(query = '') {
-    const token = String(query).split(' ')[0];
-    const events = this.ingestor.all();
+  planningPreferenceContext(query = '', { scope } = {}) {
+    this.synchronizeSourceRetractions();
+    const registeredPreferences = this.confirmedPreferenceRegistry.all();
+    const allEvents = this.ingestor.all().filter(event=>scope===undefined || !isPersonalKnowledgeSource(event));
+    const sourceIndex = indexMemorySources(allEvents);
+    const events = allEvents.filter(event => sourceRecallAllowed(event) && memoryScopeMatches(event, scope));
+    const scopedSourceIndex = indexMemorySources(events);
     const patterns = this.patternMiner.mine(events);
-    const preferenceCandidates = this.preferenceEngine.create(events);
-    const confirmedPreferences = this.confirmedPreferenceRegistry.all()
-      .filter((item) => !token || JSON.stringify(item).includes(token));
+    const preferenceCandidates = this.recalledPreferenceCandidates(events);
+    const confirmedPreferences = registeredPreferences
+      .filter(item => preferenceSourcesMatch(item, sourceIndex, scope))
+      .filter((item) => memoryItemRelevant(item, query, {scope}));
     const failureLessons = this.failureBuilder.build(events, { patterns });
     const genomes = this.genomeBuilder.build({ events, patterns, preferenceCandidates, confirmedPreferences, failureLessons });
     const planningGuardrails = this.failureBuilder.planningGuardrails({ failures: failureLessons, query });
@@ -6912,19 +7797,21 @@ export class GrowthRuntime {
         confidence: preference.confidence,
         revision: preference.revision ?? 1,
         scopePolicy: preference.scopePolicy ?? null,
+        provenance: memoryProvenance(preference, scopedSourceIndex),
         applyMode: 'strong_planning_hint',
         planningWeight: Number((preference.confidence * 2).toFixed(2))
       })),
       conflictReport: this.confirmedPreferenceRegistry.conflictReport(preferenceCandidates),
       riskCalibration: genomes.riskCalibration,
-      workflowHints: patterns.filter((pattern) => JSON.stringify(pattern).includes(token)).slice(0, 5),
-      failureGuardrails: failureLessons.filter((lesson) => JSON.stringify(lesson).includes(token)).slice(0, 5),
+      workflowHints: patterns.filter((pattern) => memoryItemRelevant(pattern, query, {scope})).slice(0, 5),
+      failureGuardrails: failureLessons.filter((lesson) => memoryItemRelevant(lesson, query, {scope})).slice(0, 5),
       planningGuardrails
     };
   }
 
-  planningFailureGuardrails(query = '') {
-    const events = this.ingestor.all();
+  planningFailureGuardrails(query = '', { scope } = {}) {
+    this.synchronizeSourceRetractions();
+    const events = this.ingestor.all().filter(event => sourceRecallAllowed(event) && memoryScopeMatches(event, scope));
     const patterns = this.patternMiner.mine(events);
     const failureLessons = this.failureBuilder.build(events, { patterns });
     return {
@@ -6938,6 +7825,7 @@ export class GrowthRuntime {
   }
 
   decidePreference(payload = {}) {
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
     const candidates = this.preferenceEngine.create(this.ingestor.all());
     return this.confirmedPreferenceRegistry.decide({
       ...payload,
@@ -6946,6 +7834,7 @@ export class GrowthRuntime {
   }
 
   decidePreferenceBatch(payload = {}) {
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
     return this.confirmedPreferenceRegistry.batchDecide({
       ...payload,
       preferenceCandidates: this.preferenceEngine.create(this.ingestor.all())
@@ -7090,7 +7979,8 @@ export class GrowthRuntime {
       decision: 'confirm',
       preferenceCandidates: [baseCandidate],
       decidedBy: 'f06_release_dossier',
-      reason: 'duplicate confirmation guard'
+      reason: 'duplicate confirmation guard',
+      scopePolicy: confirm.item?.scopePolicy
     });
     const update = confirm.success
       ? releaseRegistry.update({
@@ -7108,7 +7998,8 @@ export class GrowthRuntime {
       decision: 'confirm',
       preferenceCandidates: [conflictCandidate],
       decidedBy: 'f06_release_dossier',
-      reason: 'conflict block release proof'
+      reason: 'conflict block release proof',
+      scopePolicy: update.item?.scopePolicy
     });
     const migrationDiff = releaseRegistry.migrationDiff({ targetScopePolicy });
     const applicationPreview = releaseRegistry.applicationPreview({ query, targetScopePolicy });
@@ -7415,18 +8306,37 @@ export class GrowthRuntime {
     };
   }
 
+  checkObservedMemoryGeneration(expectedGeneration) {
+    if (expectedGeneration === undefined) return null; // Legacy internal callers.
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) return {
+      success: false, error: { code: 'F_MEMORY_GENERATION_INVALID' }
+    };
+    if (expectedGeneration !== this.memoryGeneration) return {
+      success: false, retryAfterRefresh: true, error: { code: 'F_MEMORY_GENERATION_CONFLICT' }
+    };
+    return null;
+  }
+
   updatePreference(preferenceId, payload = {}) {
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    const generationError = this.checkObservedMemoryGeneration(payload.expectedGeneration);
+    if (generationError) return generationError;
     return this.confirmedPreferenceRegistry.update({
       preferenceId,
       patch: payload.patch ?? payload,
+      expectedRevision: payload.expectedRevision,
       decidedBy: payload.decidedBy,
       reason: payload.reason
     });
   }
 
   revokePreference(preferenceId, payload = {}) {
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    const generationError = this.checkObservedMemoryGeneration(payload.expectedGeneration);
+    if (generationError) return generationError;
     return this.confirmedPreferenceRegistry.revoke({
       preferenceId,
+      expectedRevision: payload.expectedRevision,
       decidedBy: payload.decidedBy,
       reason: payload.reason
     });
@@ -8204,13 +9114,14 @@ export class GrowthRuntime {
   }
 
   advancedLearningModels() {
+    this.synchronizeSourceRetractions();
     const events = this.ingestor.all();
     const repeatedTasks = this.patternMiner.mine(events);
     const preferenceCandidates = this.preferenceEngine.create(events);
     const confirmedPreferences = this.confirmedPreferenceRegistry.all();
     const styleGenome = this.styleGenomeBuilder.build(events, confirmedPreferences);
     const cloneEvidence = this.cloneEvidenceBuilder.build({ events, confirmedPreferences, patterns: repeatedTasks });
-    const skillDistillations = this.skillDistillationEngine.distill({ patterns: repeatedTasks, confirmedPreferences, styleGenome });
+    const skillDistillations = this.skillDistillationEngine.distill({ patterns: repeatedTasks, confirmedPreferences, styleGenome, events });
     const skillRegistry = this.skillDraftRegistry.status(skillDistillations);
     return {
       generatedAt: this.clock().toISOString(),
@@ -8242,8 +9153,109 @@ export class GrowthRuntime {
     return result;
   }
 
+  mutateSkillRevision(action, payload = {}) {
+    if (!this.ensureMemoryGeneration()) return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' } };
+    this.synchronizeSourceRetractions();
+    const actions = {
+      create: () => this.skillDraftRegistry.createRevision(payload),
+      evaluate: () => this.skillDraftRegistry.evaluateRevision(payload),
+      review: () => this.skillDraftRegistry.reviewRevision(payload),
+      promote: () => this.skillDraftRegistry.promoteRevision(payload),
+      rollback: () => this.skillDraftRegistry.rollbackRevision(payload)
+    };
+    const execute = actions[action];
+    if (!execute) return { success: false, error: { code: 'F_SKILL_REVISION_ACTION_INVALID' } };
+    const result = execute();
+    if (result.success) {
+      this.persistSkillRegistrySnapshot({ action: `revision_${action}`, skillId: payload.skillId,
+        revisionId: payload.revisionId ?? result.revision?.revisionId ?? result.activeRevision?.revisionId });
+      this.auditLog.write(`skill_registry.revision_${action}`, {
+        skillId: payload.skillId,
+        revisionId: payload.revisionId ?? result.revision?.revisionId ?? result.activeRevision?.revisionId,
+        status: result.revision?.status ?? result.activeRevision?.status ?? null
+      });
+    }
+    return result;
+  }
+
   skillRegistryStatus() {
     return this.advancedLearningModels().skillRegistry;
+  }
+
+  runReviewedTabularProcedure({ skillId, revisionId, lifecycleSha256, rows, scope } = {}) {
+    const deny = code => ({ success: false, error: { code }, externalEffects: false });
+    if (!normalizeMemoryScope(scope)) return deny('F_SKILL_PROCEDURE_SCOPE_REQUIRED');
+    if (!this.ensureMemoryGeneration() || this.memoryRecoveryState?.status === 'restart_required') {
+      return deny('F_MEMORY_RESTORE_RELOAD_REQUIRED');
+    }
+    this.synchronizeSourceRetractions();
+    const entry = this.skillDraftRegistry.registry.get(skillId);
+    if (!entry || entry.status !== 'approved_for_skill_registry'
+      || entry.policy?.executableByDefault !== false || entry.policy?.requiresUserReview !== true
+      || entry.policy?.requiresPolicyCheck !== true || entry.activeRevisionId !== revisionId) {
+      return deny('F_SKILL_PROCEDURE_REVISION_UNAVAILABLE');
+    }
+    const sourceIds = this.skillDraftRegistry.sourceEvidenceIds(entry);
+    if (!sourceIds.length || sourceIds.some(id => !this.ingestor.events.has(id)
+      || !sourceRecallAllowed(this.ingestor.events.get(id))
+      || !memoryScopeMatches(this.ingestor.events.get(id), scope))) return deny('F_SKILL_PROCEDURE_SOURCE_UNAVAILABLE');
+    const revision = entry.revisions?.find(item => item.revisionId === revisionId);
+    if (!revision?.procedureDefinition || revision.status !== 'active' || revision.review?.decision !== 'approve'
+      || revision.evaluation?.mode !== 'cross-material-deterministic-procedure-trials-v1'
+      || revision.evaluation?.status !== 'passed') return deny('F_SKILL_PROCEDURE_REVIEW_REQUIRED');
+    const issue = procedureLifecycleIssue(revision, this.clock().toISOString());
+    if (issue) return deny(issue);
+    if (typeof lifecycleSha256 !== 'string' || lifecycleSha256 !== revision.procedureLifecycle.contractSha256) {
+      return deny('F_SKILL_PROCEDURE_CONTRACT_CHANGED');
+    }
+    // Pure bounded calculation only. Publication, tool actions and Mission
+    // completion remain under Core/E/B/G; this result grants no authority.
+    const result = runTabularProcedure(revision.procedureDefinition, rows);
+    if (!result.success) return { ...deny('F_SKILL_PROCEDURE_INPUT_REJECTED'), inputIssue: result.error, issues: result.issues };
+    const verification = this.learningVerifier?.verifyTabularProcedureResult?.({ definition: revision.procedureDefinition, rows, result });
+    if (verification?.status !== 'passed' || verification.verifierId !== revision.procedureLifecycle.verifier.runtimeId) return deny('F_SKILL_PROCEDURE_RESULT_UNVERIFIED');
+    return { ...result, skillId, revisionId, lifecycleSha256, externalEffects: false,
+      verificationStatus: 'deterministic-result-verified', verification,
+      inputSha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex'),
+      resultSha256: createHash('sha256').update(JSON.stringify(result.resultRows)).digest('hex') };
+  }
+
+  missionSkillGuidance(objective, { scope } = {}) {
+    if (!this.ensureMemoryGeneration()) return [];
+    if (this.memoryRecoveryState?.status === 'restart_required') return [];
+    if (typeof objective !== 'string' || !objective.trim() || objective.length > 4_000) return [];
+    this.synchronizeSourceRetractions();
+    const objectiveTerms = missionSkillTerms(objective);
+    if (objectiveTerms.size < 2) return [];
+    const candidates = this.skillDraftRegistry.status([]).registryEntries.flatMap(entry => {
+      if (entry.status !== 'approved_for_skill_registry'
+        || entry.policy?.executableByDefault !== false
+        || entry.policy?.requiresUserReview !== true
+        || entry.policy?.requiresPolicyCheck !== true) return [];
+      const sourceIds = this.skillDraftRegistry.sourceEvidenceIds(entry);
+      if (!sourceIds.length || sourceIds.some(id => typeof id !== 'string'
+        || !this.ingestor.events.has(id) || !sourceRecallAllowed(this.ingestor.events.get(id))
+        || !memoryScopeMatches(this.ingestor.events.get(id), scope))) return [];
+      const revision = entry.revisions?.find(item => item.revisionId === entry.activeRevisionId);
+      if (procedureLifecycleIssue(revision, this.clock().toISOString())) return [];
+      if (!revision || revision.status !== 'active' || revision.review?.decision !== 'approve'
+        || !Array.isArray(revision.suggestedSteps) || revision.suggestedSteps.length < 1 || revision.suggestedSteps.length > 24
+        || revision.suggestedSteps.some(step => typeof step !== 'string' || !step.trim() || step.length > 320)) return [];
+      const title = String(entry.title ?? '').replace(/\s+(?:보조\s+)?스킬\s+초안$/u, '').trim();
+      const titleTerms = missionSkillTerms(title);
+      const matchedTerms = [...titleTerms].filter(term => objectiveTerms.has(term));
+      const score = titleTerms.size ? matchedTerms.length / titleTerms.size : 0;
+      if (matchedTerms.length < 2 || score < 0.5) return [];
+      return [{ entry, revision, title, score }];
+    }).sort((left, right) => right.score - left.score || left.entry.skillId.localeCompare(right.entry.skillId));
+    if (!candidates.length || (candidates[1] && candidates[0].score === candidates[1].score)) return [];
+    const { entry, revision, title, score } = candidates[0];
+    return [{ guidanceVersion: 'f-mission-skill-guidance-v1', skillId: entry.skillId,
+      revisionId: revision.revisionId, title, score,
+      ...(revision.procedureLifecycle ? {procedureLifecycle:structuredClone(revision.procedureLifecycle)} : {}),
+      steps: revision.suggestedSteps.slice(0, 24),
+      safetyConstraints: (Array.isArray(entry.safetyConstraints) ? entry.safetyConstraints : []).slice(0, 8)
+        .map(item => String(item).slice(0, 160)) }];
   }
 
   persistSkillRegistrySnapshot(metadata = {}) {
@@ -8736,6 +9748,8 @@ export class GrowthRuntime {
   }
 
   maturityScore() {
+    const sourceDigest = this.refreshDerivedTrendSources();
+    const preferenceDigest = this.memoryStore?.preferenceStateDigest?.();
     const events = this.ingestor.all();
     const repeatedTasks = this.patternMiner.mine(events);
     const preferenceCandidates = this.preferenceEngine.create(events);
@@ -8762,11 +9776,12 @@ export class GrowthRuntime {
       total: score.total,
       thresholdStatus: score.thresholdStatus,
       verificationStatus: score.learningVerification.status
-    });
+    }, { expectedSourceRetractionDigest: sourceDigest, expectedPreferenceStateDigest: preferenceDigest });
     return score;
   }
 
   maturityTrend() {
+    this.refreshDerivedTrendSources();
     return this.maturityScoreEngine.trendStatus();
   }
 
@@ -9153,6 +10168,22 @@ export class GrowthRuntime {
   }
 
   latestReview() {
+    try {
+      return this.buildCurrentReview();
+    } catch (error) {
+      if (!['F_MEMORY_GENERATION_CONFLICT', 'F_MEMORY_SOURCE_CHANGED', 'F_MEMORY_PREFERENCE_CHANGED'].includes(error?.code)) throw error;
+      return { success: false, contentWithheld: true, retryAfterRefresh: true,
+        error: { code: error.code } };
+    }
+  }
+
+  buildCurrentReview() {
+    this.ensureMemoryGeneration();
+    if (this.memoryRecoveryState?.status === 'restart_required') return { success: false, error: { code: 'F_MEMORY_RESTORE_RELOAD_REQUIRED' }, contentWithheld: true };
+    this.synchronizeSourceRetractions();
+    const reviewGeneration = this.memoryGeneration;
+    const reviewSourceRetractionDigest = this.refreshDerivedTrendSources();
+    const reviewPreferenceDigest = this.memoryStore?.preferenceStateDigest?.();
     const events = this.ingestor.all();
     const repeatedTasks = this.patternMiner.mine(events);
     const preferenceCandidates = this.preferenceEngine.create(events);
@@ -9166,7 +10197,7 @@ export class GrowthRuntime {
       riskPosture: genomes.riskCalibration.posture,
       workflowCount: genomes.workflowGenome.length,
       preferenceCount: genomes.preferenceGenome.length
-    });
+    }, { expectedSourceRetractionDigest: reviewSourceRetractionDigest, expectedPreferenceStateDigest: reviewPreferenceDigest });
     const advancedLearning = this.advancedLearningModels();
     const hygiene = this.hygieneManager.report({ events, patterns: repeatedTasks, preferenceCandidates, failureLessons });
     const preferenceConfidenceCalibration = this.preferenceEngine.confidenceCalibrationReport({
@@ -9211,7 +10242,7 @@ export class GrowthRuntime {
       total: maturityScore.total,
       thresholdStatus: maturityScore.thresholdStatus,
       verificationStatus: maturityScore.learningVerification.status
-    });
+    }, { expectedSourceRetractionDigest: reviewSourceRetractionDigest, expectedPreferenceStateDigest: reviewPreferenceDigest });
     const review = {
       reviewId: stableId('review', 'latest', this.clock().toISOString()),
       period: '2026-W23',
@@ -9248,7 +10279,8 @@ export class GrowthRuntime {
       memoryEventSchema: this.memoryEventSchemaStatus(),
       hygiene
     };
-    const saved = this.memoryStore?.saveReview?.(review) ?? review;
+    const saved = this.memoryStore?.saveReview?.(review, { expectedGeneration: reviewGeneration,
+      expectedSourceRetractionDigest: reviewSourceRetractionDigest, expectedPreferenceStateDigest: reviewPreferenceDigest }) ?? review;
     this.auditLog.write('growth.review.generated', {
       reviewId: saved.reviewId,
       eventCount: events.length,

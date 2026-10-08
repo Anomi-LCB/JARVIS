@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>내 Rokid 안경</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body data-mode="easy">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">R</span>
+        <div><strong>내 Rokid</strong><small>안경 관리 도우미</small></div>
+      </div>
+      <nav aria-label="주요 메뉴">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span><span>내 안경</span></button>
+        <button class="nav-item" data-view="controls"><span class="nav-icon">☀</span><span>쉽게 조절</span></button>
+        <button class="nav-item" data-view="fine-tune"><span class="nav-icon">≋</span><span>세밀 조정</span></button>
+        <button class="nav-item" data-view="apps"><span class="nav-icon">▦</span><span>앱 정리</span></button>
+        <button class="nav-item" data-view="backup"><span class="nav-icon">↶</span><span>안전 백업</span></button>
+        <button class="nav-item" data-view="updates"><span class="nav-icon">↑</span><span>업데이트</span></button>
+        <button class="nav-item" data-view="diagnostics"><span class="nav-icon">◉</span><span>안경 화면</span></button>
+        <button class="nav-item expert-only" data-view="settings"><span class="nav-icon">⌘</span><span>전문가 설정</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="status-dot" data-connection-dot></span>
+        <div><strong data-connection-label>안경 확인 중</strong><small data-device-serial>잠시만 기다려 주세요</small></div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div><p class="eyebrow" data-view-eyebrow>오늘의 안경 상태</p><h1 data-view-title>내 안경</h1></div>
+        <div class="top-actions">
+          <button class="mode-toggle" data-mode-toggle aria-pressed="false"><span>●</span><strong>쉬운 모드</strong><small>전문가 보기</small></button>
+          <button class="icon-button" data-refresh title="상태 새로고침" aria-label="상태 새로고침">↻</button>
+        </div>
+      </header>
+
+      <section class="view active" data-view-panel="dashboard">
+        <article class="welcome-card">
+          <div class="welcome-copy">
+            <span class="friendly-label"><i class="live-dot"></i> USB로 안전하게 연결됨</span>
+            <h2 data-friendly-headline>안경을 확인하고 있어요</h2>
+            <p data-friendly-summary>연결이 끝나면 여기서 상태와 다음 할 일을 쉽게 알려드릴게요.</p>
+            <div class="welcome-actions">
+              <button class="button primary" data-view="controls">지금 조절하기</button>
+              <button class="button soft" data-go-backup>먼저 백업하기</button>
+            </div>
+          </div>
+          <div class="glasses-stage" aria-hidden="true">
+            <div class="glasses-aura"></div>
+            <div class="glasses-art"><span></span><span></span><i></i></div>
+            <small>ROKID</small>
+          </div>
+        </article>
+
+        <div class="status-strip" aria-label="주요 상태">
+          <article class="status-card good"><span class="status-icon">✓</span><div><small>연결</small><strong>조절할 준비 완료</strong></div></article>
+          <article class="status-card"><span class="status-icon battery-icon">⚡</span><div><small>배터리</small><strong data-battery>—</strong><p data-power-state>확인 중</p></div></article>
+          <article class="status-card"><span class="status-icon">▰</span><div><small>남은 공간</small><strong data-storage>—</strong><p data-storage-detail>확인 중</p></div></article>
+          <article class="status-card"><span class="status-icon">↶</span><div><small>최근 백업</small><strong data-backup-short>아직 없음</strong><p>되돌리기 지점</p></div></article>
+        </div>
+
+        <div class="section-heading"><div><span>바로 할 수 있어요</span><h2>무엇을 바꿔볼까요?</h2></div><p>어려운 명령어 없이 원하는 항목을 눌러보세요.</p></div>
+        <div class="action-grid">
+          <button class="action-card sun" data-view="controls" data-focus-control="brightness"><span>☀</span><div><strong>화면 밝기</strong><small>눈에 편하게 조절</small></div><i>›</i></button>
+          <button class="action-card connect" data-view="controls" data-focus-control="connections"><span>⌁</span><div><strong>무선 연결</strong><small>Wi-Fi와 Bluetooth</small></div><i>›</i></button>
+          <button class="action-card apps" data-view="apps"><span>▦</span><div><strong>앱 열기·정리</strong><small>사용할 앱을 한눈에</small></div><i>›</i></button>
+          <button class="action-card screen" data-view="diagnostics"><span>◉</span><div><strong>안경 화면 조작</strong><small>PC에서 그대로 보고 누르기</small></div><i>›</i></button>
+        </div>
+
+        <div class="content-grid two-one">
+          <article class="panel next-step-card">
+            <div class="panel-icon">1</div>
+            <div><span class="friendly-label">추천하는 다음 단계</span><h3 data-next-step-title>안전 백업을 만들어 주세요</h3><p data-next-step-copy>무언가 바꾸기 전에 현재 상태를 저장하면 언제든 되돌아가기 쉬워집니다.</p></div>
+            <button class="button primary" data-go-backup data-next-step-action>백업 시작</button>
+          </article>
+          <article class="panel backup-summary-card">
+            <span class="friendly-label">되돌리기 지점</span>
+            <div class="empty-compact" data-latest-backup>백업 기록을 확인하고 있어요.</div>
+          </article>
+        </div>
+
+        <div class="expert-only expert-section">
+          <div class="section-heading"><div><span>전문가 정보</span><h2>기기 내부 상태</h2></div></div>
+          <div class="content-grid two">
+            <article class="panel"><div class="panel-head"><div><span class="card-kicker">기기 상세</span><h3 data-model>Rokid 탐색 중</h3></div><span class="badge warning" data-access-level>확인 중</span></div><p class="mono" data-build>Android 정보를 읽고 있습니다.</p><div class="access-grid" data-access-grid></div></article>
+            <article class="panel"><div class="panel-head"><div><span class="card-kicker">하드웨어 기능</span><h3>감지된 내부 기능</h3></div><span class="muted" data-feature-count>0개</span></div><div class="chip-cloud" data-feature-list></div></article>
+          </div>
+          <span hidden data-security-badge></span><span hidden data-current-activity></span><span hidden data-display></span><span hidden data-density></span>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="controls">
+        <div class="control-hero">
+          <div><span class="friendly-label">바꾸면 안경에 바로 적용돼요</span><h2>보고 느끼는 대로 조절하세요</h2><p>현재 값을 먼저 보여주고, 바꾼 뒤 다시 확인합니다.</p></div>
+          <div class="mini-device"><div class="mini-screen" data-screen-glow><span>R</span></div><small>화면 미리보기</small></div>
+        </div>
+
+        <div class="section-heading profile-heading"><div><span>여러 설정을 한 번에</span><h2>원하는 사용 모드를 고르세요</h2></div><div class="profile-heading-actions"><p>현재 상태를 자동으로 기억한 뒤 적용합니다.</p><button class="button soft" data-save-profile>현재 모습 저장</button></div></div>
+        <div class="profile-grid" data-profile-list><div class="loading-card">사용 모드를 준비하고 있어요.</div></div>
+        <article class="profile-undo" data-profile-undo hidden><div><span>↶</span><p><strong data-profile-undo-title>최근 모드 적용</strong><small data-profile-undo-detail>적용 전 상태로 돌아갈 수 있어요.</small></p></div><button class="button soft" data-profile-undo-button>한 번에 되돌리기</button></article>
+
+        <div class="visual-control-grid">
+          <article class="visual-panel brightness-panel" data-control-section="brightness">
+            <div class="visual-panel-head"><span class="big-icon sun-orb">☀</span><div><small>화면</small><h3>밝기</h3><p>슬라이더를 움직여 눈에 편한 밝기를 찾으세요.</p></div><strong data-brightness-percent>50%</strong></div>
+            <input class="friendly-range" type="range" min="1" max="255" value="128" data-brightness aria-label="화면 밝기" />
+            <div class="preset-row"><button data-brightness-preset="50">어둡게</button><button data-brightness-preset="128" class="active">보통</button><button data-brightness-preset="220">밝게</button></div>
+            <output hidden data-brightness-value>128</output>
+          </article>
+
+          <article class="visual-panel connection-panel" data-control-section="connections">
+            <div class="visual-panel-head"><span class="big-icon connect-orb">⌁</span><div><small>연결</small><h3>무선 기능</h3><p>큰 버튼을 눌러 켜고 끌 수 있어요.</p></div></div>
+            <div class="toggle-grid">
+              <button class="toggle-card" data-radio="wifi" data-enabled="true" aria-pressed="true"><span>Wi-Fi</span><strong data-radio-label>켜짐</strong><i></i></button>
+              <button class="toggle-card" data-radio="bluetooth" data-enabled="true" aria-pressed="true"><span>Bluetooth</span><strong data-radio-label>켜짐</strong><i></i></button>
+            </div>
+          </article>
+
+          <article class="visual-panel comfort-panel">
+            <div class="visual-panel-head"><span class="big-icon">◫</span><div><small>편안함</small><h3>화면 움직임</h3><p>안경 방향에 맞춰 화면이 돌아갈지 선택하세요.</p></div></div>
+            <button class="wide-toggle" data-rotation aria-pressed="false"><span><strong>자동으로 화면 돌리기</strong><small data-rotation-label>꺼짐</small></span><i></i></button>
+          </article>
+
+          <article class="visual-panel timeout-panel">
+            <div class="visual-panel-head"><span class="big-icon">◷</span><div><small>절전</small><h3>화면이 꺼지는 시간</h3><p>아무 조작이 없을 때 기다릴 시간을 고르세요.</p></div></div>
+            <div class="choice-grid" data-timeout-choices>
+              <button data-timeout-preset="30000">30초</button><button data-timeout-preset="60000">1분</button><button data-timeout-preset="300000">5분</button><button data-timeout-preset="1800000">30분</button>
+            </div>
+          </article>
+        </div>
+
+        <article class="panel remote-card">
+          <div class="panel-head"><div><span class="friendly-label">손에 든 리모컨처럼</span><h3>안경 버튼 누르기</h3><p>실제 안경의 방향키와 음량 버튼을 대신 눌러줍니다.</p></div><span class="badge success">바로 적용</span></div>
+          <div class="remote-wrap">
+            <div class="remote">
+              <button data-key="home"><span>⌂</span><small>홈</small></button><button data-key="up"><span>▲</span></button><button data-key="back"><span>↶</span><small>뒤로</small></button>
+              <button data-key="left"><span>◀</span></button><button class="enter" data-key="enter"><span>확인</span></button><button data-key="right"><span>▶</span></button>
+              <button data-key="volumeDown"><span>−</span><small>음량</small></button><button data-key="down"><span>▼</span></button><button data-key="volumeUp"><span>＋</span><small>음량</small></button>
+            </div>
+            <div class="remote-side"><button class="button soft" data-key="power">화면 켜기·끄기</button><button class="button soft" data-key="camera">카메라 버튼</button></div>
+          </div>
+        </article>
+
+        <article class="panel restart-card"><div><span class="friendly-label">문제가 있을 때</span><h3>안경 다시 시작</h3><p>저장 중인 작업이 없다면 안전하게 다시 시작합니다.</p></div><button class="button warning" data-power-action="reboot">다시 시작</button><button class="button danger expert-only" data-power-action="rebootBootloader">부트로더로 시작</button></article>
+      </section>
+
+      <section class="view" data-view-panel="fine-tune">
+        <article class="fine-tune-hero">
+          <div class="tune-orb"><span>≋</span></div>
+          <div><span class="friendly-label">명령어 없이 내부 값을 시각적으로</span><h2>안경을 세밀하게 조정해요</h2><p>화면·소리·조작·연결·전원 값을 카드로 보고 바꿉니다. 변경 직전 값은 자동 저장됩니다.</p></div>
+          <div class="tune-count"><small>읽어 온 내부 설정</small><strong data-fine-tune-count>확인 중</strong><span>시스템 · 보안 · 전역</span></div>
+        </article>
+        <article class="fine-tune-undo" data-fine-tune-undo hidden><div><span>↶</span><p><strong data-fine-tune-undo-title>최근 세부 변경</strong><small data-fine-tune-undo-detail>바꾸기 전 값으로 돌아갈 수 있어요.</small></p></div><button class="button soft" data-fine-tune-undo-button>이 변경 되돌리기</button></article>
+        <article class="panel fine-tune-browser">
+          <div class="fine-tune-tools">
+            <label class="search"><span>⌕</span><input type="search" placeholder="예: 화면, 소리, 시간" data-fine-tune-search /></label>
+            <div class="filter-pills" data-fine-tune-categories><button class="active" data-fine-category="추천">추천 조정</button><button data-fine-category="화면">화면</button><button data-fine-category="조작">조작</button><button data-fine-category="소리">소리</button><button data-fine-category="전원">전원</button><button data-fine-category="연결">연결</button><button data-fine-category="전체">모든 항목</button></div>
+          </div>
+          <div class="settings-safety-row"><span>🛡 바꾸기 전 값을 자동 저장하고, 최근 변경은 한 번에 되돌립니다.</span><label class="expert-only"><input type="checkbox" data-raw-labels /> 내부 이름 함께 보기</label></div>
+          <div class="fine-setting-grid" data-fine-tune-list><div class="loading-card">안경의 세부 값을 읽고 있어요.</div></div>
+        </article>
+        <article class="safety-explainer"><span>🔒</span><div><strong>표시되지만 잠긴 항목도 있어요</strong><p>기기 식별값, USB 디버깅, 초기 설정 완료 상태처럼 연결이나 복구 자체를 끊을 수 있는 값은 읽을 수만 있습니다. 원시 파티션은 복구 이미지가 준비될 때까지 별도 잠금입니다.</p></div></article>
+      </section>
+
+      <section class="view" data-view-panel="apps">
+        <div class="section-heading"><div><span>설치된 앱을 한눈에</span><h2>앱 열기와 정리</h2></div><p>중요한 시스템 앱은 표시해서 실수로 끄지 않도록 도와드려요.</p></div>
+        <article class="panel app-browser">
+          <div class="app-tools">
+            <label class="search"><span>⌕</span><input type="search" placeholder="앱 이름 찾기" data-package-search /></label>
+            <div class="filter-pills"><button class="active" data-package-filter="all">모두</button><button data-package-filter="rokid">Rokid</button><button data-package-filter="user">내가 설치한 앱</button><button class="expert-only" data-package-filter="system">시스템</button></div>
+          </div>
+          <div class="app-card-grid" data-package-table><div class="loading-card">앱 목록을 불러오고 있어요.</div></div>
+        </article>
+      </section>
+
+      <section class="view" data-view-panel="backup">
+        <article class="backup-hero">
+          <div class="shield-visual"><span>✓</span></div>
+          <div><span class="friendly-label">변경 전 필수 준비</span><h2>지금 상태를 안전하게 저장해요</h2><p>문제가 생겨도 설정과 주요 앱을 확인하고 되돌릴 수 있도록 복구 지점을 만듭니다.</p></div>
+          <div class="backup-readiness"><small>현재 상태</small><strong data-backup-readiness>백업 권장</strong></div>
+        </article>
+        <div class="backup-choice-grid">
+          <article class="backup-choice recommended"><span class="choice-number">1</span><div><span class="badge success">처음이라면 이것</span><h3>빠른 안전 백업</h3><p>설정과 Rokid 핵심 앱을 저장합니다. 보통 몇 분이면 끝나요.</p><div class="friendly-list"><span>✓ 주요 설정</span><span>✓ 핵심 앱</span><span>✓ 연결 상태</span><span>✓ 파일 무결성</span></div></div><button class="button primary" data-backup-mode="logical">안전 백업 시작</button></article>
+          <article class="backup-choice"><span class="choice-number">2</span><div><span class="badge neutral">시간 여유가 있을 때</span><h3>꼼꼼한 전체 백업</h3><p>접근 가능한 모든 앱과 공유 파일을 함께 저장합니다.</p><div class="friendly-list"><span>✓ 빠른 백업 전체</span><span>✓ 설치 앱 94개</span><span>✓ 공유 파일</span><span>약 10분 이상</span></div></div><button class="button soft" data-backup-mode="full">전체 백업 시작</button></article>
+        </div>
+        <article class="panel backup-progress" data-backup-progress hidden>
+          <div class="panel-head"><div><span class="friendly-label">안경에서 안전하게 복사 중</span><h3 data-backup-stage>백업 준비</h3></div><strong data-backup-percent>0%</strong></div>
+          <div class="progress-track"><span data-backup-bar></span></div><p class="muted" data-backup-detail>USB 연결과 안경 전원을 유지해 주세요.</p>
+        </article>
+        <details class="expert-details expert-only"><summary>백업의 기술적 범위 보기</summary><p>설정·패키지·핵심 APK·디버그 앱 데이터를 SHA-256 무결성 목록과 함께 보존합니다. 현재 일반 ADB 권한으로는 암호화된 개인 앱 데이터와 boot/vendor/system 원시 파티션을 직접 읽지 않습니다.</p></details>
+      </section>
+
+      <section class="view" data-view-panel="updates">
+        <article class="update-intro"><div class="update-orb">↑</div><div><span class="friendly-label">확인하고 나서 적용하는 안전한 흐름</span><h2>업데이트 파일을 먼저 검사해요</h2><p>파일을 선택하면 구조와 손상 여부를 확인합니다. 현재는 안전을 위해 실제 설치 전 단계까지만 열려 있어요.</p></div><span class="safety-lock">🔒 실제 설치 잠금</span></article>
+        <div class="wizard-steps">
+          <article class="wizard-step complete"><span>1</span><div><strong>안경 연결</strong><small>완료</small></div></article>
+          <article class="wizard-step active"><span>2</span><div><strong>파일 넣기</strong><small>ZIP 파일을 보관함에</small></div></article>
+          <article class="wizard-step"><span>3</span><div><strong>안전 검사</strong><small>구조와 해시 확인</small></div></article>
+          <article class="wizard-step locked"><span>4</span><div><strong>안경에 설치</strong><small>복구 준비 후 열림</small></div></article>
+        </div>
+        <article class="panel drop-zone" data-update-drop-zone>
+          <div class="folder-visual">▱<span>ZIP</span></div>
+          <div><h3>업데이트 ZIP을 여기에 끌어놓으세요</h3><p>또는 ‘내 컴퓨터에서 선택’을 누르세요. 파일은 검사 보관함에만 복사되며 안경에는 아직 설치되지 않습니다.</p><strong class="upload-status" data-upload-status>파일을 기다리고 있어요</strong><code class="expert-only" data-update-inbox>경로 확인 중</code></div>
+          <div class="drop-actions"><input type="file" accept=".zip,application/zip" data-update-file hidden /><button class="button primary" data-update-file-button>내 컴퓨터에서 선택</button><button class="button soft expert-only" data-open-update-inbox>보관함 폴더 열기</button><button class="button soft" data-update-refresh>파일 다시 확인</button></div>
+        </article>
+        <div class="update-card-grid" data-update-packages><div class="loading-card">업데이트 파일을 찾고 있어요.</div></div>
+        <article class="safety-explainer"><span>🛡</span><div><strong>왜 설치 버튼이 아직 잠겨 있나요?</strong><p>원본 부팅 파일과 복구 방법이 준비되지 않은 상태에서 시스템을 바꾸면 안경이 켜지지 않을 수 있습니다. 먼저 되돌릴 방법을 완성한 뒤 이 단계를 열겠습니다.</p></div></article>
+        <div class="expert-only expert-section">
+          <div class="content-grid two"><article class="panel"><div class="panel-head"><div><span class="card-kicker">부팅 체계</span><h3>부팅 상세 상태</h3></div></div><dl class="facts" data-boot-facts></dl></article><article class="panel"><div class="panel-head"><div><span class="card-kicker">제조사 업데이트 방식</span><h3>제조사 업데이트 경로</h3></div><span class="badge success" data-ota-version>분석됨</span></div><dl class="protocol-facts"><div><dt>확인 주소</dt><dd data-ota-endpoint>읽는 중</dd></div><div><dt>기기 상태</dt><dd data-ota-state>읽는 중</dd></div><div><dt>적용 방식</dt><dd>A/B 업데이트 엔진</dd></div></dl></article></div>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="diagnostics">
+        <div class="section-heading"><div><span>PC 안에 들어온 안경 화면</span><h2>실시간 화면과 마우스 조작</h2></div><p>화면을 클릭하면 탭, 끌면 스와이프로 안경에 그대로 전달됩니다.</p></div>
+        <div class="screen-studio-grid">
+          <article class="panel live-screen-panel">
+            <div class="panel-head live-screen-head"><div><span class="friendly-label"><i class="live-dot"></i> 픽셀 그대로 가져오는 중</span><h3>내 Rokid 화면</h3></div><div class="live-actions"><span class="live-rate">약 2 화면/초</span><button class="button soft" data-live-orientation>전체 원본 보기</button><button class="button soft" data-live-toggle>일시정지</button></div></div>
+            <div class="live-device-wrap">
+              <div class="live-device-screen" data-live-frame tabindex="0" role="application" aria-label="마우스로 조작하는 Rokid 안경 화면">
+                <img data-live-image draggable="false" alt="실시간 Rokid 안경 화면" />
+                <div class="live-placeholder" data-live-placeholder><span class="screen-loader"></span><strong>안경 화면 연결 중</strong><small>잠시만 기다려 주세요.</small></div>
+                <span class="touch-indicator" data-touch-indicator></span>
+              </div>
+              <div class="live-device-caption"><span data-live-status>화면을 준비하고 있어요</span><small data-live-activity>640×480 광학 HUD 가로 · 원본 480×640</small></div>
+            </div>
+            <div class="screen-keybar" aria-label="안경 화면 바로가기"><button data-key="back"><span>↶</span>뒤로</button><button data-key="home"><span>⌂</span>홈</button><button data-key="up"><span>▲</span>위</button><button data-key="enter"><span>●</span>확인</button><button data-key="down"><span>▼</span>아래</button><button data-key="power"><span>◐</span>화면 전원</button></div>
+          </article>
+          <div class="screen-side-stack">
+            <article class="panel app-on-screen-card"><span class="friendly-label">PC에서 앱 확인</span><h3>안경 앱 바로 열기</h3><p>앱을 고르면 안경에서 실행되고 왼쪽 실시간 화면에서 바로 조작할 수 있어요.</p><label><span>확인할 앱</span><select data-live-app-select><option>앱 목록을 불러오는 중…</option></select></label><button class="button primary block" data-live-open-app>선택한 앱 열기</button></article>
+            <article class="panel interaction-guide"><span class="friendly-label">마우스가 손가락이 됩니다</span><div class="gesture-guide"><span><i>●</i><strong>한 번 클릭</strong><small>화면 탭</small></span><span><i>↗</i><strong>누른 채 끌기</strong><small>화면 스와이프</small></span><span><i>◉</i><strong>잠시 누르기</strong><small>길게 누르기</small></span></div><p>보안·DRM으로 캡처가 금지된 앱은 검은 화면으로 보일 수 있으며, 현재 미러링에는 안경 소리가 포함되지 않습니다.</p></article>
+            <article class="panel"><div class="panel-head"><div><span class="friendly-label">내가 바꾼 내용</span><h3>최근 작업 기록</h3></div><button class="button soft" data-audit-refresh>새로고침</button></div><div class="audit-list compact" data-audit-list></div></article>
+          </div>
+        </div>
+        <article class="panel expert-only"><div class="panel-head"><div><span class="card-kicker">안드로이드 진단 기록</span><h3>전문가 진단 로그</h3></div><button class="button soft" data-logcat>최근 250줄 읽기</button></div><pre class="terminal" data-log-output>필요할 때 로그를 요청하세요.</pre></article>
+      </section>
+
+      <section class="view expert-only" data-view-panel="settings">
+        <article class="panel"><div class="panel-head settings-head"><div><span class="card-kicker">안드로이드 전체 설정</span><h3>전체 설정값 읽기</h3></div><div class="segmented"><button class="active" data-settings-scope="system">시스템</button><button data-settings-scope="secure">보안</button><button data-settings-scope="global">전역</button></div></div><div class="settings-note">이곳은 읽기 전용 전문가 화면입니다. 안전하게 바꿀 수 있는 항목은 ‘쉽게 조절’ 화면을 사용하세요.</div><label class="search full"><span>⌕</span><input type="search" placeholder="설정 키 검색" data-settings-search /></label><div class="settings-list" data-settings-list><div class="loading-card">설정을 읽고 있어요.</div></div></article>
+      </section>
+    </main>
+  </div>
+  <dialog class="save-profile-dialog" data-profile-dialog>
+    <form method="dialog" data-profile-form>
+      <button class="dialog-close" value="cancel" aria-label="닫기">×</button>
+      <span class="dialog-icon">♥</span>
+      <h2>현재 모습을 저장할까요?</h2>
+      <p>지금의 밝기·연결·회전·화면 대기 시간을 이름 하나로 저장합니다.</p>
+      <label><span>모드 이름</span><input name="profileName" maxlength="30" placeholder="예: 밤에 영화 볼 때" required /></label>
+      <div class="dialog-actions"><button class="button soft" value="cancel">취소</button><button class="button primary" value="save" data-profile-save-submit>저장하기</button></div>
+    </form>
+  </dialog>
+  <div class="toast-region" aria-live="polite" data-toasts></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

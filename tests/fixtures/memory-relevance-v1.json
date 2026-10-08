@@ -1,0 +1,23 @@
+{
+  "version": "memory-relevance-v1",
+  "cases": [
+    {"id":"leading-today","query":"오늘 파일 목록 보여줘","statement":"파일 목록은 표로 정리한다","expected":true},
+    {"id":"leading-request","query":"부탁인데 문서를 요약해줘","statement":"문서 요약은 짧게 작성한다","expected":true},
+    {"id":"particle-object","query":"자료를 확인해줘","statement":"자료 검토는 출처를 함께 남긴다","expected":true},
+    {"id":"particle-location","query":"일정에서 충돌을 확인해줘","statement":"일정 충돌은 먼저 설명한다","expected":true},
+    {"id":"case-punctuation","query":"Please review the REPORT!","statement":"report summaries include sources","expected":true},
+    {"id":"leading-whitespace","query":"  메일을 정리해줘","statement":"메일 요약은 간결하게 작성한다","expected":true},
+    {"id":"unrelated-time","query":"오늘 날씨 알려줘","statement":"파일 목록은 표로 정리한다","expected":false},
+    {"id":"metadata-only","query":"synthetic-owner","statement":"문서 요약은 짧게 작성한다","metadata":"synthetic-owner","expected":false},
+    {"id":"substring-boundary","query":"plan","statement":"planet observations contain sources","expected":false},
+    {"id":"filler-only","query":"오늘 좀 부탁해","statement":"오늘 메일을 정리한다","expected":false},
+    {"id":"domain-not-present","query":"항공권을 비교해줘","statement":"세금 자료는 표로 정리한다","expected":false},
+    {"id":"short-noun","query":"회의 요약해줘","statement":"회의 준비에는 참석자를 기록한다","expected":true},
+    {"id":"holdout-prefix","query":"내일 예산을 점검해줘","statement":"예산 점검에는 지출 근거를 남긴다","expected":true},
+    {"id":"holdout-particle","query":"설교의 출처 확인해줘","statement":"설교 연구에는 경쟁 해석을 포함한다","expected":true},
+    {"id":"holdout-english","query":"My CALENDAR, please","statement":"calendar conflicts need review","expected":true},
+    {"id":"holdout-unrelated","query":"지금 가족 연락처 알려줘","statement":"파일 목록은 표로 정리한다","expected":false},
+    {"id":"holdout-identifier","query":"revision","statement":"자료는 짧게 정리한다","metadata":"revision","expected":false},
+    {"id":"holdout-polite","query":"이번 보고서를 검토해줘","statement":"보고서 검토에는 근거를 남긴다","expected":true}
+  ]
+}

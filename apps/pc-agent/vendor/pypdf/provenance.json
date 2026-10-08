@@ -1,0 +1,8 @@
+{
+  "version": "6.19.0",
+  "source": "https://pypi.org/project/pypdf/6.19.0/",
+  "upstream": "https://github.com/py-pdf/pypdf",
+  "sha256": "7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14",
+  "downloadedAt": "2026-10-03T07:49:46.426+00:00",
+  "installation": "vendored pure Python wheel; system packages untouched"
+}

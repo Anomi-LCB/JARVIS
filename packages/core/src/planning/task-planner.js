@@ -1,14 +1,46 @@
+import { basename, isAbsolute, relative, resolve } from 'node:path';
+import { sanitizeMissionArguments } from './mission-action-arguments.js';
+import {parseLiteralTextFileRequest,isLiteralTextFileAttempt} from './literal-text-file-request.js';
+import {parseSearchDirectoryRequest} from './search-directory-request.js';
 import { ActionType, createPlanStep, createPolicyCheckRequest, createTaskPlan, stableId } from '../../../shared/src/types.js';
 
 export class TaskPlanner {
-  createPlan(taskRequest, intent, { contextSnapshot, route, planningContext = null } = {}) {
+  constructor({ workspaceRoot = './workspace' } = {}) {
+    this.configureWorkspaceRoot(workspaceRoot);
+  }
+
+  configureWorkspaceRoot(workspaceRoot = './workspace') {
+    this.workspaceRoot = resolve(workspaceRoot);
+    return this;
+  }
+
+  createPlan(taskRequest, intent, {
+    contextSnapshot,
+    route,
+    planningContext = null,
+    deterministicArgumentsOnly = false,
+    preparedMissionArguments = null
+  } = {}) {
     const createdAt = taskRequest.createdAt;
     const planId = stableId('plan', taskRequest.requestId, createdAt);
     const skill = route?.skill ?? {
       skillId: 'jarvis.local.mvp',
       toolName: 'pcAgent.safeLocalTool'
     };
-    const actionArguments = this.argumentsFor(intent, taskRequest, contextSnapshot);
+    // A trusted upstream planner can already have selected a deterministic route. In that
+    // narrow case use the base parser directly so subclasses do not repeat an external
+    // model call merely to extract arguments that are already explicit in the command.
+    let suppliedArguments = sanitizeMissionArguments(skill.toolName, preparedMissionArguments);
+    // Bind the exact relative read target to the task workspace, not the
+    // process working directory. Never strip or reinterpret absolute paths;
+    // E/B still enforce lexical and physical allowed-root checks.
+    if (skill.toolName === 'filesystem.readText' && typeof suppliedArguments?.path === 'string'
+      && !isAbsolute(suppliedArguments.path)) {
+      suppliedArguments = {...suppliedArguments,path:resolve(this.workspaceRoot,suppliedArguments.path)};
+    }
+    const actionArguments = suppliedArguments ? { ...suppliedArguments, rawText: taskRequest.command.rawText } : deterministicArgumentsOnly
+      ? TaskPlanner.prototype.argumentsFor.call(this, intent, taskRequest, contextSnapshot)
+      : this.argumentsFor(intent, taskRequest, contextSnapshot);
     const planningGuardrails = this.planningGuardrailsFor(planningContext);
     const planSteps = [
       createPlanStep({ order: 1, description: '사용자 요청을 표준 TaskRequest로 저장합니다.', module: 'A_CORE', postconditions: ['TaskRequest.valid'] }),
@@ -38,7 +70,10 @@ export class TaskPlanner {
       },
       adapterContract: route?.adapterContract
     };
-    const planGraph = this.planGraphFor({ taskRequest, intent, planSteps, action, affectedItems, skill, planningGuardrails });
+    // A mission has already decomposed its goal into tool-bound atomic actions.
+    // Re-splitting the description duplicates the full argument payload (and writes).
+    const graphIntent = suppliedArguments ? { ...intent, complexity: { ...intent.complexity, needsPlanDecomposition: false } } : intent;
+    const planGraph = this.planGraphFor({ taskRequest, intent: graphIntent, planSteps, action, affectedItems, skill, planningGuardrails });
     const failureBranches = this.failureBranchesFor({ intent, action, affectedItems, planGraph });
     const compensationPlan = this.compensationPlanFor({ intent, action, affectedItems, planGraph, failureBranches });
     const policyCheckRequest = createPolicyCheckRequest({
@@ -49,7 +84,7 @@ export class TaskPlanner {
       contextSnapshot,
       createdAt
     });
-    return createTaskPlan({
+    const plan = createTaskPlan({
       planId,
       taskId: taskRequest.taskId,
       title: intent.title ?? intent.label,
@@ -69,6 +104,8 @@ export class TaskPlanner {
       guardrailAudit: this.guardrailAuditFor(planningGuardrails),
       createdAt
     });
+    if (planningContext?.cognition) plan.cognitiveContext = planningContext.cognition;
+    return plan;
   }
 
   planningGuardrailsFor(planningContext) {
@@ -108,21 +145,136 @@ export class TaskPlanner {
   }
 
   argumentsFor(intent, taskRequest, contextSnapshot) {
+    if(intent.slots?.workflow==='export-existing-xlsx-pdf'){
+      const requestedPath=value=>value?(isAbsolute(value)?resolve(value):resolve(this.workspaceRoot,value.replace(/\\/g,'/').replace(/^(?:\.\/)?workspace\//iu,''))):null;
+      return {inputPath:requestedPath(intent.slots.inputPath),outputPath:requestedPath(intent.slots.outputPath)};
+    }
     if (intent.actionType === ActionType.BROWSER_SEARCH) {
+      if (intent.slots?.workflow === 'publisher-news-feed') {
+        return { feedUrl: intent.slots?.feedUrl ?? '', maxResults: intent.slots?.maxResults ?? 5, readOnly: true };
+      }
+      if (intent.slots?.workflow === 'news-headlines') {
+        return {
+          query: intent.slots?.newsQuery ?? intent.slots?.query ?? '',
+          category: intent.slots?.newsCategory ?? 'top',
+          maxResults: intent.slots?.maxResults ?? 5,
+          readOnly: true
+        };
+      }
       return { query: intent.slots?.query ?? taskRequest.command.rawText, searchEngine: 'duckduckgo', maxResults: 5, readOnly: true };
     }
     if (intent.actionType === ActionType.LIST_FILES) {
-      return { directory: contextSnapshot?.currentDirectory ?? './workspace', maxItems: 100 };
+      return { directory: this.workspaceRoot, maxItems: 1000 };
     }
-    if (intent.actionType === ActionType.CREATE_FILE && intent.slots?.outputFormat === 'xlsx') {
+    if (intent.actionType === ActionType.SEARCH_FILES) {
+      const rawText = taskRequest.command.rawText;
+      if(intent.slots?.workflow==='read-xlsx-file'&&intent.slots?.fileName)return {path:this.readTextPathFor(rawText,intent.slots.fileName),range:intent.slots.range??'A1:J100',...(intent.slots.sheetName!==undefined?{sheetName:intent.slots.sheetName}:{})};
+      if(intent.slots?.workflow==='read-pdf-file'&&intent.slots?.fileName) return {path:this.readTextPathFor(rawText,intent.slots.fileName),firstPage:1,maxPages:10};
+      if (intent.label === '텍스트 파일 읽기' && intent.slots?.fileName) {
+        return {
+          path: this.readTextPathFor(rawText, intent.slots.fileName),
+          offset: 0,
+          maxChars: 12000
+        };
+      }
+      const normalized=rawText.replaceAll('\\','/'),root=this.workspaceRoot.replaceAll('\\','/');
+      const escapePattern=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      // An exact, explicitly named configured root remains scoped on both OSes.
+      // A sibling/subdirectory prefix is not silently interpreted as this root.
+      const explicitRoot=new RegExp(`(?:^|[\\s"'“”])${escapePattern(root)}(?=$|[\\s"'“”])`,process.platform==='win32'?'i':'');
+      const workspaceScoped = /(?:작업\s*폴더|워크스페이스|workspace)/iu.test(rawText)||explicitRoot.test(normalized);
+      const { declarations: folderDeclarations } = parseSearchDirectoryRequest(rawText);
+      const directories = [...new Set(folderDeclarations.map(item => resolve(this.workspaceRoot, item.path)))];
       return {
-        outputPath: this.outputPathFor(intent),
+        query: intent.slots?.fileName ?? rawText,
+        extensions: [],
+        modifiedWithinDays: null,
+        contentQuery: '',
+        scope: directories.length || workspaceScoped ? 'workspace' : 'home',
+        ...(directories.length === 1 ? { directory: directories[0] } : directories.length > 1 ? { directories } : {})
+      };
+    }
+    if (intent.actionType === ActionType.DESKTOP_CONTROL) {
+      return {
+        rawText: taskRequest.command.rawText,
+        target: intent.slots?.windowTitle ? { titleContains: intent.slots.windowTitle } : {},
+        operations: [],
+        verification: []
+      };
+    }
+    if (intent.actionType === ActionType.CREATE_FILE) {
+      const explicitlyInWorkspace = taskRequest.command.rawText.toLowerCase().replaceAll('\\', '/').includes(this.workspaceRoot.toLowerCase().replaceAll('\\', '/'));
+      const targetDirectoryHint = explicitlyInWorkspace ? 'workspace' : intent.slots?.targetDirectoryHint ?? 'workspace';
+      const outputFormat = intent.slots?.outputFormat ?? 'txt';
+      const literalText=outputFormat==='txt'?parseLiteralTextFileRequest(taskRequest.command.rawText):null;
+      if(literalText)return {path:this.workspacePathFor(literalText.fileName),content:literalText.content,
+        rawText:taskRequest.command.rawText,outputFormat:'txt',fileName:literalText.fileName,targetDirectoryHint:'workspace'};
+      if(outputFormat==='txt'&&isLiteralTextFileAttempt(taskRequest.command.rawText))
+        throw Object.assign(new Error('파일명·내용·추가 지시를 모두 해석해야 합니다. 복합 파일 요청은 Mission으로 실행하세요.'),
+          {code:'A_LITERAL_TEXT_REQUEST_UNRESOLVED'});
+      if (intent.slots?.workflow === 'weekly-weather-hwp-report') {
+        const rawText = taskRequest.command.rawText;
+        const explicitFileName = rawText.match(/(?:파일명|이름)\s*[:：=]\s*["'“”]?([^\]\[;,\n"'“”]+\.hwpx?)/iu)?.[1]?.trim();
+        return {
+          rawText,
+          workflow: 'weekly-weather-hwp-report',
+          location: intent.slots?.weatherLocation ?? '',
+          period: 'next-7-days',
+          outputFormat: 'hwp',
+          fileName: explicitFileName || undefined,
+          targetDirectoryHint
+        };
+      }
+      const locationArguments = targetDirectoryHint === 'workspace'
+        ? (outputFormat === 'xlsx' ? { outputPath: this.outputPathFor(intent) } : { path: this.outputPathFor(intent) })
+        : {};
+      if (outputFormat !== 'xlsx') {
+        return {
+          ...locationArguments,
+          content: taskRequest.command.rawText.match(/내용(?:으로|은|에|을)?\s*[:：]?\s*["“]([^"”]+)["”]/u)?.[1] ?? taskRequest.command.rawText,
+          rawText: taskRequest.command.rawText,
+          outputFormat,
+          fileName: intent.slots?.fileName,
+          targetDirectoryHint
+        };
+      }
+      return {
+        ...locationArguments,
         sheetName: 'JARVIS',
         columns: ['요청', '상태'],
         rows: [[taskRequest.command.rawText, 'planned']],
         rawText: taskRequest.command.rawText,
         outputFormat: 'xlsx',
-        fileName: intent.slots?.fileName
+        fileName: intent.slots?.fileName,
+        targetDirectoryHint
+      };
+    }
+    if (intent.actionType === ActionType.SEND_EMAIL) {
+      const rawText = taskRequest.command.rawText;
+      const explicitAddress = rawText.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/iu)?.[0] ?? '';
+      const attachmentRef = parseJarvisArtifactReference(rawText);
+      const attachmentSha256 = parseAttachmentSha256(rawText);
+      const weatherReport = /(?:날씨|기상|예보)/iu.test(rawText) && /(?:통계|보고서|표)/iu.test(rawText);
+      const selfRecipient = !explicitAddress && /(?:내|제)\s*(?:구글\s*)?(?:이|e)?메일|나(?:에게|한테)|본인(?:에게)?/iu.test(rawText);
+      return {
+        rawText,
+        destination: 'email',
+        to: explicitAddress,
+        name: intent.slots?.recipientHint ?? '',
+        recipientMode: selfRecipient ? 'self' : 'explicit',
+        subject: weatherReport
+          ? '주간 날씨 통계 보고서'
+          : intent.slots?.topic ? `${intent.slots.topic} 자료` : 'JARVIS 작업 결과',
+        body: weatherReport
+          ? '요청하신 향후 7일 날씨 통계 한글 보고서를 첨부합니다.'
+          : '요청하신 작업 결과를 보냅니다.',
+        attachmentQuery: attachmentRef?.name ?? intent.slots?.fileName ?? '',
+        attachmentRef: attachmentRef ? {
+          rootIndex: attachmentRef.rootIndex,
+          relativePath: attachmentRef.relativePath
+        } : null,
+        attachmentSha256,
+        externalTransfer: true
       };
     }
     return {
@@ -135,15 +287,101 @@ export class TaskPlanner {
   }
 
   outputPathFor(intent) {
-    if (intent.slots?.fileName) return `./workspace/${intent.slots.fileName}`;
-    if (intent.slots?.outputFormat === 'xlsx') return './workspace/jarvis-output.xlsx';
-    return './workspace/jarvis-output.txt';
+    if (intent.slots?.fileName) return this.workspacePathFor(intent.slots.fileName);
+    if (intent.slots?.outputFormat === 'xlsx') return this.workspacePathFor('jarvis-output.xlsx');
+    return this.workspacePathFor('jarvis-output.txt');
+  }
+
+  readTextPathFor(rawText, fileName) {
+    const folderRequest = parseSearchDirectoryRequest(rawText ?? '');
+    const directories = [...new Set(folderRequest.declarations.map(item => resolve(this.workspaceRoot, item.path)))];
+    if (directories.length > 1) return null;
+    const text = folderRequest.remainingText;
+    const baseDirectory = directories[0] ?? this.workspaceRoot;
+    const resolveSource = source => {
+      const normalized = source.replace(/\\/g, '/');
+      const candidate = isAbsolute(source) ? resolve(source)
+        : resolve(baseDirectory, directories.length ? normalized : normalized.replace(/^(?:\.\/)?workspace\//i, ''));
+      const scoped = relative(baseDirectory, candidate);
+      return directories.length && (scoped === '..' || scoped.startsWith('..\\') || scoped.startsWith('../') || isAbsolute(scoped)) ? null : candidate;
+    };
+    const textExtension = /\.(?:txt|csv|json|jsonl|md|html?|xml|ya?ml|log|xlsx|pdf)$/iu;
+    const quoted = [...text.matchAll(/"([^"\n]+)"|'([^'\n]+)'|“([^”\n]+)”|‘([^’\n]+)’/gu)]
+      .map(match => match.slice(1).find(Boolean)?.trim()).filter(value => textExtension.test(value ?? ''));
+    const explicit = quoted.length ? quoted
+      : text.match(/(?:[a-z]:[\\/]|\\\\|\/)[^\s"'<>]*\.(?:txt|csv|json|jsonl|md|html?|xml|ya?ml|log|xlsx|pdf)\b/giu) ?? [];
+    const candidates = [...new Set(explicit)];
+    if (candidates.length > 1) return null;
+    if (!candidates.length) {
+      // Parser slots can contain an explicit unquoted relative/absolute source.
+      // Read requests must never substitute another file to fit the workspace.
+      const source = String(fileName ?? '').trim();
+      return source ? resolveSource(source) : null;
+    }
+    const path = candidates[0];
+    // Keep the requested source intact. E/B enforce allowed roots; substituting a
+    // same-named workspace file would read different data while appearing successful.
+    return resolveSource(path);
+  }
+
+  workspacePathFor(pathHint = '') {
+    const raw = String(pathHint ?? '').trim();
+    if (!raw || /^(?:\.\/)?workspace[\\\/]?$/i.test(raw)) return this.workspaceRoot;
+    const normalized = raw.replace(/\\/g, '/');
+    const withoutWorkspaceAlias = normalized.replace(/^(?:\.\/)?workspace\//i, '');
+    const candidate = isAbsolute(raw)
+      ? resolve(raw)
+      : resolve(this.workspaceRoot, withoutWorkspaceAlias);
+    const scoped = relative(this.workspaceRoot, candidate);
+    if (scoped === '' || (!scoped.startsWith('..') && !isAbsolute(scoped))) return candidate;
+    return resolve(this.workspaceRoot, basename(raw));
+  }
+
+  workspaceDirectoryFor(pathHint = '') {
+    const raw = String(pathHint ?? '').trim();
+    if (!raw || /^(?:\.|(?:\.\/)?workspace[\\\/]?|작업\s*폴더)$/iu.test(raw)) return this.workspaceRoot;
+    const normalized = raw.replace(/\\/g, '/').replace(/^(?:\.\/)?workspace\//i, '');
+    const candidate = isAbsolute(raw)
+      ? resolve(raw)
+      : resolve(this.workspaceRoot, normalized);
+    const scoped = relative(this.workspaceRoot, candidate);
+    if (scoped === '' || (!scoped.startsWith('..') && !isAbsolute(scoped))) return candidate;
+    // A model-provided absolute path is advisory, never authority. For a list command,
+    // falling back to the approved root is useful and safer than inventing root/basename.
+    return this.workspaceRoot;
   }
 
   affectedItemsFor(intent, actionArguments) {
     if (intent.actionType === ActionType.BROWSER_SEARCH) return [{ type: 'read_only_web', query: actionArguments.query }];
     if (intent.actionType === ActionType.LIST_FILES) return [{ type: 'directory_listing', path: actionArguments.directory }];
-    if (intent.actionType === ActionType.MOVE_FILE) return [{ type: 'planned_move', path: './workspace' }];
+    if (intent.actionType === ActionType.SEND_EMAIL) {
+      return [{
+        type: 'external_transfer',
+        destination: 'email',
+        recipient: actionArguments.to || actionArguments.name || (actionArguments.recipientMode === 'self' ? 'self' : 'unspecified'),
+        recipientMode: actionArguments.recipientMode ?? 'unspecified',
+        subject: actionArguments.subject || null,
+        attachmentQuery: actionArguments.attachmentQuery || null,
+        attachmentRef: actionArguments.attachmentRef || null,
+        attachmentSha256: actionArguments.attachmentSha256 || null
+      }];
+    }
+    if (intent.actionType === ActionType.DESKTOP_CONTROL) {
+      return [{
+        type: 'desktop_interaction',
+        target: actionArguments.target ?? {},
+        operationCount: actionArguments.operations?.length ?? 0
+      }];
+    }
+    if (intent.actionType === ActionType.MOVE_FILE) {
+      const firstMove = actionArguments.moves?.[0] ?? actionArguments;
+      return [{
+        type: 'planned_move',
+        path: firstMove.from ?? './workspace',
+        from: firstMove.from ?? null,
+        to: firstMove.to ?? null
+      }];
+    }
     return [{ type: 'planned_output', path: actionArguments.path ?? actionArguments.outputPath }];
   }
 
@@ -293,7 +531,7 @@ export class TaskPlanner {
       arguments: {
         ...action.arguments,
         rawText: part.text,
-        sequenceIndex: index
+        ...(['source.readSelectedInbox','case.readLocalRecord','source.collectMicrosoftMetadata'].includes(action.toolName) ? {} : { sequenceIndex: index })
       },
       affectedItems,
       preconditions: ['ApprovalDecision.approved', 'CapabilityToken.valid'],
@@ -305,6 +543,12 @@ export class TaskPlanner {
   }
 
   decomposeActions(rawText, intent) {
+    // A desktop plan already contains an ordered, postcondition-bound operation list.
+    // Splitting its natural-language sentence would duplicate the complete transaction
+    // on every action node and could repeat irreversible clicks.
+    if (intent.actionType === ActionType.DESKTOP_CONTROL) {
+      return [{ text: rawText, description: `${intent.title ?? intent.label} 실행` }];
+    }
     const separators = /\s*(?:그리고|그 다음|다음으로|후에|,|;)\s*/;
     const parts = String(rawText)
       .split(separators)
@@ -367,8 +611,8 @@ export class TaskPlanner {
       .map((node) => ({
         compensationId: node.compensationRef,
         targetNodeId: node.nodeId,
-        action: action.actionType === ActionType.MOVE_FILE ? 'reverse_move'
-          : action.actionType === ActionType.CREATE_FILE ? 'delete_created_output'
+        action: node.actionType === ActionType.MOVE_FILE ? 'reverse_move'
+          : node.actionType === ActionType.CREATE_FILE ? 'delete_created_output'
             : 'record_manual_review',
         affectedItems,
         requiresEvidence: true,
@@ -385,4 +629,25 @@ export class TaskPlanner {
         : '읽기 전용 작업은 로컬 변경이 없어 보상 실행이 필요하지 않습니다.'
     };
   }
+}
+
+function parseJarvisArtifactReference(value) {
+  const match = String(value ?? '').match(/jarvis-artifact:\/\/(\d+)\/([^\s"'<>]+)/i);
+  if (!match) return null;
+  try {
+    const relativePath = decodeURIComponent(match[2]).replaceAll('\\', '/').replace(/^\/+/, '');
+    if (!relativePath) return null;
+    return {
+      rootIndex: Number(match[1]),
+      relativePath,
+      name: basename(relativePath)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseAttachmentSha256(value) {
+  const match = String(value ?? '').match(/(?:첨부\s*)?SHA\s*-?\s*256\s*[:：]?\s*([a-f0-9]{64})/iu);
+  return match?.[1]?.toLowerCase() ?? null;
 }

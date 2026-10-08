@@ -1,0 +1,30 @@
+import { randomUUID } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+function percentile(values,p){const sorted=[...values].sort((a,b)=>a-b);return sorted[Math.max(0,Math.ceil(sorted.length*p)-1)];}
+function safeEnv(evidence){const env={};for(const key of ['PATH','Path','SystemRoot','SYSTEMROOT','WINDIR','TEMP','TMP','ComSpec','PATHEXT'])if(process.env[key])env[key]=process.env[key];Object.assign(env,{JARVIS_TEST_MODE:'1',JARVIS_G02_ORACLE_EVIDENCE_PATH:evidence});return env;}
+export function runG02ConflictAdapter({outputRoot='artifacts/agent-platform-20260929/public-scenarios'}={}){
+  const observedAt=new Date().toISOString(),runId=`${observedAt.replace(/[-:]/gu,'').replace(/\.\d{3}Z$/u,'Z')}-${randomUUID()}`;
+  const relative=`${outputRoot}/G02-local-${runId}`,directory=resolve(root,relative);mkdirSync(directory,{recursive:true});const measurements=[];
+  for(let repetition=1;repetition<=3;repetition+=1){
+    const startedAt=new Date().toISOString(),repRelative=`${relative}/repetition-${repetition}`,repDir=resolve(root,repRelative);mkdirSync(repDir,{recursive:true});
+    const evidencePath=resolve(repDir,'evidence.json'),oraclePath=resolve(repDir,'oracle.json'),logPath=resolve(repDir,'adapter-test.log');let status='failed',stopCode=null,oracle=null;
+    const child=spawnSync(process.execPath,['--test','--test-name-pattern=G02 same-revision concurrent editors serialize and preserve the winner while reporting the losing proposal','tests/agent-platform-g02-artifact-conflict.test.js'],{cwd:root,env:safeEnv(evidencePath),encoding:'utf8',timeout:30_000,windowsHide:true,maxBuffer:4*1024*1024});
+    writeFileSync(logPath,`${child.stdout??''}${child.stderr??''}`,{encoding:'utf8',flag:'wx'});
+    if(child.error||child.status!==0)stopCode=child.error?.code??`G02_TEST_EXIT_${child.status??'UNKNOWN'}`;
+    else try{const text=execFileSync(process.execPath,['scripts/agent-platform-independent-oracle.mjs',evidencePath,oraclePath],{cwd:root,encoding:'utf8',timeout:10_000,windowsHide:true,env:safeEnv(evidencePath),maxBuffer:1024*1024});oracle=JSON.parse(text.trim().split(/\r?\n/u).at(-1));status=oracle.status==='passed'?'completed':'failed';if(status!=='completed')stopCode='G02_ORACLE_FAILED';}catch(error){stopCode=error?.code??'G02_ORACLE_ERROR';}
+    const finishedAt=new Date().toISOString(),durationMs=Date.parse(finishedAt)-Date.parse(startedAt);
+    measurements.push({scenarioId:'G02',adapterId:'g02-local-artifact-conflict-adapter',executionMode:'local-pc-agent-revision-compare-and-swap-test-with-separate-process-oracle',repetition,startedAt,finishedAt,status,scenarioExecutionStatus:status==='completed'?'completed':'not-run',
+      requirementResults:[{requirement:'동시 편집은 한 명의 winner만 반영하고 다른 제안은 보존된 conflict로 보고',status,oracleCheckIds:['exactly_one_winner','losing_proposal_preserved','final_artifact_matches_winner']},{requirement:'충돌 검지 및 undo receipt가 실제 변경을 정확히 반영',status,oracleCheckIds:['conflict_marker_matches_bytes','undo_receipt_matches_single_mutation','final_hash_recomputes']}],
+      evidencePaths:[`${repRelative}/adapter-test.log`,...(existsSync(evidencePath)?[`${repRelative}/evidence.json`]:[]),...(existsSync(oraclePath)?[`${repRelative}/oracle.json`]:[])],oracle:oracle?{status:oracle.status,name:oracle.oracle,independence:oracle.oracleIndependence,resultPath:`${repRelative}/oracle.json`,checks:oracle.checks}:null,durationMs,latencyMs:durationMs,providerCalls:0,networkRequests:0,externalWrites:0,retries:0,questions:null,approvals:null,costUsd:null,costMeasurement:'unmeasured',stopCode});
+  }
+  const outcome=measurements.every(x=>x.status==='completed')?'completed':measurements.some(x=>x.status==='failed')?'failed':'blocked';
+  const report={schemaVersion:1,runId,observedAt,scenarioId:'G02',declaredFamily:'grok',mode:'public-scenario-local-artifact-conflict-adapter',executionStatusChangedInCorpus:false,outcome,repetitionsPerConfiguration:3,measurementKind:'local-real-pc-agent-conflict-test-with-separate-process-oracle',measurements,counts:{total:3,completed:measurements.filter(x=>x.status==='completed').length,failed:measurements.filter(x=>x.status==='failed').length,blocked:measurements.filter(x=>x.status==='blocked').length,independentOracleRuns:measurements.filter(x=>x.oracle?.status==='passed').length},latencyMs:{p50:percentile(measurements.map(x=>x.latencyMs),.5),p95:percentile(measurements.map(x=>x.latencyMs),.95),unit:'ms',includes:'local PC adapter test + separate-process oracle'},providerCalls:0,networkRequests:0,externalWrites:0,costUsd:null,costMeasurement:'unmeasured',limitations:['합성 로컬 파일 1개와 동일한 초기 revision에 대한 2개의 쓰기만 시험했다. 다른 파일시스템·프로세스/기기 분산·대규모 문서·장기 충돌은 미검증이다.','실제 외부 provider나 사람 편집기, 제품 UI는 사용하지 않았다. Oracle은 별도 프로세스이나 같은 저장소 코드이며 독립 인간 저자가 아니다.','질문·승인은 UI 계측 부재로 미측정, 비용 미측정이며 public corpus의 고정 상태는 변경하지 않았다.'],evidence:{report:`${relative}/report.json`,summary:`${relative}/report.md`}};
+  writeFileSync(resolve(directory,'report.json'),`${JSON.stringify(report,null,2)}\n`,{encoding:'utf8',flag:'wx'});
+  const rows=measurements.map(x=>`| ${x.repetition} | ${x.status} | ${x.latencyMs} ms | ${x.oracle?.status??'not-run'} |`).join('\n');writeFileSync(resolve(directory,'report.md'),`# G02 로컬 동시 편집 공개 시나리오\n\n관측: ${observedAt}\n\n- 결과: ${outcome}, ${report.counts.completed}/3\n- p50 ${report.latencyMs.p50} ms / p95 ${report.latencyMs.p95} ms; provider/network/외부 쓰기 0; 비용 미측정\n\n| 반복 | 결과 | 지연 | 별도 프로세스 oracle |\n|---:|---|---:|---|\n${rows}\n\n## 한계\n\n${report.limitations.map(x=>`- ${x}`).join('\n')}\n`,{encoding:'utf8',flag:'wx'});return report;
+}
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){const r=runG02ConflictAdapter();console.log(JSON.stringify({runId:r.runId,outcome:r.outcome,counts:r.counts,latencyMs:r.latencyMs,evidence:r.evidence},null,2));}

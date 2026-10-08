@@ -1,0 +1,14 @@
+import {HwpCreateToolAdapter,UndoJournal} from '../apps/pc-agent/src/pc-agent-runtime.js';
+import {verifyHancomRenderingCurrent} from '../apps/verification/src/hancom-render-verifier.js';
+import {ExecutionResultVerifier} from '../apps/verification/src/verification-runtime.js';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
+const suffix=process.argv[2]??'';if(suffix&&!/^[a-z0-9-]+$/u.test(suffix))throw Error('suffix invalid');
+const root=resolve('artifacts/hancom-product-render-20261007'+(suffix?'-'+suffix:''));await mkdir(root,{recursive:true});
+const args={path:resolve(root,'document.hwpx'),verifyRendering:true,title:'실제 출력 인수 검사',blocks:[{type:'paragraph',text:'요청한 문서의 내용을 실제 한컴 PDF와 PNG에서 대조합니다.'},{type:'bullets',items:['본문 보존','현재 결과 재조회']},{type:'table',columns:['종류','수량'],rows:[['보고서','42']]}]};
+const result=await new HwpCreateToolAdapter({allowedRoots:[root],timeoutMs:60000,undoJournal:new UndoJournal({journalPath:resolve(root,'undo.jsonl')})}).execute(args,{taskId:'hancom-product-render-20261007'});
+const proof=await verifyHancomRenderingCurrent({executionResult:result,allowedRoots:[root]});
+const checks=await new ExecutionResultVerifier().verify({executionResult:result,evidence:{toolName:'hwp.create'},capabilityToken:{scope:{allowedPaths:[root]}}});
+await writeFile(resolve(root,'pilot.json'),JSON.stringify({observedAt:new Date().toISOString(),args,result,proof,checks},null,2),{flag:'wx'});
+console.log(JSON.stringify({status:result.status,proof,checks:checks.filter(c=>c.checkName.startsWith('hancom_')||c.checkName.startsWith('hwpx_'))}));
+if(result.status!=='success'||!proof.passed)process.exitCode=1;

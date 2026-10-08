@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile,writeFile,mkdtemp,rm,cp} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createHash} from 'node:crypto';
+import {verifyOfficeDocumentRenderingCurrent} from '../apps/verification/src/office-document-render-verifier.js';
+import {ExecutionResultVerifier} from '../apps/verification/src/verification-runtime.js';
+const sha=b=>createHash('sha256').update(b).digest('hex');
+for(const format of ['docx','pdf'])test(`current ${format} ties saved OOXML structure to actual Word PDF text and renderer receipt`,async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-g-office-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const original=JSON.parse(await readFile(`artifacts/office-current-render-20261007/${format}-pilot.json`,'utf8')).result;
+ const directory=join(root,'render'),targetPath=join(root,'document.'+format);await cp(original.renderDirectory,directory,{recursive:true});await cp(original.targetPath,targetPath);
+ const result={...original,targetPath,renderDirectory:directory,documentSourcePath:format==='pdf'?join(directory,'document.docx'):targetPath};
+ const verify=r=>verifyOfficeDocumentRenderingCurrent({executionResult:r,allowedRoots:[root]});
+ assert.equal((await verify(result)).passed,true);
+ const checks=await new ExecutionResultVerifier().verify({executionResult:result,evidence:{toolName:'word.create'},capabilityToken:{scope:{allowedPaths:[root]}}});assert.equal(checks.find(c=>c.checkName==='office_current_structure_and_rendering_verified').status,'passed');
+ const missing=structuredClone(result);missing.document.blocks.push({type:'paragraph',text:'작업하지 않은 내용을 완료라고 하면 안 됩니다.'});assert.equal((await verify(missing)).passed,false);
+ const table=structuredClone(result);table.document.blocks.find(b=>b.type==='table').rows[0].reverse();assert.equal((await verify(table)).passed,false);
+ assert.equal((await verifyOfficeDocumentRenderingCurrent({executionResult:result,allowedRoots:[]})).passed,false);
+ const path=join(directory,'native-report.json'),originalNative=await readFile(path),native=JSON.parse(originalNative.toString('utf8').replace(/^\uFEFF/u,''));native.sourceSha256='0'.repeat(64);await writeFile(path,JSON.stringify(native));assert.equal((await verify(result)).passed,false);await writeFile(path,originalNative);
+ const pdfPath=format==='pdf'?targetPath:join(directory,'document.pdf');
+ const other=await readFile('artifacts/hancom-native-render-20261007-unlocked/hwp/document.pdf');await writeFile(pdfPath,other);native.sourceSha256=original.nativeReport.sourceSha256;native.pdfSha256=sha(other);await writeFile(path,JSON.stringify(native));
+ const wrong=await verify(result);assert.equal(wrong.passed,false);assert.match(wrong.reason,/hancom-pdf-required-content-missing/);
+});

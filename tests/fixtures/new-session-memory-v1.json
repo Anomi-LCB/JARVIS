@@ -1,0 +1,46 @@
+{
+  "version": "new-session-memory-v1",
+  "now": "2026-10-06T00:00:00.000Z",
+  "cases": [
+    {
+      "id": "recall-a",
+      "subject": "합성프로젝트-A",
+      "memoryValue": "a",
+      "gold": "a"
+    },
+    {
+      "id": "recall-b",
+      "subject": "합성프로젝트-B",
+      "memoryValue": "b",
+      "gold": "b"
+    },
+    {
+      "id": "explicit-overrides",
+      "subject": "합성프로젝트-C",
+      "memoryValue": "a",
+      "explicitChoice": "b",
+      "gold": "b"
+    },
+    {
+      "id": "corrected",
+      "subject": "합성프로젝트-D",
+      "memoryValue": "b",
+      "correction": true,
+      "gold": "b"
+    },
+    {
+      "id": "conflict",
+      "subject": "합성프로젝트-E",
+      "memoryValue": "a",
+      "conflict": true,
+      "gold": null
+    },
+    {
+      "id": "owner-isolation",
+      "subject": "합성프로젝트-F",
+      "memoryValue": "a",
+      "otherOwner": true,
+      "gold": null
+    }
+  ]
+}

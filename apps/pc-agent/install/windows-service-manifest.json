@@ -1,9 +1,9 @@
 {
   "serviceName": "JarvisPcAgent",
-  "displayName": "JARVIS Local PC Agent",
+  "displayName": "JARVIS 로컬 PC 에이전트",
   "startType": "manual",
   "account": "LocalService",
-  "description": "Runs the local-only JARVIS PC Agent on 127.0.0.1 for approved execution packets.",
+  "description": "승인된 작업을 실행하는 JARVIS 로컬 전용 PC 에이전트입니다.",
   "entry": {
     "runtime": "node",
     "script": "apps/pc-agent/src/main.mjs",

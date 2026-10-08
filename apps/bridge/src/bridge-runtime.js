@@ -1,14 +1,21 @@
-import { ApprovalDecision, createApprovalDecision, createError, maskSensitive, ModuleId, stableId, TaskStatus } from '../../../packages/shared/src/types.js';
+import { ApprovalDecision, createApprovalDecision, createError, InputSource, maskSensitive, ModuleId, stableId, TaskStatus } from '../../../packages/shared/src/types.js';
 import { JsonlAuditLog } from '../../../packages/shared/src/audit-log.js';
 import { appendJsonlSync } from '../../../packages/shared/src/jsonl.js';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
+import { requiresCapabilityAvailability } from '../../../packages/core/src/mission/mission-capability-availability.js';
 
 const deviceTokenTtlMs = 90 * 24 * 60 * 60 * 1000;
 const requestNonceTtlMs = 7 * 24 * 60 * 60 * 1000;
 const bridgeStateCacheSchemaVersion = 'bridge-state-cache-v2';
 const bridgeStateCacheRetentionMs = 30 * 24 * 60 * 60 * 1000;
+const pcVoiceChallengeTtlMs = 2 * 60 * 1000;
+const pcVoiceMinimumConfidence = 0.75;
+const pcVoiceChallengeWords = [
+  '청록', '은빛', '새벽', '고요', '북극', '유리', '솔빛', '하늘',
+  '파동', '궤도', '신호', '등대', '회로', '나침반', '구름', '결정'
+];
 
 function base64UrlEncode(value) {
   const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8');
@@ -43,6 +50,93 @@ function safeEqual(left, right) {
   const leftBuffer = Buffer.from(String(left));
   const rightBuffer = Buffer.from(String(right));
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function normalizePcVoicePhrase(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^0-9a-z가-힣]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function createPcVoiceChallenge({ approvalId, approvalExpiresAt, clock }) {
+  const now = clock();
+  const entropy = randomBytes(4);
+  const first = pcVoiceChallengeWords[entropy[0] % pcVoiceChallengeWords.length];
+  let second = pcVoiceChallengeWords[entropy[1] % pcVoiceChallengeWords.length];
+  if (second === first) second = pcVoiceChallengeWords[(entropy[1] + 1) % pcVoiceChallengeWords.length];
+  const challengeExpiry = now.getTime() + pcVoiceChallengeTtlMs;
+  const approvalExpiry = Date.parse(approvalExpiresAt ?? '');
+  const expiresAt = new Date(Number.isFinite(approvalExpiry)
+    ? Math.min(challengeExpiry, approvalExpiry)
+    : challengeExpiry).toISOString();
+  return {
+    version: 'pc-voice-challenge-v1',
+    challengeId: stableId('pc_voice_challenge', approvalId, entropy.toString('hex')),
+    phrase: `${first} ${second}`,
+    expiresAt,
+    attemptsRemaining: 3,
+    consumedAt: null
+  };
+}
+
+function isLoopbackAddress(value) {
+  const address = String(value ?? '').toLowerCase();
+  return address === '127.0.0.1'
+    || address === '::1'
+    || address === '::ffff:127.0.0.1'
+    || address.startsWith('127.');
+}
+
+function requireLocalPcConsole(requestContext) {
+  if (!requestContext) return { success: true, trust: 'internal-runtime' };
+  if (isLoopbackAddress(requestContext.remoteAddress)) return { success: true, trust: 'loopback-http' };
+  return createError('D_PC_CONSOLE_LOCAL_ONLY', 'PC confirmation is only available from the local PC console.', 403);
+}
+
+function validatePcVoiceProof({ handoff, proof, decision, clock }) {
+  if (!proof) return { success: true, mode: 'pc-button' };
+  const challenge = handoff.voiceChallenge;
+  if (!challenge || challenge.consumedAt) {
+    return createError('D_PC_VOICE_CHALLENGE_UNAVAILABLE', 'PC voice challenge is unavailable or already used.', 409);
+  }
+  if (Date.parse(challenge.expiresAt) <= clock().getTime()) {
+    return createError('D_PC_VOICE_CHALLENGE_EXPIRED', 'PC voice challenge expired.', 409);
+  }
+  if (challenge.attemptsRemaining <= 0) {
+    return createError('D_PC_VOICE_CHALLENGE_LOCKED', 'PC voice challenge attempts are exhausted.', 423);
+  }
+
+  const confidence = proof.confidence == null ? null : Number(proof.confidence);
+  const confirmationCount = Number(proof.confirmationCount ?? 0);
+  const privacyReady = proof.transcriptStored === false && proof.rawAudioStored === false;
+  const challengeMatched = safeEqual(proof.challengeId, challenge.challengeId)
+    && safeEqual(normalizePcVoicePhrase(proof.challengeResponse), normalizePcVoicePhrase(challenge.phrase));
+  const confidenceReady = (Number.isFinite(confidence) && confidence >= pcVoiceMinimumConfidence)
+    || confirmationCount >= 2;
+  const valid = proof.mode === 'pc-voice-challenge'
+    && proof.spokenDecision === decision
+    && privacyReady
+    && challengeMatched
+    && confidenceReady;
+  if (!valid) {
+    challenge.attemptsRemaining = Math.max(0, challenge.attemptsRemaining - 1);
+    return {
+      ...createError('D_PC_VOICE_PROOF_INVALID', 'PC voice confirmation proof is invalid.', 403),
+      attemptsRemaining: challenge.attemptsRemaining
+    };
+  }
+  return {
+    success: true,
+    mode: 'pc-voice-challenge',
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    confirmationCount,
+    engine: String(proof.engine ?? 'browser-speech-recognition').slice(0, 120),
+    transcriptStored: false,
+    rawAudioStored: false
+  };
 }
 
 export class DeviceTokenService {
@@ -137,6 +231,10 @@ export class DeviceTokenService {
     return sha256Hex(token);
   }
 
+  keyId() {
+    return `sha256:${sha256Hex(this.secret).slice(0, 12)}`;
+  }
+
   deploymentPolicy() {
     const envConfigured = Boolean(process.env.JARVIS_DEVICE_TOKEN_SECRET);
     const secretLength = String(this.secret ?? '').length;
@@ -217,11 +315,13 @@ export class DeviceTokenService {
 }
 
 export class DeviceRegistry {
-  constructor({ clock = () => new Date(), auditLog = null, tokenService = new DeviceTokenService({ clock }), journalPath = null } = {}) {
+  constructor({ clock = () => new Date(), auditLog = null, tokenService = new DeviceTokenService({ clock }), journalPath = null, keyChangePolicy = 'reauth-required' } = {}) {
+    if (!['reauth-required', 'reject'].includes(keyChangePolicy)) throw new Error('D_DEVICE_KEY_CHANGE_POLICY_INVALID');
     this.clock = clock;
     this.auditLog = auditLog;
     this.tokenService = tokenService;
     this.journalPath = journalPath;
+    this.strictJournalReplay = keyChangePolicy === 'reject';
     this.persistence = {
       enabled: Boolean(journalPath),
       journalPath,
@@ -234,6 +334,16 @@ export class DeviceRegistry {
     };
     this.devices = new Map();
     this.loadJournal();
+    // Core migration is not an implicit key rotation. Keep the original
+    // journal intact until the operator supplies its original signing key.
+    if (keyChangePolicy === 'reject') {
+      if (this.persistence.replay.errors) throw new Error('D_DEVICE_MIGRATION_JOURNAL_INVALID');
+      const activeKeyId = this.tokenService.keyId();
+      if ([...this.devices.values()].some(device => device.status === 'active' && device.tokenKeyId !== activeKeyId)) {
+        throw new Error('D_DEVICE_MIGRATION_KEY_MISMATCH');
+      }
+    }
+    this.reconcileTokenKeyIdentity();
   }
 
   register({ deviceId, deviceName, tokenHash, expiresAt, issuedAt, tokenId, tokenVersion = 1, tokenAlgorithm = 'HS256', tokenScope = ['bridge:device'], pairingId = null }) {
@@ -257,6 +367,7 @@ export class DeviceRegistry {
       tokenVersion,
       tokenAlgorithm,
       tokenScope,
+      tokenKeyId: this.tokenService.keyId(),
       tokenStatus: 'active',
       issuedAt,
       pairedAt: existing?.pairedAt ?? this.clock().toISOString(),
@@ -354,6 +465,7 @@ export class DeviceRegistry {
     device.tokenVersion = issued.tokenVersion;
     device.tokenAlgorithm = issued.algorithm;
     device.tokenScope = issued.scope;
+    device.tokenKeyId = this.tokenService.keyId();
     device.tokenStatus = 'active';
     device.issuedAt = issued.issuedAt;
     device.expiresAt = issued.expiresAt;
@@ -410,6 +522,10 @@ export class DeviceRegistry {
   publicDevice(device) {
     return {
       ...maskSensitive(device),
+      tokenStatus: device.tokenStatus,
+      tokenVersion: device.tokenVersion,
+      tokenAlgorithm: device.tokenAlgorithm,
+      tokenKeyId: device.tokenKeyId ?? null,
       trustLabel: this.trustLabel(device),
       tokenExpiresInMs: Math.max(Date.parse(device.expiresAt ?? 0) - this.clock().getTime(), 0),
       rotatedTokenCount: device.rotatedTokenHashes?.length ?? 0
@@ -434,12 +550,13 @@ export class DeviceRegistry {
       activeDevices: devices.filter((device) => device.status === 'active').length,
       revokedDevices: devices.filter((device) => device.status === 'revoked').length,
       expiredDevices: devices.filter((device) => device.status === 'expired').length,
+      reauthRequiredDevices: devices.filter((device) => device.status === 'reauth_required').length,
       byStatus,
       byTrustLabel,
       items: devices,
       recovery: {
         recoveryVersion: 'd-pairing-recovery-inventory-v1',
-        staleDeviceCount: devices.filter((device) => ['revoked', 'expired'].includes(device.status)).length,
+        staleDeviceCount: devices.filter((device) => ['revoked', 'expired', 'reauth_required'].includes(device.status)).length,
         rotationRecommendedCount: devices.filter((device) => device.trustLabel === 'rotation-needed-soon').length,
         recommendedActions: this.recoveryActions(devices)
       }
@@ -450,6 +567,7 @@ export class DeviceRegistry {
     const actions = [];
     if (devices.some((device) => device.status === 'revoked')) actions.push('clear_local_token_and_start_pairing');
     if (devices.some((device) => device.status === 'expired')) actions.push('start_pairing_with_new_qr_code');
+    if (devices.some((device) => device.status === 'reauth_required')) actions.push('clear_obsolete_token_and_repair_pairing');
     if (devices.some((device) => device.trustLabel === 'rotation-needed-soon')) actions.push('rotate_device_token');
     if (!actions.length) actions.push('monitor_device_heartbeat');
     return actions;
@@ -457,6 +575,7 @@ export class DeviceRegistry {
 
   trustLabel(device) {
     if (device.status === 'revoked' || device.tokenStatus === 'revoked') return 'revoked-device';
+    if (device.status === 'reauth_required' || device.tokenStatus === 'reauth_required') return 'reauth-required-device';
     if (device.status === 'expired' || device.tokenStatus === 'expired' || Date.parse(device.expiresAt ?? 0) <= this.clock().getTime()) return 'expired-device';
     const expiresInMs = Date.parse(device.expiresAt ?? 0) - this.clock().getTime();
     if (expiresInMs <= 7 * 24 * 60 * 60 * 1000) return 'rotation-needed-soon';
@@ -501,6 +620,8 @@ export class DeviceRegistry {
             this.devices.set(record.device.deviceId, record.device);
             this.persistence.replay.records += 1;
             this.persistence.replay.lastRecordAt = record.recordedAt ?? this.persistence.replay.lastRecordAt;
+          } else if (this.strictJournalReplay) {
+            this.persistence.replay.errors += 1;
           }
         } catch {
           this.persistence.replay.errors += 1;
@@ -512,6 +633,27 @@ export class DeviceRegistry {
       }
     }
     this.persistence.replay.loaded = true;
+  }
+
+  reconcileTokenKeyIdentity() {
+    const activeKeyId = this.tokenService.keyId();
+    for (const device of this.devices.values()) {
+      if (device.status !== 'active' || device.tokenKeyId === activeKeyId) continue;
+      device.status = 'reauth_required';
+      device.tokenStatus = 'reauth_required';
+      device.reauthReason = 'device-token-signing-key-changed';
+      device.reauthRequiredAt = this.clock().toISOString();
+      device.requiredTokenKeyId = activeKeyId;
+      this.persist('device.reauth_required', device, {
+        previousTokenKeyId: device.tokenKeyId ?? null,
+        requiredTokenKeyId: activeKeyId
+      });
+      this.auditLog?.write('device.reauth_required', {
+        deviceId: device.deviceId,
+        previousTokenKeyId: device.tokenKeyId ?? null,
+        requiredTokenKeyId: activeKeyId
+      });
+    }
   }
 
   hashToken(token) {
@@ -746,6 +888,11 @@ function defaultRateLimitPolicies() {
     'growth.routing.release_dossier': { capacity: 3, refillPerMs: 3 / 60_000 },
     'growth.hygiene.decision': { capacity: 20, refillPerMs: 20 / 60_000 },
     'growth.hygiene.batch_decision': { capacity: 8, refillPerMs: 8 / 60_000 },
+    'growth.skill_revision.create': { capacity: 8, refillPerMs: 8 / 60_000 },
+    'growth.skill_revision.evaluate': { capacity: 12, refillPerMs: 12 / 60_000 },
+    'growth.skill_revision.review': { capacity: 12, refillPerMs: 12 / 60_000 },
+    'growth.skill_revision.promote': { capacity: 8, refillPerMs: 8 / 60_000 },
+    'growth.skill_revision.rollback': { capacity: 8, refillPerMs: 8 / 60_000 },
     'rate_limit.status': { capacity: 20, refillPerMs: 20 / 60_000 },
     'rate_limit.abuse_corpus': { capacity: 4, refillPerMs: 4 / 60_000 },
     'rate_limit.product_gate': { capacity: 4, refillPerMs: 4 / 60_000 },
@@ -3023,14 +3170,16 @@ function percentileNumber(values, percentile) {
 }
 
 export class BridgeRuntime {
-  constructor({ coreFacade, policyRuntime, pcAgent, growthRuntime, verificationRuntime, clock = () => new Date(), auditLog = null, auditRoot, eventRelay = null, eventCursorJournalPath = undefined, rateLimiter = null } = {}) {
+  constructor({ coreFacade, policyRuntime, pcAgent, growthRuntime, verificationRuntime, growthSkillReviewAuthorizer = null, clock = () => new Date(), auditLog = null, auditRoot, eventRelay = null, eventCursorJournalPath = undefined, rateLimiter = null, deviceTokenSecret = undefined, deviceTokenKeyChangePolicy = 'reauth-required' } = {}) {
     this.clock = clock;
     this.auditLog = auditLog ?? new JsonlAuditLog({
       filePath: auditRoot ? `${auditRoot}/bridge-audit.jsonl` : 'apps/bridge/logs/bridge-audit.jsonl',
       clock
     });
     this.registry = new DeviceRegistry({
+      keyChangePolicy: deviceTokenKeyChangePolicy,
       clock,
+      tokenService: new DeviceTokenService({ clock, ...(deviceTokenSecret === undefined ? {} : { secret: deviceTokenSecret }) }),
       auditLog: this.auditLog,
       journalPath: auditRoot ? `${auditRoot}/bridge-devices.jsonl` : null
     });
@@ -3039,6 +3188,7 @@ export class BridgeRuntime {
     this.policyRuntime = policyRuntime;
     this.pcAgent = pcAgent;
     this.growthRuntime = growthRuntime;
+    this.growthSkillReviewAuthorizer = growthSkillReviewAuthorizer;
     this.verificationRuntime = verificationRuntime;
     this.rateLimiter = rateLimiter ?? new TokenBucketRateLimiter({
       clock,
@@ -3073,7 +3223,11 @@ export class BridgeRuntime {
       version: '1.0.0',
       time: this.clock().toISOString(),
       localOnly: true,
+      executionAuthorityMode: this.executionAuthorityMode ?? 'standalone',
+      deviceTokenKeyId: this.registry.tokenService.keyId(),
+      growthReviewAuthorizationKeyId: this.growthSkillReviewAuthorizationKeyId ?? null,
       pairedDevices: this.registry.list().filter((device) => device.status === 'active').length,
+      reauthRequiredDevices: this.registry.list().filter((device) => device.status === 'reauth_required').length,
       cachedTasks: this.stateCache.tasks.size,
       activeRequestNonces: this.requestNonceStore.nonces.size,
       subscribers: this.eventRelay.subscribers.size,
@@ -4927,7 +5081,7 @@ export class BridgeRuntime {
     return dossier;
   }
 
-  createTask({ rawText, taskRequest, token }) {
+  createTask({ rawText, taskRequest, token }, { deterministicLocal = false } = {}) {
     const auth = this.authenticate(token);
     if (!auth.success) return auth;
     const limit = this.rateLimit({ action: 'task.create', device: auth.device });
@@ -4941,9 +5095,21 @@ export class BridgeRuntime {
       route: 'task.create'
     });
     if (!nonce.success) return nonce;
-    const task = this.coreFacade.createTask(commandText, {
+    const requestedInputMode = String(taskRequest?.source?.inputMode ?? 'text').toLowerCase();
+    const inputMode = ['text', 'voice', 'file', 'image'].includes(requestedInputMode) ? requestedInputMode : 'text';
+    const createCoreTask = deterministicLocal && this.coreFacade.createInternalAuditTask
+      ? this.coreFacade.createInternalAuditTask.bind(this.coreFacade)
+      : this.coreFacade.createTask.bind(this.coreFacade);
+    const task = createCoreTask(commandText, {
       deviceId: auth.device.deviceId,
-      createdAt: taskRequest?.createdAt ?? this.clock().toISOString()
+      createdAt: taskRequest?.createdAt ?? this.clock().toISOString(),
+      inputMode,
+      source: taskRequest?.source?.type ?? InputSource.MOBILE,
+      sourceModule: taskRequest?.source?.module ?? ModuleId.MOBILE,
+      userId: taskRequest?.userId ?? 'local_user',
+      locale: taskRequest?.command?.locale ?? 'ko-KR',
+      attachments: Array.isArray(taskRequest?.attachments) ? taskRequest.attachments : [],
+      metadata: taskRequest?.metadata && typeof taskRequest.metadata === 'object' ? taskRequest.metadata : {}
     });
     this.requestNonceStore.attachTask({ requestId, taskId: task.taskId });
     this.stateCache.rememberRequest({ requestId, taskId: task.taskId, deviceId: auth.device.deviceId });
@@ -5059,6 +5225,23 @@ export class BridgeRuntime {
     if (!requiresPcConfirmation) {
       return createError('D_PC_HANDOFF_NOT_REQUIRED', 'This approval can be handled by mobile policy.', 409);
     }
+    if (task.status !== TaskStatus.WAITING_APPROVAL) {
+      return createError('D_PC_HANDOFF_STATE_INVALID', 'PC confirmation requires a waiting approval.', 409);
+    }
+    const existing = [...this.pcConfirmationHandoffs.values()].find((candidate) => (
+      candidate.approvalId === approvalId
+      && candidate.status === 'awaiting_pc_confirmation'
+    ));
+    if (existing) {
+      if (Date.parse(existing.voiceChallenge?.expiresAt ?? '') <= this.clock().getTime()) {
+        existing.voiceChallenge = createPcVoiceChallenge({
+          approvalId,
+          approvalExpiresAt: task.approvalCard.expiresAt,
+          clock: this.clock
+        });
+      }
+      return { success: true, reused: true, ...maskSensitive(existing) };
+    }
     const createdAt = this.clock().toISOString();
     const handoff = {
       handoffId: stableId('pc_handoff', `${approvalId}:${auth.device.deviceId}`, createdAt),
@@ -5074,6 +5257,11 @@ export class BridgeRuntime {
       createdAt,
       expiresAt: task.approvalCard.expiresAt ?? null,
       requiresPcConfirmation: true,
+      voiceChallenge: createPcVoiceChallenge({
+        approvalId,
+        approvalExpiresAt: task.approvalCard.expiresAt,
+        clock: this.clock
+      }),
       approvalSnapshot: maskSensitive({
         title: task.approvalCard.title,
         interpretedIntent: task.approvalCard.interpretedIntent,
@@ -5150,9 +5338,11 @@ export class BridgeRuntime {
     };
   }
 
-  listPcConfirmationHandoffs({ token, status } = {}) {
+  listPcConfirmationHandoffs({ token, status, requestContext } = {}) {
     const auth = this.authenticate(token);
     if (!auth.success) return auth;
+    const localPc = requireLocalPcConsole(requestContext);
+    if (!localPc.success) return localPc;
     const items = [...this.pcConfirmationHandoffs.values()]
       .filter((handoff) => !status || handoff.status === status)
       .map((handoff) => maskSensitive(handoff))
@@ -5168,9 +5358,19 @@ export class BridgeRuntime {
     };
   }
 
-  decidePcConfirmationHandoff({ handoffId, token, decision, operatorId = 'pc-console', note = null }) {
+  decidePcConfirmationHandoff({
+    handoffId,
+    token,
+    decision,
+    operatorId = 'pc-console',
+    note = null,
+    voiceProof = null,
+    requestContext
+  }) {
     const auth = this.authenticate(token);
     if (!auth.success) return auth;
+    const localPc = requireLocalPcConsole(requestContext);
+    if (!localPc.success) return localPc;
     const handoff = this.pcConfirmationHandoffs.get(handoffId);
     if (!handoff) return createError('D_PC_HANDOFF_NOT_FOUND', 'PC confirmation handoff not found.', 404);
     if (handoff.status !== 'awaiting_pc_confirmation') {
@@ -5179,6 +5379,22 @@ export class BridgeRuntime {
     const normalizedDecision = String(decision ?? '').toLowerCase();
     if (!['approve', 'reject'].includes(normalizedDecision)) {
       return createError('D_PC_HANDOFF_DECISION_INVALID', 'PC confirmation decision must be approve or reject.', 400);
+    }
+    const voiceConfirmation = validatePcVoiceProof({
+      handoff,
+      proof: voiceProof,
+      decision: normalizedDecision,
+      clock: this.clock
+    });
+    if (!voiceConfirmation.success) {
+      this.auditLog.write('approval.pc_handoff.voice_blocked', {
+        handoffId,
+        approvalId: handoff.approvalId,
+        taskId: handoff.taskId,
+        reason: voiceConfirmation.error.code,
+        attemptsRemaining: voiceConfirmation.attemptsRemaining ?? handoff.voiceChallenge?.attemptsRemaining ?? null
+      });
+      return voiceConfirmation;
     }
     const task = [...this.coreFacade.tasks.values()].find((candidate) => candidate.taskId === handoff.taskId);
     if (!task) return createError('D_TASK_NOT_FOUND', 'Task not found for PC confirmation handoff.', 404);
@@ -5227,6 +5443,18 @@ export class BridgeRuntime {
       deviceId: auth.device.deviceId
     };
     handoff.note = note;
+    if (voiceConfirmation.mode === 'pc-voice-challenge') {
+      handoff.voiceChallenge.consumedAt = decidedAt;
+      handoff.voiceConfirmation = {
+        mode: voiceConfirmation.mode,
+        confidence: voiceConfirmation.confidence,
+        confirmationCount: voiceConfirmation.confirmationCount,
+        engine: voiceConfirmation.engine,
+        transcriptStored: false,
+        rawAudioStored: false,
+        confirmedAt: decidedAt
+      };
+    }
     task.approvalCard = {
       ...task.approvalCard,
       status: normalizedDecision === 'approve' ? 'approved' : 'rejected',
@@ -5261,7 +5489,8 @@ export class BridgeRuntime {
       metadata: {
         handoffId,
         operatorId,
-        taskStatus: status.status
+        taskStatus: status.status,
+        confirmationMode: voiceConfirmation.mode
       }
     });
     this.auditLog.write(eventType, {
@@ -5269,7 +5498,8 @@ export class BridgeRuntime {
       approvalId: handoff.approvalId,
       taskId: handoff.taskId,
       operatorId,
-      status: status.status
+      status: status.status,
+      confirmationMode: voiceConfirmation.mode
     });
     this.eventRelay.publish(eventType, {
       handoffId,
@@ -5285,11 +5515,34 @@ export class BridgeRuntime {
       status: status.status,
       deviceId: auth.device.deviceId
     });
+    const actionCanExecute = task.plan.action.adapterContract?.execute === true
+      && task.plan.action.capability?.allowedModes?.includes('execute');
+    const executionPreparation = normalizedDecision === 'approve' && actionCanExecute
+      ? this.prepareExecutionHandoff({
+          task,
+          approvalDecision,
+          device: { ...auth.device, deviceId: operatorId },
+          sourceModule: ModuleId.PC_AGENT
+        })
+      : null;
+    const executionHandoff = executionPreparation?.success === false ? null : executionPreparation;
+    const executionDisposition = normalizedDecision !== 'approve'
+      ? 'not-approved'
+      : !actionCanExecute
+        ? 'review-only'
+        : executionPreparation?.success === false
+          ? 'capability-blocked'
+          : 'awaiting-confirmation';
     return {
       success: true,
       handoff: maskSensitive(handoff),
       approvalDecision: maskSensitive(approvalDecision),
-      taskStatus: status.status
+      taskStatus: status.status,
+      executionHandoffId: executionHandoff?.handoffId ?? null,
+      requiresUserConfirmation: Boolean(executionHandoff),
+      shadowPreview: executionHandoff?.shadowPreview ?? null,
+      executionDisposition,
+      executionError: executionPreparation?.success === false ? executionPreparation.error : null
     };
   }
 
@@ -5539,6 +5792,7 @@ export class BridgeRuntime {
     });
     if (decision !== 'approve') return { taskId: task.taskId, status: status.status };
     const handoff = this.prepareExecutionHandoff({ task, approvalDecision, device: auth.device });
+    if (handoff.success === false) return handoff;
     return {
       taskId: task.taskId,
       status: status.status,
@@ -5548,13 +5802,14 @@ export class BridgeRuntime {
     };
   }
 
-  prepareExecutionHandoff({ task, approvalDecision, device }) {
+  prepareExecutionHandoff({ task, approvalDecision, device, sourceModule = ModuleId.MOBILE }) {
     const capability = this.policyRuntime.capabilities.issue({
       taskId: task.taskId,
       planId: task.plan.planId,
       approvalId: approvalDecision.approvalId,
       action: { ...task.plan.action, toolName: 'filesystem.createTextFile' }
     });
+    if (capability.success === false) return capability;
     const packet = {
       packetId: stableId('packet', task.taskId, this.clock().toISOString()),
       taskId: task.taskId,
@@ -5567,7 +5822,7 @@ export class BridgeRuntime {
       requestedMode: 'execute',
       userConfirmation: {
         confirmed: false,
-        sourceModule: ModuleId.MOBILE,
+        sourceModule,
         deviceId: device.deviceId,
         approvalId: approvalDecision.approvalId
       }
@@ -5603,6 +5858,35 @@ export class BridgeRuntime {
     return handoff;
   }
 
+  async checkHandoffAvailability(handoff, packet = null) {
+    const task = this.coreFacade.getTask(handoff.taskId);
+    if (!task) return createError('D_HANDOFF_TASK_NOT_FOUND', '원래 작업을 찾을 수 없어 실행을 보류했습니다.', 404);
+    try {
+      if (typeof this.orchestrationWorker?.assertTaskCapabilityAvailability === 'function') {
+        await this.orchestrationWorker.assertTaskCapabilityAvailability(task, 'planning');
+        if (packet) await this.orchestrationWorker.assertTaskCapabilityAvailability(task, 'dispatch', packet);
+      } else {
+        // A reduced composition has no trusted provider resolver/observation
+        // service. A declared connection requirement cannot be guessed away.
+        for (const action of [task.plan?.action, packet?.action].filter(Boolean)) {
+          const contract = this.pcAgent.registry?.contractFor?.(action.toolName) ?? {};
+          if (requiresCapabilityAvailability(action.toolName, contract)) {
+            throw Object.assign(new Error('연결 상태 검사기가 준비되지 않았습니다.'), {
+              capabilityReadiness: { phase: 'dispatch', reasons: [{code:'availability-registry-unavailable'}],
+                nextAction: '전체 Core 실행 환경에서 연결 상태를 확인한 후 다시 실행하세요.' } });
+          }
+        }
+      }
+      return null;
+    } catch (error) {
+      if (!error.capabilityReadiness) throw error;
+      const ready = error.capabilityReadiness;
+      return { ...createError('D_HANDOFF_CAPABILITY_UNAVAILABLE', '연결 상태 또는 권한을 확인해야 실행할 수 있습니다.', 409),
+        nextAction: ready.nextAction ?? '해당 계정·기기의 연결 상태와 필요한 권한을 확인하세요.',
+        capabilityReadiness: { phase: ready.phase, reasons: ready.reasons, executionAuthorized: false } };
+    }
+  }
+
   async confirmExecutionHandoff({ handoffId, token }) {
     const auth = this.authenticate(token);
     if (!auth.success) return auth;
@@ -5610,18 +5894,38 @@ export class BridgeRuntime {
     if (!limit.success) return limit;
     const handoff = this.handoffs.get(handoffId);
     if (!handoff) return createError('D_HANDOFF_NOT_FOUND', 'Execution handoff not found.', 404);
+    if (handoff.status === 'execution_uncertain') {
+      return { ...createError('D_HANDOFF_EXECUTION_UNCERTAIN', '앞선 실행의 결과를 확인해야 합니다. 중복 실행을 막기 위해 재실행을 보류했습니다.', 409),
+        nextAction: 'PC의 결과 파일과 실행 기록을 확인해 앞선 작업의 성공 여부를 먼저 대조하세요.' };
+    }
     if (handoff.status !== 'awaiting_user_confirmation') {
       return createError('D_HANDOFF_ALREADY_USED', 'Execution handoff is no longer pending.', 409);
     }
+    // Claim synchronously before the first await; concurrent confirmations must
+    // not share an awaiting handoff while readiness/provisioning is in flight.
+    handoff.status = 'checking_prerequisites';
+    let executionMayHaveStarted = false;
+    try {
+    const prerequisite = await this.checkHandoffAvailability(handoff);
+    if (prerequisite) return prerequisite;
     let result;
     let verification;
     if (this.orchestrationWorker && this.realExecutionEnabled) {
       // 실제 계획 실행 경로: A 오케스트레이션 워커가 E 능력 발급 → B 노드별 실행 →
       // G 검증 → F 학습까지 수행한다. LLM 분해/초안이 담긴 계획이 그대로 실행된다.
+      handoff.status = 'executing';
+      executionMayHaveStarted = true;
       const run = await this.orchestrationWorker.runTask(handoff.taskId, {
         deviceId: auth.device.deviceId
       });
       if (!run || run.success === false) {
+        if (run?.error?.code === 'A_WORKER_CAPABILITY_UNAVAILABLE') {
+          if (run.notDispatched === true) executionMayHaveStarted = false;
+          return { ...createError('D_HANDOFF_CAPABILITY_UNAVAILABLE', '연결 상태 또는 권한이 변경되어 실행을 보류했습니다.', 409),
+            nextAction: run.capabilityReadiness?.nextAction ?? run.error.message,
+            capabilityReadiness: { phase: run.capabilityReadiness?.phase,
+              reasons: run.capabilityReadiness?.reasons ?? [], executionAuthorized: false } };
+        }
         const reason = run?.error?.code ?? run?.status ?? 'worker-run-failed';
         this.auditLog.write('execution.handoff.worker_failed', {
           handoffId,
@@ -5651,7 +5955,24 @@ export class BridgeRuntime {
           deviceId: auth.device.deviceId
         }
       };
-      result = await this.pcAgent.receiveExecutionPacket(packet);
+      const packetPrerequisite = await this.checkHandoffAvailability(handoff, packet);
+      if (packetPrerequisite) return packetPrerequisite;
+      handoff.status = 'executing';
+      executionMayHaveStarted = true;
+      const task = this.coreFacade.getTask(handoff.taskId);
+      const needsFence = this.orchestrationWorker?.taskCapabilitySnapshot?.(task, packet);
+      if (needsFence && this.pcAgent.supportsTrustedLocalMissionEffects?.() !== true) {
+        executionMayHaveStarted = false;
+        return { ...createError('D_HANDOFF_CAPABILITY_UNAVAILABLE', '이 실행 환경은 연결 권한의 최종 확인을 지원하지 않습니다.', 409),
+          nextAction: '검증된 로컬 Core 실행 경로로 연결 상태를 확인한 뒤 실행하세요.' };
+      }
+      result = await this.pcAgent.receiveExecutionPacket(packet, needsFence ? {
+        beforeLocalExecute: value => this.orchestrationWorker.createTaskCapabilityFence(task, value)
+      } : {});
+      if (result.status === TaskStatus.BLOCKED && ['A_WORKER_CAPABILITY_UNAVAILABLE','A_WORKER_CAPABILITY_REVOKED'].includes(result.blockedReason)) {
+        return { ...createError('D_HANDOFF_CAPABILITY_UNAVAILABLE', '실행기 내부 준비 중 연결 권한이 변경되어 작업을 보류했습니다.', 409),
+          nextAction: '변경된 연결 권한과 앞선 실행 기록·결과 파일을 먼저 확인하세요.' };
+      }
       verification = result.executionResult?.status === 'success'
         ? await this.verificationRuntime.verifyExecution({
             verificationId: stableId('ver_exec', handoff.taskId, this.clock().toISOString()),
@@ -5711,6 +6032,10 @@ export class BridgeRuntime {
       verificationStatus: verification?.status ?? 'not_required',
       outputPaths
     };
+    } finally {
+      if (handoff.status !== 'confirmed') handoff.status = executionMayHaveStarted
+        ? 'execution_uncertain' : 'awaiting_user_confirmation';
+    }
   }
 
   renewApproval({ approvalId, token }) {
@@ -5759,9 +6084,12 @@ export class BridgeRuntime {
     return maskSensitive(result);
   }
 
-  async rollbackResult({ taskId, token, reason = 'mobile_result_rollback' }) {
+  async rollbackResult({ taskId, token, reason = 'mobile_result_rollback', confirmed = false }) {
     const auth = this.authenticate(token);
     if (!auth.success) return auth;
+    if (confirmed !== true) {
+      return createError('D_ROLLBACK_CONFIRMATION_REQUIRED', 'Explicit rollback confirmation is required.', 409);
+    }
     const result = this.results.get(taskId);
     if (!result) return createError('D_TASK_NOT_FOUND', 'Result not found.', 404);
     if (result.executionResult?.rollbackAvailable !== true) {
@@ -5770,10 +6098,32 @@ export class BridgeRuntime {
     if (!this.pcAgent?.rollbackTask) {
       return createError('D_PC_AGENT_ROLLBACK_UNAVAILABLE', 'PC agent rollback is unavailable.', 503);
     }
-    const rollback = await this.pcAgent.rollbackTask(taskId);
+    const coreTask = this.coreFacade?.getTask?.(taskId) ?? null;
+    const coordinated = coreTask?.status === TaskStatus.COMPLETED && this.orchestrationWorker?.runCompensation
+      ? await this.orchestrationWorker.runCompensation(taskId, {
+          reason,
+          userConfirmation: {
+            confirmed: true,
+            confirmedAt: this.clock().toISOString(),
+            source: 'mobile-bridge',
+            deviceId: auth.device.deviceId
+          }
+        })
+      : null;
+    const rollback = coordinated
+      ? coordinated.compensationReplay?.rollbackProof ?? coordinated
+      : await this.pcAgent.rollbackTask(taskId);
+    const rollbackSucceeded = coordinated
+      ? coordinated.success === true && rollback.success === true
+      : rollback.success === true;
     const updated = {
       ...result,
+      status: rollbackSucceeded ? TaskStatus.COMPENSATED : result.status,
+      executionResult: rollbackSucceeded
+        ? { ...result.executionResult, rollbackAvailable: false }
+        : result.executionResult,
       rollback,
+      rollbackCoordination: coordinated,
       rollbackRequestedBy: auth.device.deviceId,
       rollbackReason: reason,
       rollbackRequestedAt: this.clock().toISOString()
@@ -5783,19 +6133,20 @@ export class BridgeRuntime {
     this.auditLog.write('result.rollback.requested', {
       taskId,
       deviceId: auth.device.deviceId,
-      success: rollback.success === true,
+      success: rollbackSucceeded,
       reason
     });
     this.eventRelay.publish('result.rollback.completed', {
       taskId,
       deviceId: auth.device.deviceId,
-      success: rollback.success === true,
+      success: rollbackSucceeded,
       reason
     });
     return {
-      success: rollback.success === true,
+      success: rollbackSucceeded,
       taskId,
       rollback,
+      coordination: coordinated,
       result: maskSensitive(updated)
     };
   }
@@ -5831,7 +6182,7 @@ export class BridgeRuntime {
         createdAt: generatedAt
       },
       token
-    });
+    }, { deterministicLocal: true });
     if (created.success === false) return created;
     const taskList = this.listTasks({ token });
     if (taskList.success === false) return taskList;
@@ -5862,7 +6213,8 @@ export class BridgeRuntime {
     const rollback = await this.rollbackResult({
       taskId: created.taskId,
       token,
-      reason: 'D-06 release dossier rollback drill'
+      reason: 'D-06 release dossier rollback drill',
+      confirmed: true
     });
     if (rollback.success === false) return rollback;
     const events = this.eventFeed({ token });
@@ -6956,6 +7308,79 @@ export class BridgeRuntime {
     });
     return {
       ...maskSensitive(result),
+      routing: this.publicGrowthRoutingEntry(historyEntry)
+    };
+  }
+
+  async mutateGrowthSkillRevision({ token, action, skillId, revisionId = null, payload = {} } = {}) {
+    const auth = this.authenticate(token);
+    if (!auth.success) return auth;
+    const actorFieldByAction = {
+      create: 'createdBy',
+      review: 'decidedBy',
+      promote: 'promotedBy',
+      rollback: 'rolledBackBy'
+    };
+    const routeName = `growth.skill_revision.${action}`;
+    if (!['create', 'evaluate', 'review', 'promote', 'rollback'].includes(action)) {
+      return { success: false, error: { code: 'D_GROWTH_SKILL_REVISION_ACTION_INVALID' } };
+    }
+    const limit = this.rateLimit({ action: routeName, device: auth.device });
+    if (!limit.success) return limit;
+    let ownerAuthorization = null;
+    if (['review', 'promote', 'rollback'].includes(action)) {
+      if (typeof this.growthSkillReviewAuthorizer !== 'function') {
+        return { success: false, error: { code: 'D_GROWTH_SKILL_OWNER_AUTH_UNAVAILABLE', message: '활성 소유자 검토 권한을 확인할 수 없어 변경을 중단했습니다.' } };
+      }
+      const authorization = await this.growthSkillReviewAuthorizer({ action, deviceId: auth.device.deviceId });
+      if (authorization?.allowed !== true) return { success: false, ...(authorization ?? { error: { code: 'D_GROWTH_SKILL_OWNER_AUTH_DENIED' } }) };
+      ownerAuthorization = authorization.authorization ?? null;
+    }
+    const startedAtMs = this.clock().getTime();
+    const safePayload = { ...payload, skillId, ...(revisionId ? { revisionId } : {}) };
+    const actorField = actorFieldByAction[action];
+    if (actorField) safePayload[actorField] = auth.device.deviceId;
+    for (const key of ['createdBy', 'decidedBy', 'promotedBy', 'rolledBackBy']) {
+      if (key !== actorField) delete safePayload[key];
+    }
+    const result = this.growthRuntime.mutateSkillRevision(action, safePayload);
+    const eventType = `growth.skill_revision.${action}`;
+    this.auditLog.write(`${eventType}.routed`, {
+      deviceId: auth.device.deviceId,
+      skillId,
+      revisionId: revisionId ?? result.revision?.revisionId ?? result.activeRevision?.revisionId ?? null,
+      success: result.success !== false,
+      status: result.revision?.status ?? result.activeRevision?.status ?? null,
+      errorCode: result.error?.code ?? null
+    });
+    let event = null;
+    if (result.success !== false) {
+      event = this.eventRelay.publish(eventType, {
+        deviceId: auth.device.deviceId,
+        skillId,
+        revisionId: revisionId ?? result.revision?.revisionId ?? result.activeRevision?.revisionId ?? null,
+        status: result.revision?.status ?? result.activeRevision?.status ?? null
+      });
+    }
+    const historyEntry = this.rememberGrowthRoutingDecision({
+      routeName,
+      kind: 'skill_revision',
+      deviceId: auth.device.deviceId,
+      targetType: 'approved_skill',
+      targetId: skillId,
+      action,
+      reason: payload.reason ?? '',
+      requestedCount: 1,
+      appliedCount: result.success === false ? 0 : 1,
+      failedCount: result.success === false ? 1 : 0,
+      result,
+      event,
+      startedAtMs,
+      rateLimit: limit.rateLimit
+    });
+    return {
+      ...maskSensitive(result),
+      ...(ownerAuthorization ? { ownerAuthorization: { sessionId: ownerAuthorization.sessionId, expiresAt: ownerAuthorization.expiresAt, action } } : {}),
       routing: this.publicGrowthRoutingEntry(historyEntry)
     };
   }

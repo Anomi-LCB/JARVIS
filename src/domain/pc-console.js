@@ -152,11 +152,12 @@ export class PcConfirmationConsoleBridgeClient {
     return response;
   }
 
-  async decide(handoffId, { decision, operatorId = 'pc-console', note = null } = {}) {
+  async decide(handoffId, { decision, operatorId = 'pc-console', note = null, voiceProof = null } = {}) {
     const body = {
       decision,
       operatorId,
-      ...(note == null ? {} : { note })
+      ...(note == null ? {} : { note }),
+      ...(voiceProof == null ? {} : { voiceProof })
     };
     const response = await this.request(`/pc-console/approval-handoffs/${encodeURIComponent(handoffId)}/decision`, {
       method: 'POST',
@@ -170,6 +171,13 @@ export class PcConfirmationConsoleBridgeClient {
       };
     }
     return response;
+  }
+
+  async confirmExecution(handoffId) {
+    return this.request(`/execution-handoffs/${encodeURIComponent(handoffId)}/confirm`, {
+      method: 'POST',
+      body: {}
+    });
   }
 
   async runVisualRegression({ status = 'awaiting_pc_confirmation', baseline = createPcConsoleVisualBaseline() } = {}) {
@@ -227,6 +235,27 @@ export function normalizePcConsoleHandoff(handoff = {}) {
     expiresAt: handoff.expiresAt ?? null,
     decidedAt: handoff.decidedAt ?? null,
     requiresPcConfirmation: handoff.requiresPcConfirmation ?? true,
+    voiceChallenge: handoff.voiceChallenge
+      ? {
+          version: String(handoff.voiceChallenge.version ?? 'pc-voice-challenge-v1'),
+          challengeId: String(handoff.voiceChallenge.challengeId ?? ''),
+          phrase: String(handoff.voiceChallenge.phrase ?? ''),
+          expiresAt: handoff.voiceChallenge.expiresAt ?? null,
+          attemptsRemaining: Number(handoff.voiceChallenge.attemptsRemaining ?? 0),
+          consumedAt: handoff.voiceChallenge.consumedAt ?? null
+        }
+      : null,
+    voiceConfirmation: handoff.voiceConfirmation
+      ? {
+          mode: String(handoff.voiceConfirmation.mode ?? ''),
+          confidence: handoff.voiceConfirmation.confidence ?? null,
+          confirmationCount: Number(handoff.voiceConfirmation.confirmationCount ?? 0),
+          engine: String(handoff.voiceConfirmation.engine ?? ''),
+          transcriptStored: false,
+          rawAudioStored: false,
+          confirmedAt: handoff.voiceConfirmation.confirmedAt ?? null
+        }
+      : null,
     instructions: Array.isArray(handoff.instructions)
       ? handoff.instructions
       : [

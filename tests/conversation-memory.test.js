@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkMemory } from '../packages/core/src/conversation-memory.js';
@@ -9,7 +9,7 @@ async function withMemory(run) {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-workmem-'));
   const memory = new WorkMemory({ journalPath: join(dir, 'work-journal.jsonl') });
   try {
-    await run(memory);
+    await run(memory, async (name) => { const path = join(dir, name); await writeFile(path, name); return path; });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -28,21 +28,23 @@ test('WorkMemory records and lists recent outputs newest-first', async () => {
 });
 
 test('WorkMemory resolves "그거" to the most recent output', async () => {
-  await withMemory(async (memory) => {
-    memory.record({ taskId: 't1', rawText: '보고서 만들어줘', outputPaths: ['C:/tmp/보고서.docx'], status: 'success' });
+  await withMemory(async (memory, file) => {
+    const path = await file('보고서.docx');
+    memory.record({ taskId: 't1', rawText: '보고서 만들어줘', outputPaths: [path], status: 'success' });
     const hit = memory.resolveReference('그거 메일로 보내줘');
     assert.ok(hit);
-    assert.equal(hit.path, 'C:/tmp/보고서.docx');
+    assert.equal(hit.path, path);
   });
 });
 
 test('WorkMemory honors file-type hints when resolving', async () => {
-  await withMemory(async (memory) => {
-    memory.record({ taskId: 't1', rawText: '엑셀 만들어줘', outputPaths: ['C:/tmp/정산.xlsx'], status: 'success' });
-    memory.record({ taskId: 't2', rawText: '보고서 만들어줘', outputPaths: ['C:/tmp/보고서.docx'], status: 'success' });
+  await withMemory(async (memory, file) => {
+    const excel = await file('정산.xlsx');
+    memory.record({ taskId: 't1', rawText: '엑셀 만들어줘', outputPaths: [excel], status: 'success' });
+    memory.record({ taskId: 't2', rawText: '보고서 만들어줘', outputPaths: [await file('보고서.docx')], status: 'success' });
     const hit = memory.resolveReference('방금 만든 엑셀 열어줘');
     assert.ok(hit);
-    assert.equal(hit.path, 'C:/tmp/정산.xlsx');
+    assert.equal(hit.path, excel);
   });
 });
 
@@ -62,11 +64,12 @@ test('WorkMemory returns null when journal is empty', async () => {
 });
 
 test('WorkMemory rewrites the deictic phrase into the file name', async () => {
-  await withMemory(async (memory) => {
-    memory.record({ taskId: 't1', rawText: '보고서 만들어줘', outputPaths: ['C:/tmp/주간-보고서.docx'], status: 'success' });
+  await withMemory(async (memory, file) => {
+    const path = await file('주간-보고서.docx');
+    memory.record({ taskId: 't1', rawText: '보고서 만들어줘', outputPaths: [path], status: 'success' });
     const hit = memory.rewriteWithReference('방금 만든 보고서 메일로 보내줘');
     assert.ok(hit);
     assert.match(hit.rewritten, /"주간-보고서\.docx"/);
-    assert.match(hit.rewritten, /\[파일 경로: C:\/tmp\/주간-보고서\.docx\]/);
+    assert.ok(hit.rewritten.includes(`[파일 경로: ${path}]`));
   });
 });

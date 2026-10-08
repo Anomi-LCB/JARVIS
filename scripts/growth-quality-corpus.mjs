@@ -18,8 +18,9 @@ export async function runGrowthQualityCorpus({
     backupDir: join(corpusRoot, 'backups'),
     clock
   });
-  const { growthRuntime } = createAgRuntime({ clock, memoryStore });
-  const seed = seedGrowthQualityCorpus(growthRuntime);
+  const { growthRuntime, coreFacade } = createAgRuntime({ clock, memoryStore, allowedRoots: [join(corpusRoot, 'workspace')],
+    auditRoot: join(corpusRoot, 'audit'), env: { JARVIS_TEST_MODE: '1', JARVIS_LLM_INTENT: '0', JARVIS_LLM_PLANNER: '0', JARVIS_LLM_CONTENT: '0' } });
+  const seed = seedGrowthQualityCorpus(growthRuntime, coreFacade);
   const preferenceCandidate = growthRuntime.latestReview().preferenceCandidates.find((item) => item.statement.includes('날짜를 크게'));
   const confirmedPreference = preferenceCandidate
     ? growthRuntime.decidePreference({
@@ -29,7 +30,7 @@ export async function runGrowthQualityCorpus({
         reason: 'stable formatting preference in quality corpus',
         scopePolicy: {
           userScope: 'quality-corpus-user',
-          workspaceScope: 'weekly-report-workspace',
+          workspaceScope: coreFacade.workspaceRoot,
           taskFamily: 'document_workflow'
         }
       })
@@ -43,7 +44,7 @@ export async function runGrowthQualityCorpus({
           reason: 'conflicts with confirmed large-date preference',
           scopePolicy: {
             userScope: 'quality-corpus-user',
-            workspaceScope: 'weekly-report-workspace'
+            workspaceScope: coreFacade.workspaceRoot
           }
         }],
         decidedBy: 'growth_quality_corpus'
@@ -888,11 +889,16 @@ export async function runGrowthQualityCorpus({
   return report;
 }
 
-function seedGrowthQualityCorpus(growthRuntime) {
+function seedGrowthQualityCorpus(growthRuntime, coreFacade) {
   let eventCount = 0;
+  const sourceTasks = new Map();
   const ingest = (event) => {
     eventCount += 1;
-    return growthRuntime.ingestor.ingest(event);
+    // Synthetic source labels are attributed to real, unexecuted Core task identities.
+    // They exercise F projections and do not constitute verified PC outcomes.
+    if (!sourceTasks.has(event.taskId)) sourceTasks.set(event.taskId,
+      coreFacade.createTask('합성 평가 자료의 구조를 정리해줘', { userId: 'quality-corpus-user' }).taskId);
+    return growthRuntime.ingestor.ingest({ ...event, taskId: sourceTasks.get(event.taskId) });
   };
   const repeatedWorkflows = [
     { key: 'bulletin', text: '주보 초안 파일 만들어 날짜를 크게 표로 정리해줘' },

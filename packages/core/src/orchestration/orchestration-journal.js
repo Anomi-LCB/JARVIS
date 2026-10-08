@@ -43,7 +43,8 @@ export class OrchestrationJournal {
       stepCount: trace.steps.length,
       failureCount: trace.failures.length,
       planGraph: task?.plan?.planGraph ?? null,
-      compensationPlan: task?.plan?.compensationPlan ?? null
+      compensationPlan: task?.plan?.compensationPlan ?? null,
+      recoveryContext: task?.recoveryContext ?? null
     });
   }
 
@@ -137,24 +138,99 @@ export class OrchestrationJournal {
   resumeContext(taskId) {
     const records = this.recordsForTask(taskId);
     const checkpoint = this.latestCheckpoint(taskId);
-    const nodeStates = new Map();
-    for (const record of records.filter((item) => item.recordType === 'orchestration_node')) {
-      nodeStates.set(record.nodeId, record.status);
+    const nodeRecords = new Map();
+    for (const record of records.filter((item) => item.recordType === 'orchestration_node'
+      && (!checkpoint?.planId || item.planId === checkpoint.planId))) {
+      nodeRecords.set(record.nodeId, record);
     }
     const graphNodes = checkpoint?.planGraph?.nodes ?? [];
-    const pendingNodes = graphNodes
-      .filter((node) => !['completed', 'skipped', 'compensated'].includes(nodeStates.get(node.nodeId)))
-      .map((node) => ({
+    const actionNodes = graphNodes.filter((node) => node.nodeId?.startsWith('action_'));
+    const edges = checkpoint?.planGraph?.edges ?? [];
+    const nodeRecovery = actionNodes.map((node) => {
+      const record = nodeRecords.get(node.nodeId) ?? null;
+      const evidence = record?.evidence ?? {};
+      const artifact = evidence.artifactBundle ?? null;
+      const verifiedCompletion = record?.status === 'completed'
+        && evidence.verificationGate?.status === 'passed'
+        && evidence.verificationStatus === 'passed'
+        && typeof evidence.verificationId === 'string'
+        && evidence.verificationId.length > 0
+        && artifact?.status === 'completed'
+        && artifact?.taskId === taskId
+        && artifact?.planId === checkpoint?.planId
+        && artifact?.graphId === checkpoint?.planGraph?.graphId
+        && artifact?.nodeId === node.nodeId;
+      const dependencies = edges
+        .filter((edge) => edge.to === node.nodeId && edge.from?.startsWith('action_') && edge.condition === 'success')
+        .map((edge) => edge.from);
+      return {
         nodeId: node.nodeId,
         description: node.description,
-        status: nodeStates.get(node.nodeId) ?? 'pending'
+        status: record?.status ?? 'pending',
+        lastRecordedAt: record?.recordedAt ?? null,
+        packetId: evidence.packetId ?? artifact?.packetId ?? null,
+        verifiedCompletion,
+        verificationId: evidence.verificationId ?? null,
+        verificationStatus: evidence.verificationStatus ?? null,
+        verificationGate: evidence.verificationGate ?? null,
+        effectMayExist: evidence.verificationFailed === true
+          || (artifact?.outputPaths?.length ?? 0) > 0
+          || (artifact?.changedItems?.length ?? 0) > 0,
+        artifactBundleId: artifact?.bundleId ?? null,
+        outputPaths: artifact?.outputPaths ?? [],
+        changedItems: artifact?.changedItems ?? [],
+        dependencies,
+        recoveryDisposition: recoveryDisposition(record, verifiedCompletion)
+      };
+    });
+    const verifiedNodeIds = new Set(nodeRecovery.filter((node) => node.verifiedCompletion).map((node) => node.nodeId));
+    const pendingNodes = nodeRecovery
+      .filter((node) => node.recoveryDisposition !== 'already_verified')
+      .map((node) => ({
+        ...node,
+        dependenciesReady: node.dependencies.every((nodeId) => verifiedNodeIds.has(nodeId))
       }));
+    const uncertainNodes = nodeRecovery.filter((node) => node.recoveryDisposition === 'execution_uncertain');
+    const reviewNodes = nodeRecovery.filter((node) => ['manual_review_required', 'reverify_before_resume'].includes(node.recoveryDisposition));
+    const recoveryStatus = !checkpoint
+      ? 'no_checkpoint'
+      : uncertainNodes.length > 0
+        ? 'execution_uncertain_review_required'
+        : reviewNodes.some((node) => node.recoveryDisposition === 'manual_review_required')
+          ? 'revised_plan_and_approval_required'
+          : pendingNodes.length > 0
+            ? 'reverify_prior_effects_before_resume'
+            : 'no_pending_action_nodes';
     return {
       taskId,
       resumable: Boolean(checkpoint),
+      recoveryStatus,
+      automaticResumeAllowed: false,
+      actionNodeCount: actionNodes.length,
+      verifiedCompletedNodeIds: [...verifiedNodeIds],
+      recoveryContext: checkpoint?.recoveryContext ?? null,
       checkpoint,
       pendingNodes,
+      nodeRecovery,
       records: records.slice(-20)
     };
   }
+}
+
+function recoveryDisposition(record, verifiedCompletion) {
+  if (!record) return 'not_started';
+  if (verifiedCompletion) return 'already_verified';
+  if (record.status === 'running') return 'execution_uncertain';
+  if (record.status === 'completed') return 'reverify_before_resume';
+  if (record.status === 'failed') return 'manual_review_required';
+  if (record.status === 'skipped') {
+    const reason = record.evidence?.reason;
+    if (['graph-stopped-after-node-failure', 'ancestor-node-failed', 'dependency-not-completed'].includes(reason)) {
+      return 'deferred_after_failure';
+    }
+    return 'manual_review_required';
+  }
+  if (['planned', 'ready'].includes(record.status)) return 'not_started';
+  if (record.status === 'compensated') return 'compensated_review_required';
+  return 'manual_review_required';
 }

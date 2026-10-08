@@ -14,6 +14,14 @@ type Props = {
   onDecision?: (hypothesisId: string, decision: string) => void;
 };
 
+const resolutionLabel: Record<string, string> = {
+  confirm_after_review: '검토 후 확정',
+  reject_candidate: '후보 거절',
+  collect_more_evidence: '근거 더 수집',
+  keep_existing_preference: '기존 선호 유지',
+  replace_existing_preference: '기존 선호 교체'
+};
+
 export function GrowthReviewDecisionPanel({ review, onDecision }: Props) {
   const state = createGrowthReviewDecisionState({ review });
   const hygieneState = createGrowthHygieneDecisionState({ review });
@@ -27,7 +35,7 @@ export function GrowthReviewDecisionPanel({ review, onDecision }: Props) {
     <View style={{ gap: spacing.md }} testID="growth-review-visual-contract">
       <View style={{ gap: spacing.xs }}>
         <Text style={{ color: visualSnapshot.passed ? colors.accent : colors.warning }}>
-          Visual contract {visualSnapshot.passed ? 'passed' : 'needs review'}
+          화면 구성 검증 {visualSnapshot.passed ? '통과' : '검토 필요'}
         </Text>
         <Text style={{ color: colors.muted }}>
           후보 {visualSnapshot.preferenceCandidateCount}건 · 위생 {visualSnapshot.hygieneQueueCount}건 · 충돌 {visualSnapshot.conflictCount}건
@@ -80,13 +88,13 @@ export function GrowthReviewDecisionPanel({ review, onDecision }: Props) {
             충돌 근거 {conflictState.selected.contradiction.count}건 · 확인 전 확정 차단 {conflictState.confirmBlockedUntilAcknowledged ? '예' : '아니오'}
           </Text>
           <Text style={{ color: colors.muted }}>
-            옵션: {conflictState.resolutionOptions.join(', ')}
+            선택지: {conflictState.resolutionOptions.map((option) => resolutionLabel[option] ?? option).join(', ')}
           </Text>
         </View>
       ) : null}
 
       <View testID="growth-hygiene-trend-chart" style={{ gap: spacing.sm, padding: spacing.md, backgroundColor: colors.surface }}>
-        <Text style={{ color: colors.text }}>기억 위생 trend</Text>
+        <Text style={{ color: colors.text }}>기억 위생 추이</Text>
         <Text style={{ color: colors.muted }}>{hygieneState.trendChart.summary}</Text>
         {hygieneState.trendChart.points.map((point) => (
           <View key={point.key} style={{ gap: spacing.xs }}>

@@ -1,0 +1,12 @@
+{
+  "fixtureId": "m07-remote-session-loss-local-recovery-v1",
+  "missionId": "m07-mission-fixture",
+  "sessionId": "m07-session-fixture",
+  "localSnapshot": {
+    "sha256": "11e4a6b83c8974a4c69074770ddb7dcc05da61c25e286e44c2c20b1d16af9935",
+    "missionStatus": "PAUSED",
+    "verifiedLocalArtifacts": ["mission-plan.json", "source-notes.md"],
+    "remoteOnlyArtifactIds": ["provider-output-1"]
+  },
+  "remoteOnlyArtifactId": "provider-output-1"
+}

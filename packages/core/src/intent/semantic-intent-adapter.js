@@ -8,7 +8,7 @@ export const defaultSemanticIntentProfiles = Object.freeze([
   ]),
   profile('semantic.list.files', ActionType.LIST_FILES, '파일 목록 조회', 'filesystem', 'read-only-local', [
     '파일 목록 보여줘', '폴더 안 파일 확인', '리스트 조회', '다운로드 폴더 봐', '작업공간 파일 보여줘',
-    '문서함 목록 확인', '어떤 파일이 있는지 알려줘'
+    '문서함 목록 확인', '어떤 파일이 있는지 알려줘', '최근 수정한 파일 보여줘'
   ]),
   profile('semantic.move.file', ActionType.MOVE_FILE, '파일 이동', 'filesystem', 'local-change', [
     '파일 옮겨', '폴더로 이동', '다운로드에서 보관함으로 이동', '문서 정리해서 옮겨',
@@ -43,8 +43,8 @@ export const defaultSemanticIntentProfiles = Object.freeze([
     '이걸 매크로로 저장해줘', '자주 쓰는 명령으로 기억해', '주간청소로 저장해줘'
   ]),
   profile('semantic.upload.file', ActionType.UPLOAD_FILE, '외부 전송 요청', 'external', 'external-transfer', [
-    '메일로 보내', '이메일 전송', '카카오톡 공유', '밴드에 공유', '업로드해', '외부로 전송',
-    '파일 전달', '보고서 공유'
+    '카카오톡 공유', '밴드에 공유', '웹에 업로드해', '외부 저장소로 전송',
+    '파일 공유 링크 만들기', '보고서를 밴드에 게시'
   ]),
   profile('semantic.delete.file', ActionType.DELETE_FILE, '삭제 요청', 'filesystem', 'destructive', [
     '파일 삭제', '휴지통으로 보내', '지워', 'remove file', 'delete file', '자료 삭제', '파일 없애'
@@ -80,6 +80,21 @@ export class LocalSemanticIntentAdapter {
         semantic: { adapterId: this.adapterId, matched: false }
       };
     }
+    const ruleResult = this.parser.parse(text, { requestId, createdAt });
+    if (ruleResult?.unknown !== true && Number(ruleResult?.confidence ?? 0) >= 0.85) {
+      return {
+        ...ruleResult,
+        title: ruleResult.title ?? ruleResult.label,
+        reasons: [...(ruleResult.reasons ?? []), 'semantic_rule_primary:high_confidence'],
+        semantic: {
+          adapterId: this.adapterId,
+          matched: true,
+          rulePrimary: true,
+          ruleConfidence: ruleResult.confidence,
+          candidateCount: ruleResult.candidates?.length ?? 1
+        }
+      };
+    }
 
     const commandVector = vectorize(text);
     const ranked = this.profiles
@@ -104,10 +119,9 @@ export class LocalSemanticIntentAdapter {
       .map((item) => this.createCandidate({ item, text, requestId, createdAt }));
     const selected = candidates[0];
     if (!selected || selected.confidence < this.minConfidence) {
-      const fallback = this.parser.parse(text, { requestId, createdAt });
       return {
-        ...fallback,
-        reasons: [...(fallback.reasons ?? []), 'semantic_fallback_to_rule_parser'],
+        ...ruleResult,
+        reasons: [...(ruleResult.reasons ?? []), 'semantic_fallback_to_rule_parser'],
         semantic: {
           adapterId: this.adapterId,
           matched: false,

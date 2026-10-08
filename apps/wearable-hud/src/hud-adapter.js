@@ -340,7 +340,7 @@ export function createWearableHudFrame({
       : createWearableApprovalState({ card: approval.card ?? approval, safety: approval.safety, session: approval.session });
     pushLine('approval-summary', currentApprovalState.summary, 80);
     pushLine('approval-action', approvalActionLine(currentApprovalState), 90);
-    pushLine('approval-risk', `위험 T${currentApprovalState.riskTier} ${toneLabelKo(currentApprovalState.tone)}`, 70);
+    pushLine('approval-risk', `위험 ${currentApprovalState.riskTier}단계 ${toneLabelKo(currentApprovalState.tone)}`, 70);
   } else if (task) {
     pushLine('task-title', task.title ?? task.command ?? task.taskId ?? '활성 작업 없음', 70);
     pushLine('task-status', `${taskStatusLabelKo(task.status) ?? '작업'} ${task.progressLabel ?? task.progress?.label ?? ''}`, 80);
@@ -429,7 +429,7 @@ function contextDeckForHudFrame({ connection, approvalState, task, notifications
   if (approvalState) {
     return [
       ['판단', approvalState.summary],
-      ['위험', `T${approvalState.riskTier} · ${toneLabelKo(approvalState.tone)}`],
+      ['위험', `${approvalState.riskTier}단계 · ${toneLabelKo(approvalState.tone)}`],
       ['허용', approvalState.actions.approve.enabled ? '안경 승인 가능' : 'PC 확인 필요'],
       ['대안', approvalState.actions.reject.enabled ? '거절 가능' : '만료됨']
     ];
@@ -481,7 +481,7 @@ function toneLabelKo(tone) {
     expired: '만료',
     'pc-confirmation-required': 'PC확인'
   };
-  return table[tone] ?? String(tone ?? '정상');
+  return table[tone] ?? '상태 확인';
 }
 
 function taskStatusLabelKo(status) {
@@ -502,7 +502,7 @@ function taskStatusLabelKo(status) {
     BLOCKED: '차단',
     CANCELLED: '취소'
   };
-  return table[status] ?? String(status);
+  return table[status] ?? '상태 확인';
 }
 
 function intentLabelKo(intentName) {
@@ -517,7 +517,7 @@ function intentLabelKo(intentName) {
     execute_command: '명령',
     unknown: '알 수 없음'
   };
-  return table[intentName] ?? String(intentName ?? '음성');
+  return table[intentName] ?? '음성 명령';
 }
 
 function blockedReasonKo(reason) {
@@ -527,7 +527,7 @@ function blockedReasonKo(reason) {
     'pc-confirmation-required': 'PC 확인 필요',
     'mobile-approval-disabled': '모바일 승인 차단'
   };
-  return table[reason] ?? String(reason ?? '차단');
+  return table[reason] ?? '확인 필요';
 }
 
 function ttlForMode(mode) {

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "s11-wearable-gap-units-stale-v1",
+  "observedRange": { "startDate": "2026-09-14", "endDate": "2026-09-17" },
+  "now": "2026-09-18T09:00:00.000Z",
+  "staleAfterMs": 86400000,
+  "records": [
+    { "metric": "steps", "value": 1200, "unit": "steps", "observedAt": "2026-09-14T21:00:00.000Z", "source": "Synthetic Band A" },
+    { "metric": "steps", "value": 800, "unit": "count", "observedAt": "2026-09-14T22:00:00.000Z", "source": "Synthetic Phone" },
+    { "metric": "steps", "value": 2100, "unit": "step", "observedAt": "2026-09-16T21:00:00.000Z", "source": "Synthetic Band A" },
+    { "metric": "heart_rate", "value": 71, "unit": "bpm", "observedAt": "2026-09-14T22:30:00.000Z", "source": "Synthetic Band A" },
+    { "metric": "heart_rate", "value": 68, "unit": "beats/min", "observedAt": "2026-09-17T08:00:00.000Z", "source": "Synthetic Band B" },
+    { "metric": "sleep_duration", "value": 7.5, "unit": "h", "observedAt": "2026-09-17T07:00:00.000Z", "source": "Synthetic Band B" },
+    { "metric": "steps", "value": 999999, "unit": "steps", "observedAt": "2026-09-10T10:00:00.000Z", "source": "Synthetic Band A" }
+  ]
+}

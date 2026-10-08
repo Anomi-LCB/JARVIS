@@ -2,8 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 export async function loadPcAgentInstallConfig({
-  daemonConfigPath = 'apps/pc-agent/install/daemon-config.json',
-  serviceManifestPath = 'apps/pc-agent/install/windows-service-manifest.json'
+  daemonConfigPath = process.env.JARVIS_PC_DAEMON_CONFIG_PATH ?? 'apps/pc-agent/install/daemon-config.json',
+  serviceManifestPath = process.env.JARVIS_PC_SERVICE_MANIFEST_PATH ?? 'apps/pc-agent/install/windows-service-manifest.json'
 } = {}) {
   const daemonConfig = JSON.parse(await readFile(daemonConfigPath, 'utf8'));
   const serviceManifest = JSON.parse(await readFile(serviceManifestPath, 'utf8'));

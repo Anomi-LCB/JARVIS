@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "jarvis-external-benchmark-suite-v1",
+  "acceptanceId": "V3-097",
+  "realLifeMetricsSeparate": true,
+  "benchmarks": [
+    {
+      "id": "browsergym",
+      "repository": "https://github.com/ServiceNow/BrowserGym",
+      "requestedRef": "main",
+      "commit": "e71419aef5759a11cb7896a26c36e5f7e92d82b2",
+      "observedAt": "2026-10-08T03:19:54.595Z",
+      "requiredEvidence": [
+        "JARVIS agent adapter",
+        "selected model access and explicit budget",
+        "fixed evaluation task manifest",
+        "actual evaluator trace"
+      ],
+      "packageVersion": "0.14.3",
+      "taskRepository": "https://github.com/Farama-Foundation/miniwob-plusplus",
+      "taskCommit": "7fd85d71a4b60325c6585396ec4f48377d049838",
+      "environmentObservation": "isolated Python3.11+Playwright1.44/Chromium1117; controls stored separately",
+      "scope": "MiniWoB 3 task types x 3 seeds; no full BrowserGym score"
+    },
+    {
+      "id": "osworld21",
+      "repository": "https://github.com/xlang-ai/OSWorld-V2",
+      "requestedRef": "osworld-v2.1",
+      "commit": "3d778a3c9a34a079316f70df023b166700445792",
+      "observedAt": "2026-10-08T03:19:54.779Z",
+      "requiredEvidence": [
+        "JARVIS agent adapter",
+        "selected model access and explicit budget",
+        "fixed evaluation task manifest",
+        "actual evaluator trace",
+        "official gated HF tasks/assets consent and download",
+        "VM/KVM boot or explicitly budgeted cloud provider",
+        "matching self-hosted website services"
+      ],
+      "releaseManifest": "artifacts/external-benchmarks-20261008/osworld21/osworld-v2.1.json",
+      "components": {
+        "tasks": {
+          "repository": "xlangai/osworld_v2_tasks",
+          "repo_type": "dataset",
+          "tag": "osworld-v2.1",
+          "source_branch": "main",
+          "commit": "0a1aadad95aa79b00b3783e717d865089ab06e26"
+        },
+        "assets": {
+          "repository": "xlangai/osworld_v2_assets_gated",
+          "repo_type": "dataset",
+          "tag": "osworld-v2.1",
+          "commit": "384b3834faba5700a7b589e6cc181490c9808949",
+          "source_branch": "main"
+        },
+        "public_assets": {
+          "repository": "xlangai/osworld_v2_assets",
+          "repo_type": "dataset",
+          "tag": "osworld-v2.1",
+          "commit": "3a140a3df8f351b22bb5b9526846f078e738777f",
+          "source_branch": "main",
+          "purpose": "Anonymous browser-facing runtime assets; not the complete task asset snapshot."
+        },
+        "website_code": {
+          "repository": "Task-Web/OSWorld-web",
+          "tag": "osworld-v2.1",
+          "commit": "60c89fe6a8ed934668619d8d26132848239eb8ee",
+          "source_branch": "master"
+        },
+        "provider_images": {
+          "aws": {
+            "ubuntu": {
+              "us-east-1": {
+                "1920x1080": {
+                  "ami_id": "ami-01017272139e01feb"
+                }
+              }
+            }
+          },
+          "docker": {
+            "ubuntu": {
+              "artifact_repository": "xlangai/v2-image",
+              "repo_type": "dataset",
+              "artifact_path": "osworld-v2-ubuntu-x86.qcow2.zip",
+              "artifact_size": 14891811084,
+              "artifact_sha256": "sha256:14b08aa7ba6c023ecb91d46de8df5de32af4d1d6bd75ea925519caf9677fc8b3",
+              "runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9",
+              "artifact_revision": "6e16459a2feb5a8f1ed65babcfe7a2a6205d049d",
+              "artifact_tag": "osworld-v2.1"
+            }
+          }
+        },
+        "task_hash_manifest": {
+          "repository": "xlang-ai/OSWorld-V2",
+          "repo_type": "git",
+          "tag": "osworld-v2.1",
+          "path": "benchmark_releases/osworld-v2.1.task_hashes.json",
+          "sha256": "sha256:c54d428329be5ca72742a6becd49ee83cf739df5dea429bba182e1f3f21badfb",
+          "task_count": 108,
+          "source_repository": "xlangai/osworld_v2_tasks",
+          "source_revision": "0a1aadad95aa79b00b3783e717d865089ab06e26"
+        }
+      }
+    },
+    {
+      "id": "tau-bench",
+      "repository": "https://github.com/sierra-research/tau2-bench",
+      "requestedRef": "v1.0.1",
+      "commit": "fc0055dc4e0a316c3f83133267fbd6faaa770992",
+      "observedAt": "2026-10-08T03:19:54.496Z",
+      "legacyCommit": "59a200c6d575d595120f1cb70fea53cef0632f6b",
+      "requiredEvidence": [
+        "JARVIS agent adapter",
+        "selected model access and explicit budget",
+        "fixed evaluation task manifest",
+        "actual evaluator trace",
+        "same agent/user simulator model versions",
+        "base domain split and evaluator v1.0.1",
+        "historical tau-bench is a separate comparison, never merged"
+      ]
+    },
+    {
+      "id": "past-bench",
+      "repository": "https://github.com/Gen-Verse/PAST-Bench",
+      "requestedRef": "main",
+      "commit": "f8223517ae7491e776b69793d9f11e9d074ab42e",
+      "observedAt": "2026-10-08T03:19:54.637Z",
+      "requiredEvidence": [
+        "JARVIS agent adapter",
+        "selected model access and explicit budget",
+        "fixed evaluation task manifest",
+        "actual evaluator trace",
+        "fresh-session persistence on/off matched pairs",
+        "isolated sandbox",
+        "external judge configuration and attribution traces"
+      ]
+    }
+  ]
+}

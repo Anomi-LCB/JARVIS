@@ -98,6 +98,18 @@ export async function runCoreServiceSmoke({
       initialized: health.body.initialized
     });
 
+    const promotionStatus = await getJson(`${baseUrl}/capability-package-promotions/status`, adminToken);
+    addCheck(checks, 'capability-package-promotion-status-is-read-only-and-explicit',
+      promotionStatus.statusCode === 200
+        && promotionStatus.body.promotionManagerVersion === 'a-capability-package-promotion-manager-status-v1'
+        && promotionStatus.body.lifecycleJournal?.automaticExecutableRecovery === false
+        && Number(promotionStatus.body.inMemoryStageCount) === 0,
+      {
+        statusCode: promotionStatus.statusCode,
+        journalIntegrity: promotionStatus.body.lifecycleJournal?.integrity ?? null,
+        automaticExecutableRecovery: promotionStatus.body.lifecycleJournal?.automaticExecutableRecovery ?? null
+      });
+
     const openApi = await getJson(`${baseUrl}/openapi.json`);
     addCheck(checks, 'core-openapi-contract-readable', openApi.statusCode === 200 && openApi.body.openapi === '3.1.0' && openApi.body.paths?.['/worker/daemon/tick']?.post, {
       statusCode: openApi.statusCode,
@@ -184,7 +196,7 @@ export async function runCoreServiceSmoke({
       watchdogStatus: daemonTick.body.watchdog?.status
     });
 
-    const taskDetail = await getJson(`${baseUrl}/tasks/${created.body.taskId}`);
+    const taskDetail = await getJson(`${baseUrl}/tasks/${created.body.taskId}`, adminToken);
     addCheck(checks, 'task-completes-through-a-e-b-g-f-loop', taskDetail.statusCode === 200 && taskDetail.body.status === TaskStatus.COMPLETED && taskDetail.body.executionVerification?.status === 'passed' && taskDetail.body.learningResult?.ingest?.success === true, {
       statusCode: taskDetail.statusCode,
       taskId: taskDetail.body.taskId,

@@ -8,6 +8,19 @@ def jarvisReleaseStorePassword = System.getenv("JARVIS_ANDROID_KEYSTORE_PASSWORD
 def jarvisReleaseKeyAlias = System.getenv("JARVIS_ANDROID_KEY_ALIAS")
 def jarvisReleaseKeyPassword = System.getenv("JARVIS_ANDROID_KEY_PASSWORD")
 def jarvisReleaseSigningReady = jarvisReleaseStoreFile && jarvisReleaseStorePassword && jarvisReleaseKeyAlias && jarvisReleaseKeyPassword
+// Manifest/compile inspection needs no signing secret; producing or installing
+// a release artifact always does, including aggregate build/assemble tasks.
+def jarvisReleaseTaskRequested = gradle.startParameter.taskNames.any {
+    def task = it.tokenize(":").last().toLowerCase()
+    task in ["build", "assemble", "bundle", "install"] ||
+        (task.contains("release") && ["assemble", "bundle", "package", "install", "publish"].any { task.startsWith(it) })
+}
+def jarvisE2EPackage = (findProperty("jarvis.e2e") ?: "false").toBoolean()
+def jarvisTargetAbis = (findProperty("jarvis.targetAbis") ?: "")
+    .toString()
+    .split(",")
+    .collect { it.trim() }
+    .findAll { it }
 
 /**
  * This is the configuration block to customize your React Native Android app.
@@ -88,6 +101,10 @@ def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInRelea
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+if (jarvisReleaseTaskRequested && !jarvisReleaseSigningReady) {
+    throw new GradleException("JARVIS production release signing is not configured. Set all JARVIS_ANDROID_KEYSTORE_* environment variables; use a debug build for local device testing.")
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -101,6 +118,11 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0.0"
+        if (!jarvisTargetAbis.isEmpty()) {
+            ndk {
+                abiFilters.addAll(jarvisTargetAbis)
+            }
+        }
     }
     signingConfigs {
         debug {
@@ -120,10 +142,20 @@ android {
     }
     buildTypes {
         debug {
+            buildConfigField "String", "JARVIS_DISTRIBUTION_CHANNEL", '"private-lab"'
             signingConfig signingConfigs.debug
+            if (jarvisE2EPackage) {
+                applicationIdSuffix ".e2e"
+                versionNameSuffix "-e2e"
+            }
         }
         release {
-            signingConfig jarvisReleaseSigningReady ? signingConfigs.release : signingConfigs.debug
+            buildConfigField "String", "JARVIS_DISTRIBUTION_CHANNEL", '"play-store"'
+            signingConfig signingConfigs.release
+            if (jarvisE2EPackage) {
+                applicationIdSuffix ".e2e"
+                versionNameSuffix "-e2e"
+            }
             shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
@@ -211,6 +243,29 @@ import expo.modules.adapters.react.ReactModuleRegistryProvider;
             )
         if (patched != current) {
             packageList.write(patched, "UTF-8")
+        }
+    }
+}
+
+apply from: 'distribution-policy.gradle'
+['Debug': 'private-lab', 'Release': 'play-store'].each { variant, channel ->
+    def lowerVariant = variant.toLowerCase()
+    def distributionCheck = tasks.register("verify${variant}Distribution") {
+        dependsOn "process${variant}MainManifest", "generate${variant}BuildConfig"
+        def manifestFile = layout.buildDirectory.file("intermediates/merged_manifest/${lowerVariant}/process${variant}MainManifest/AndroidManifest.xml")
+        def configFile = layout.buildDirectory.file("generated/source/buildConfig/${lowerVariant}/local/eureka/jarvis/BuildConfig.java")
+        inputs.file(manifestFile)
+        inputs.file(configFile)
+        inputs.file(file('distribution-policy.gradle'))
+        doLast {
+            def result = validateJarvisDistribution(manifestFile.get().asFile, configFile.get().asFile, channel)
+            println "JARVIS distribution verified: ${result.channel}"
+        }
+    }
+    // All release packaging entry points must validate before producing an artifact.
+    tasks.configureEach { task ->
+        if (task.name in ["package${variant}", "package${variant}Bundle", "bundle${variant}", "assemble${variant}"]) {
+            task.dependsOn(distributionCheck)
         }
     }
 }

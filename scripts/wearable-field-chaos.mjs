@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAgRuntime } from '../apps/runtime-compose/src/create-runtime.js';
 import { createBridgeServer, isAllowedBridgeCorsOrigin } from '../apps/bridge/src/main.mjs';
+import { listenOnFetchSafePort } from '../packages/shared/src/http.js';
 import {
   createBrowserBridgeRequester,
   createWearableBrowserVoiceIntent,
@@ -15,6 +16,12 @@ import {
   pairWearableHudBrowser,
   wearableHudQuickCommands
 } from '../apps/wearable-hud/src/browser-client.js';
+import {
+  analyzeWearableAudioFrames,
+  createWearablePhysicalFieldReport,
+  evaluateWearablePhysicalFieldReport
+} from '../apps/wearable-hud/src/field-lab.js';
+import { WearableVoiceSession } from '../apps/wearable-hud/src/voice-session.js';
 
 const defaultReportPath = 'dist/wearable-field-chaos-report.json';
 const defaultMarkdownPath = 'dist/wearable-field-chaos-report.md';
@@ -45,13 +52,46 @@ export async function runWearableFieldChaos({
   await mkdir(dirname(reportPath), { recursive: true });
   await mkdir(dirname(markdownPath), { recursive: true });
 
-  const runtime = createAgRuntime();
+  const voice2Probe = await runVoice2RecoveryProbe();
+  addCheck('voice-v2-restarts-after-network-failure-without-content-leak', voice2Probe.recognizerCount >= 2
+    && voice2Probe.snapshot.recoverableErrorCount === 1
+    && voice2Probe.snapshot.utteranceCount === 1
+    && voice2Probe.rawTranscriptPresent === false, {
+    recognizerCount: voice2Probe.recognizerCount,
+    recoverableErrorCount: voice2Probe.snapshot.recoverableErrorCount,
+    utteranceCount: voice2Probe.snapshot.utteranceCount,
+    transcriptHash: voice2Probe.transcriptHash
+  });
+
+  const clippedSignal = analyzeWearableAudioFrames(
+    Array.from({ length: 14 }, () => Float32Array.from({ length: 64 }, () => 1))
+  );
+  addCheck('microphone-clipping-is-rejected', clippedSignal.status === 'needs-adjustment'
+    && clippedSignal.clippingRatio > clippedSignal.thresholds.maximumClippingRatio, {
+    clippingRatio: clippedSignal.clippingRatio,
+    threshold: clippedSignal.thresholds.maximumClippingRatio
+  });
+
+  const unconfirmedFieldGate = evaluateWearablePhysicalFieldReport(createWearablePhysicalFieldReport());
+  addCheck('physical-field-gate-never-self-certifies-without-device', unconfirmedFieldGate.status === 'ready-for-physical-device'
+    && unconfirmedFieldGate.checks.some((item) => item.checkId === 'physical_device_evidence_present' && item.passed === false), {
+    status: unconfirmedFieldGate.status
+  });
+
+  const runtime = createAgRuntime({
+    env: {
+      ...process.env,
+      JARVIS_LLM_INTENT: '0',
+      JARVIS_LLM_PLANNER: '0',
+      JARVIS_LLM_CONTENT: '0'
+    }
+  });
   const server = createBridgeServer(runtime.bridgeRuntime);
   const address = await listen(server);
   const bridgeUrl = `http://127.0.0.1:${address.port}`;
   const config = createWearableHudBrowserConfig({
     bridgeUrl,
-    requestTimeoutMs: 1600,
+    requestTimeoutMs: 30000,
     pollIntervalMs: 300
   });
   let memoryOnlyToken = '';
@@ -264,6 +304,8 @@ export async function runWearableFieldChaos({
       pcRequiredApprovalSeeded: pcRequiredTask?.status === 'WAITING_APPROVAL',
       paired: paired?.success === true,
       offlineDegraded: offlineSnapshot?.status === 'degraded',
+      voice2RecoveryPassed: voice2Probe.recognizerCount >= 2,
+      physicalFieldSelfCertified: false,
       rawBridgeTokenStored: false,
       rawTranscriptStored: false
     },
@@ -280,18 +322,21 @@ export async function runWearableFieldChaos({
         commandHash: hashSecret(item.command),
         action: item.plan.action,
         status: item.execution.status,
-        taskIdHash: hashSecret(item.execution.taskId ?? '')
+        taskIdHash: hashSecret(item.execution.taskId ?? ''),
+        errorCode: item.execution.errorCode ?? null
       })),
       voice: voiceExecution ? {
         status: voiceExecution.status,
         action: voiceExecution.action,
         taskIdHash: hashSecret(voiceExecution.taskId ?? ''),
-        transcriptRedactionCount: voiceExecution.transcriptRedactionCount
+        transcriptRedactionCount: voiceExecution.transcriptRedactionCount,
+        errorCode: voiceExecution.errorCode ?? null
       } : null,
       pcRequiredTask: pcRequiredTask ? {
         status: pcRequiredTask.status ?? null,
         taskIdHash: hashSecret(pcRequiredTask.taskId ?? ''),
-        approvalIdHash: hashSecret(pcRequiredTask.approvalId ?? '')
+        approvalIdHash: hashSecret(pcRequiredTask.approvalId ?? ''),
+        errorCode: pcRequiredTask.success === false ? pcRequiredTask.error?.code ?? 'WEARABLE_PC_REQUIRED_TASK_FAILED' : null
       } : null,
       approval: approvalExecution ? {
         status: approvalExecution.status,
@@ -308,7 +353,18 @@ export async function runWearableFieldChaos({
         status: offlineSnapshot.status,
         failureCount: offlineSnapshot.failures.length,
         rawBridgeTokenStored: false
-      } : null
+      } : null,
+      voice2Recovery: {
+        recognizerCount: voice2Probe.recognizerCount,
+        recoverableErrorCount: voice2Probe.snapshot.recoverableErrorCount,
+        utteranceCount: voice2Probe.snapshot.utteranceCount,
+        transcriptHash: voice2Probe.transcriptHash,
+        rawTranscriptStored: false
+      },
+      physicalFieldGate: {
+        status: unconfirmedFieldGate.status,
+        selfCertified: false
+      }
     }
   };
   report.rawLeakCheck = createRawLeakCheck(report, [memoryOnlyToken, ...rawSecrets]);
@@ -324,6 +380,51 @@ export async function runWearableFieldChaos({
   await writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
   await writeFile(markdownPath, renderMarkdown(report), 'utf8');
   return report;
+}
+
+async function runVoice2RecoveryProbe() {
+  const recognizers = [];
+  let transcriptHash = null;
+  const session = new WearableVoiceSession({
+    windowRef: {},
+    recognitionFactory: () => {
+      const recognizer = {
+        start() { this.onstart?.(); },
+        abort() {},
+        stop() { this.onend?.(); }
+      };
+      recognizers.push(recognizer);
+      return recognizer;
+    },
+    config: {
+      restartBaseDelayMs: 2,
+      restartMaxDelayMs: 2,
+      endSilenceMs: 2,
+      maxUtteranceMs: 1000
+    },
+    onFinalTranscript: (transcript) => {
+      transcriptHash = hashSecret(transcript);
+    }
+  });
+  await session.start();
+  recognizers[0].onerror({ error: 'network' });
+  recognizers[0].onend();
+  await delay(10);
+  const finalTranscript = '자비스 상태 확인 token=chaos-voice-secret';
+  recognizers.at(-1).onresult({
+    resultIndex: 0,
+    results: [Object.assign([{ transcript: finalTranscript, confidence: 0.9 }], { isFinal: true })]
+  });
+  await delay(10);
+  const snapshot = session.snapshot();
+  const rawTranscriptPresent = JSON.stringify(snapshot).includes('chaos-voice-secret');
+  session.destroy();
+  return {
+    recognizerCount: recognizers.length,
+    snapshot,
+    transcriptHash,
+    rawTranscriptPresent
+  };
 }
 
 async function runQuickCommandBurst({ request, commands }) {
@@ -409,13 +510,7 @@ function hashSecret(value) {
 }
 
 async function listen(server) {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve(server.address());
-    });
-  });
+  return await listenOnFetchSafePort(server);
 }
 
 async function closeServer(server) {
@@ -423,6 +518,10 @@ async function closeServer(server) {
   await new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+}
+
+function delay(ms) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function parseArgs(args) {

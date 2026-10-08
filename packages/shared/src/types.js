@@ -41,6 +41,7 @@ export const ActionType = Object.freeze({
   UPLOAD_FILE: 'UPLOAD_FILE',
   DELETE_FILE: 'DELETE_FILE',
   SHELL_EXECUTE: 'SHELL_EXECUTE',
+  DESKTOP_CONTROL: 'DESKTOP_CONTROL',
   SEARCH_FILES: 'SEARCH_FILES',
   SEND_EMAIL: 'SEND_EMAIL',
   EDIT_DOCUMENT: 'EDIT_DOCUMENT',
@@ -143,10 +144,11 @@ export function createContextSnapshot({
   createdAt = nowIso(),
   recentFiles = [],
   userPreferences = [],
+  memoryEvidence = [],
   workflow = null,
   environment = {}
 }) {
-  return { snapshotId, taskId, currentDirectory, createdAt, recentFiles, userPreferences, workflow, environment };
+  return { snapshotId, taskId, currentDirectory, createdAt, recentFiles, userPreferences, memoryEvidence, workflow, environment };
 }
 
 export function createPolicyCheckRequest({ checkId, taskId, planId, action, contextSnapshot, createdAt = nowIso() }) {

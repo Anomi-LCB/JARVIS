@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { extname, resolve } from 'node:path';
 import { arch, platform, release } from 'node:os';
 import { createContextSnapshot, maskSensitive, stableId } from '../../../shared/src/types.js';
+import {projectMemoryContext} from './memory-context-projection.js';
 
 const sensitiveNamePattern = /password|secret|token|credential|private|주민|비밀|암호|계좌|상담|개인/i;
 const desktopContentScope = 'desktop.content';
@@ -1709,10 +1710,7 @@ export class ContextSnapshotBuilder {
       currentDirectory: collected.currentDirectory,
       createdAt: this.clock().toISOString(),
       recentFiles: collected.recentFiles,
-      userPreferences: memoryContext.map((item) => ({
-        memoryId: item.eventId ?? item.memoryId ?? 'memory_item',
-        summary: item.payload?.rawText ?? item.description ?? item.text ?? 'memory context'
-      })),
+      ...projectMemoryContext(memoryContext),
       workflow: {
         entrySource: taskRequest.source.type,
         inputMode: taskRequest.source.inputMode,

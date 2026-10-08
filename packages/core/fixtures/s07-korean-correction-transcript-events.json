@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "s07-korean-correction-transcript-events-v1",
+  "modality": "synthetic-recognizer-event-text",
+  "utterances": [
+    { "transcript": "회의록 파일을 수정해", "isFinal": false, "expectedDispatch": null },
+    { "transcript": "회의록 파일을 수정해줘. 아니, 행사 일정 파일만 수정해줘.", "isFinal": true, "expectedDispatch": "행사 일정 파일만 수정해줘." }
+  ],
+  "acousticAudioIncluded": false,
+  "expected": { "onlyFinalCorrectionDispatched": true, "supersededTargetDispatched": false }
+}

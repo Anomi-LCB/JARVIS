@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const prefix='artifacts/selected-source-mandate-20261007',observedAt=new Date().toISOString();
+const read=path=>readFileSync(path,'utf8').replace(/^\uFEFF/u,'');
+const write=(suffix,value)=>writeFileSync(`${prefix}-${suffix}`,typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',{flag:'wx'});
+for(const [key,n] of [['tests',117],['pass',117],['fail',0],['skipped',0]])assert.match(read(`${prefix}-final.txt`),new RegExp(`ℹ ${key} ${n}(?:\\r?\\n|$)`));
+assert.match(read(`${prefix}-final.txt`),/unsafeControl.*completionWithoutFinalFence/);
+assert.match(read(`${prefix}-build.txt`),/Built static JARVIS/);assert.match(read(`${prefix}-contract.txt`),/gatePassed: true/);
+const files=['packages/core/src/personal-operations/selected-source-stream.js','packages/core/src/personal-operations/local-mandate-observation.js',
+ 'packages/core/src/personal-operations/mission-mandate-fence.js','packages/core/src/orchestration/core-orchestration-worker.js',
+ 'packages/core/src/mission/mission-runtime.js','tests/selected-source-mandate.test.js'];
+write('source.json',{observedAt,files:files.map(path=>({path,sha256:createHash('sha256').update(readFileSync(path)).digest('hex'),content:read(path)}))});
+write('verification.json',{observedAt,tests:117,passed:117,failed:0,skipped:0,selectedSourceCases:12,unsafeControlCases:1,
+ actualCoreHTTP:true,actualSQLite:true,actualMissionExecution:true,fullSelectedSourceDeliveryCompletion:false,
+ currentMandateBeforeAndAfterG:true,realProviderAccount:false,actualCost:null,productLatency:null,productionActivation:false,buildPassed:true,contractPassed:true});
+write('report.md',`# 선택 연결 자료의 Mission 위임 범위와 검증 종료 권한\n\n관측 ${observedAt}. 원래100개 인수59개 완료 유지. V3-031/032/033/073 관련 부분증거.\n\n## 구현\n\n선택자료를 provider와 opaque streamRef로 식별하는 source-inbox:<provider>:<streamRef> 자원참조를 추가했다. 실제 도구 인수의 닫힌 계약을 정규화해 참조를 계산하며, 모델이 주장하는 dataRefs/URL/권한은 받지 않는다. 개인 Mission count-quota의 dataRefs 허용/제외 범위와 기존 private 실행 fence가 같은 참조를 대조한다. streamRef에는 account와scope가 결속돼 있고 원래계정명/비밀을 테스트나보고서에 복제하지 않는다.\n\n단일Core task의 독립G 검사 전후에도 현재위임·자료범위·유효기간을 확인한다. B읽기영수증 직후와 비동기G 검사 종료직전의 철회를 실패로 저장하고 성공학습을 남기지 않는다. B의 이미관측된읽기영수증은 실행기록으로 보존하되 완료로승격하지 않는다. guard예외를무처리로내보내지않고 current_mandate_verification_authority critical실패 보고와task FAILED상태로남긴다. 이추가guard의범위는 단일task경로다; planGraph 전체의검증종료guard는이번증거로주장하지않는다.\n\nMission 관측에 선택자료의 provider/stream/revision/hash/페이지/개수/이어읽기위치와 providerObservationVerified=false·executionAuthority=false를 보존한다. 자료의trustBoundary는EMAIL_CONTENT,untrusted=true로바꿨다. 이전일반관측의 TOOL_METADATA/신뢰표시는 메일·대화자료에맞지않았다. 자료문장을권한으로승격하지않으며 전체내용을표시했다고추정하지않는다.\n\n## 실제 실행\n\n최종117/117, 실패0·skip0. source조건12개중1개는 의도적으로새최종guard를제거한 위험한시험대조군이다. 그대조군은 철회후거짓완료가발생할수있음을실제로보여준다. 제품보호경로의 철회전후조건은모두완료아님으로통과했다. 이대조군의true를업무성공으로계산하지않는다.\n\n선택자료Task/E/B/G/CoreHTTP/SQLite에서 정상범위,다른계정,명시제외,token대기중철회,영수증직후철회,G종료직전철회를검사했다. 다른계정/제외는조회0이며 철회후task FAILED·성공학습없음을확인했다. 실제Mission에서도 정상읽기·범위밖읽기·철회·사용자취소를실행했다. 정상읽기관측은untrusted이고 선택자료개수1을보존한다. 범위밖/철회/취소는성공읽기관측없음이다.\n\n‘전체 내용을 사용자에게 표시했다’는 최종criteria에는 독립전달오라클이아직없다. 그래서 정상자료읽기는 성공해도 전체Mission COMPLETED로표시하지않는반례를유지했다. 플래너가satisfied를주장해도완료증거로사용하지않는다. 위임범위·로컬파일/워크플로범위·Mission금액/요구coverage·Coreauthority 공유회귀를포함하고 build/비파괴contractgate통과했다.\n\n## 남은 작업\n\n전체페이지/표시의범위보존·전달확인오라클, 원문자연어의선택계정binding과요구coverage,복합planGraph검증권한종료,실OAuth/실계정/원격B/UI/설치본활성화가남는다. 이번은격리Core·SQLite와합성자료이며 실제공급자연동·제품p95·비용은미측정. 인수율을올리지않고70%목표를유지한다.\n\n다음은 선택자료의전페이지결과와원문요구를결속한결정형결과/전달계약을구현해 전체Mission의완료까지검증하는것이다. 복원은자원참조분기/새최종검증guard/관측분류와관련검사만검토한다. 기존개인자료·scope·SQLite·F기억·인수증거는삭제하지않는다. 파일해시는보존이며독립실험결론검증이아니다.\n`);
+const evidencePaths=['report.md','verification.json','source.json','focused.txt','verification-fence.txt','final-focused.txt','cancel-before.txt','regression.txt','final.txt','build.txt','contract.txt'].map(s=>`${prefix}-${s}`);
+write('attempt.json',{id:'selected-source-mandate-20261007',candidateId:'agent-platform-observed-scenario-status',kind:'workflow-test',reportedOutcome:'passed',observedAt,evidencePaths,
+ hypothesis:'선택한 계정자료의 관측자원범위와 G검증종료시 현재위임을 함께검사하면 철회된 읽기결과의 거짓완료·성공학습을 막을수있다.',
+ lesson:'실행 직전fence로 검증종료까지 권한을 대신할수없다. 이미읽은자료의영수증과현재완료권한을분리하고 외부자료의관측도untrusted로유지해야한다.',
+ limitations:'실제Core task/Mission/HTTP/SQLite,합성provider자료. 전체selected-source전달criteria/자연어coverage/planGraph종료검사·실계정·운영활성화 미완료.비용/제품지연미측정.'});
+const path='docs/universal-control-v3-acceptance.json',data=JSON.parse(read(path)),gates=data.stages.flatMap(s=>s.gates);assert.equal(gates.filter(g=>g.status==='verified').length,59);
+for(const id of ['V3-031','V3-032','V3-033','V3-073']){const gate=gates.find(g=>g.id===id);assert.notEqual(gate.status,'verified');gate.evidence.push(...evidencePaths);gate.limitations.push('2026-10-07: source-inbox選択scope·SQL위임 allow/deny·단일task G전후철회 FAILED/학습없음·실Mission 읽기/취소·untrusted관측.117회귀(위험대조군1)/build/contract.전체전달criteria/자연어coverage/planGraph·실계정·제품활성화 미완료.');}
+data.updatedAt=observedAt;writeFileSync(path,JSON.stringify(data,null,2)+'\n');
+appendFileSync('docs/execution-to-100.md',`\n최신 ${prefix}-report.md: 선택자료 Mission dataRefs위임·단일task G전후권한·실Mission범위/취소·untrusted관측.117회귀(위험대조군1)/build/contract.59% 유지. 다음 전체자료결과/전달오라클·자연어coverage/선택binding.\n`);
+appendFileSync('docs/microsoft-source-adapters.md','\n선택자료의 scoped Mission resource는 source-inbox:<provider>:<opaque streamRef>다. 요청의provider/stream/paging계약에서결정하고model의dataRefs를신뢰하지않는다. 단일task에서위임을G전후재검사하며 Mission관측은EMAIL_CONTENT/untrusted이다. 전체자료의최종표시·원문선택binding·planGraph·실계정제품활성화는별도인수다.\n');
+console.log(JSON.stringify({observedAt,verified:59,tests:117,unsafeControls:1}));

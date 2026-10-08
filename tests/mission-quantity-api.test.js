@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve,sep} from 'node:path';
+import {createAgRuntime} from '../apps/runtime-compose/src/create-runtime.js';
+import {createCoreServer} from '../packages/core/src/main.mjs';
+import {listenOnFetchSafePort} from '../packages/shared/src/http.js';
+
+test('actual ADMIN HTTP compares current source quantities without execution, metadata trust or measurement attestation',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'jarvis-quantity-api-'));
+ const runtime=createAgRuntime({allowedRoots:[root],auditRoot:join(root,'audit'),cwd:()=>root,workerDaemonEnabled:false,
+  env:{JARVIS_TEST_MODE:'1',JARVIS_LLM_INTENT:'0',JARVIS_LLM_PLANNER:'0',JARVIS_LLM_CONTENT:'0'}});
+ const r=runtime.missionRuntime,created=r.createMission({objective:"'PRIVATE_SYNTHETIC_SOURCE'를 읽어; 500mg 이하; 3~5명",successCriteria:['원문 조건 확인']});
+ const mission=r.missions.get(created.missionId),c=mission.goalContract;
+ const before=JSON.stringify(mission),measurements=c.quantities.map(q=>({quantityId:q.quantityId,baseUnit:q.baseUnit,baseUnits:q.baseUnits??4}));
+ const input={expectedGoalRevision:c.revision,expectedObjectiveSha256:c.objectiveSha256,measurements};
+ const server=createCoreServer(runtime.coreFacade,{missionRuntime:r,adminToken:'quantity-admin',adminTokens:[{token:'quantity-reader',scopes:['read_diagnostics']}]});
+ t.after(async()=>{await new Promise(resolve=>server.close(resolve));runtime.coreFacade.cognition.close();assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep));await rm(root,{recursive:true,force:true});});
+ await listenOnFetchSafePort(server,{host:'127.0.0.1',port:0});
+ const url=`http://127.0.0.1:${server.address().port}/missions/${encodeURIComponent(created.missionId)}/quantity-constraints`;
+ const headers={authorization:'Bearer quantity-admin','content-type':'application/json'};
+ const post=(body=input,extra={})=>fetch(url,{method:'POST',headers,body:JSON.stringify(body),...extra});
+ assert.equal((await post(input,{headers:{'content-type':'application/json'}})).status,401);
+ assert.equal((await post(input,{headers:{authorization:'Bearer quantity-reader','content-type':'application/json'}})).status,403);
+ assert.equal((await fetch(url,{headers})).status,405);
+ const response=await post();assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+ const result=await response.json();assert.equal(result.passed,true);assert.equal(result.effectsDispatched,0);assert.equal(result.executionAuthorized,false);
+ assert.equal(result.measurementProvenanceVerified,false);assert.equal(result.sourceQuantitiesRecomputed,true);assert.doesNotMatch(JSON.stringify(result),/PRIVATE_SYNTHETIC_SOURCE/);
+ assert.equal(JSON.stringify(mission),before);assert.equal(runtime.orchestrationWorker.queueStatus().total,0);
+ const tooMuch=await(await post({...input,measurements:[{...measurements[0],baseUnits:500001},measurements[1]]})).json();assert.equal(tooMuch.passed,false);
+ assert.equal((await post({...input,expectedGoalRevision:c.revision+1})).status,409);
+ assert.equal((await post({...input,expectedObjectiveSha256:'a'.repeat(64)})).status,409);
+ for(const bad of [{...input,execute:true},{...input,measurements:[{...measurements[0],verified:true}]},{...input,measurements:[{...measurements[0],baseUnits:-1}]},{}])assert.equal((await post(bad)).status,400);
+ assert.equal((await post(input,{body:'bad JSON'})).status,400);
+ assert.equal((await post(input,{body:' '.repeat(131073)})).status,413);
+ assert.equal((await post(input,{headers:{authorization:'Bearer quantity-admin','content-type':'text/plain'}})).status,415);
+ assert.equal((await fetch(url.replace(encodeURIComponent(created.missionId),'missing'),{method:'POST',headers,body:JSON.stringify(input)})).status,404);
+ c.quantities[0].baseUnits=999999999;assert.equal((await(await post()).json()).passed,true,'source is re-extracted; mutable numeric metadata is ignored');
+ c.objective+=' tampered';assert.equal((await post()).status,503);
+ const spec=await(await fetch(`http://127.0.0.1:${server.address().port}/openapi.json`)).json();
+ assert.ok(spec.paths['/missions/{missionId}/quantity-constraints'].post.requestBody);
+});

@@ -1,0 +1,19 @@
+{
+  "version": "archive-relevance-v1",
+  "cases": [
+    {"id":"leading-today","text":"자료 원문을 대조한다.","query":"오늘 자료를 정리해줘","expected":true},
+    {"id":"filler-only-overlap","text":"오늘 일정 초안","query":"오늘 자료를 정리해줘","expected":false},
+    {"id":"particle","text":"설교의 구조를 검토한다.","query":"설교 구조 확인해줘","expected":true},
+    {"id":"english-case","text":"CALENDAR comparison","query":"Please calendar","expected":true},
+    {"id":"fullwidth","text":"ＣＡＬＥＮＤＡＲ comparison","query":"calendar","expected":true},
+    {"id":"identifier","text":"report-final.md","query":"report","expected":true},
+    {"id":"substring-negative","text":"planet observations","query":"plan","expected":false},
+    {"id":"metadata-not-content","text":"unrelated notes","query":"budget","expected":false},
+    {"id":"wildcard-negative","text":"plain notes","query":"%","expected":false},
+    {"id":"punctuation","text":"자료 원문 대조","query":"자료, 확인해줘","expected":true},
+    {"id":"synonym-not-claimed","text":"항공권 비교","query":"비행기표 정리해줘","expected":false},
+    {"id":"no-content-query","text":"자료 원문 대조","query":"오늘 확인해줘","expected":false},
+    {"id":"holdout-budget","text":"예산 원칙을 보존한다.","query":"지난 예산을 검토해줘","expected":true},
+    {"id":"holdout-unrelated","text":"오늘 일정 초안","query":"오늘 인물 관계 알려줘","expected":false}
+  ]
+}

@@ -3,15 +3,34 @@ import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { createWorkbookBuffer, inspectWorkbookFile } from './xlsx-writer.js';
+import {normalizeWorkbookCharts} from './chart-data.js';
 import { createWorkbookTemplateMigrationReport, WorkbookTemplateCatalog } from './workbook-template-catalog.js';
+import {NativeWorkbookPdfRenderer,nativeFailureRecovery} from './native-pdf-renderer.js';
 
 export class ExcelWorkbookWorker {
-  constructor({ templateCatalog = new WorkbookTemplateCatalog(), workerId = 'excel-worker-js' } = {}) {
+  constructor({ templateCatalog = new WorkbookTemplateCatalog(), workerId = 'excel-worker-js', pdfRenderer = new NativeWorkbookPdfRenderer() } = {}) {
     this.templateCatalog = templateCatalog;
     this.workerId = workerId;
+    this.pdfRenderer = pdfRenderer;
   }
 
   async prepare(args) {
+    if(args.renderPdf!==undefined&&typeof args.renderPdf!=='boolean') throw new Error('workbook-render-pdf-boolean-required');
+    if(args.renderPdf===true&& (typeof args.pdfOutputPath!=='string'||!args.pdfOutputPath.toLowerCase().endsWith('.pdf'))) throw new Error('workbook-pdf-output-required');
+    if(args.renderPdf!==true&&args.pdfOutputPath!==undefined) throw new Error('workbook-pdf-output-without-request');
+    if(args.renderPdf===true&&resolve(args.pdfOutputPath)===resolve(args.outputPath??args.path)) throw new Error('workbook-pdf-source-collision');
+    if (args.sheets !== undefined) {
+      if (!Array.isArray(args.sheets) || args.sheets.length < 1 || args.sheets.length > 20) throw new Error('workbook-sheet-count-must-be-1-to-20');
+      const sheets = await Promise.all(args.sheets.map(sheet => this.prepare({...args,...sheet,sheets:undefined,outputPath:args.outputPath ?? args.path})));
+      const names = sheets.map(sheet => sheet.sheetName.toLowerCase());
+      if (new Set(names).size !== names.length) throw new Error('duplicate-sheet-name');
+      for (const sheet of sheets) {
+        if (!sheet.sheetName || sheet.sheetName.length > 31 || /[\[\]:*?/\\]/.test(sheet.sheetName)) throw new Error('invalid-sheet-name');
+        if (!sheet.columns.length || !Array.isArray(sheet.rows) || sheet.rows.length > 5000) throw new Error('invalid-sheet-data');
+      }
+      if (sheets.slice(1).some(sheet => sheet.charts.length)) throw new Error('charts-supported-on-first-sheet-only');
+      return {...sheets[0],sheets};
+    }
     const template = await this.templateCatalog.resolveTemplate(args.template ?? {
       templateId: args.templateId,
       name: args.templateName,
@@ -20,8 +39,9 @@ export class ExcelWorkbookWorker {
       visualExpectations: args.visualExpectations
     });
     const style = this.normalizeStyle(args.style ?? template.defaultStyle);
-    const columns = (args.columns ?? []).map((column) => String(column));
-    const rows = args.rows ?? [];
+    const rawColumns = Array.isArray(args.columns) ? args.columns : [];
+    const columns = rawColumns.map((column, index) => normalizeColumnName(column, index));
+    const rows = normalizeWorkbookRows(args.rows ?? [], rawColumns, columns);
     const charts = this.normalizeCharts([...(template.defaultCharts ?? []), ...(args.charts ?? [])], columns, rows);
     return {
       outputPath: resolve(args.outputPath ?? args.path),
@@ -34,15 +54,25 @@ export class ExcelWorkbookWorker {
     };
   }
 
-  async writeWorkbook(args) {
+  async writeWorkbook(args, {signal, beforePdfPublish,assertAccess=()=>{},beforeWorkbookWrite=()=>{}}={}) {
     const prepared = await this.prepare(args);
+    beforeWorkbookWrite(prepared);
+    assertAccess();
     await mkdir(dirname(prepared.outputPath), { recursive: true });
     const buffer = createWorkbookBuffer(prepared);
-    await writeFile(prepared.outputPath, buffer);
+    beforeWorkbookWrite(prepared);
+    assertAccess();
+    await writeFile(prepared.outputPath, buffer, {flag:'wx'});
     const inspection = await inspectWorkbookFile(prepared.outputPath);
     const openValidation = await this.validateOpen(prepared.outputPath, inspection);
     const visualValidation = this.validateVisualSnapshot({ prepared, inspection });
     const renderSmoke = this.validateRenderSmoke({ prepared, inspection, outputPath: prepared.outputPath, openValidation, visualValidation });
+    const sha256=createHash('sha256').update(buffer).digest('hex');
+    let renderValidation={requested:false,status:'not-requested',actualRenderingExecuted:false,visualQualityVerified:false};
+    if(args.renderPdf===true) {
+      try {renderValidation=await this.pdfRenderer.render({inputPath:prepared.outputPath,outputPath:resolve(args.pdfOutputPath),expectedSha256:sha256,signal,beforePublish:beforePdfPublish});}
+      catch(error) {const recovery=nativeFailureRecovery(error);renderValidation={requested:true,status:'failed',actualRenderingExecuted:false,visualQualityVerified:false,reason:error.code??'EXCEL_PDF_FAILED',...(recovery?{nativeRecovery:recovery,retryable:false}:{}),nextAction:recovery?.activationGapUnverified?'저장된 엑셀 원본은 보존됩니다. Excel 실행 초기 종료 여부를 확인할 수 없어 자동 재시도를 중지했습니다. 실행 중인 Excel을 확인한 뒤 다시 요청하세요.':'저장된 엑셀 파일은 보존됩니다. Excel 설치·로그인 사용자 세션·권한을 확인하고 새 출력 경로로 다시 요청하세요.'};}
+    }
     return {
       worker: {
         workerId: this.workerId,
@@ -54,7 +84,8 @@ export class ExcelWorkbookWorker {
       openValidation,
       visualValidation,
       renderSmoke,
-      sha256: createHash('sha256').update(buffer).digest('hex')
+      renderValidation,
+      sha256
     };
   }
 
@@ -86,6 +117,8 @@ export class ExcelWorkbookWorker {
     ].every(Boolean) ? 'passed' : 'failed';
     return {
       validator: 'jarvis-workbook-visual-fixture',
+      verificationScope: 'ooxml-style-and-drawing-presence-only',
+      actualRenderingVerified: false,
       status,
       checkedAt: new Date().toISOString(),
       fixtureId: `${prepared.template.templateId}-visual-smoke-v1`,
@@ -118,6 +151,8 @@ export class ExcelWorkbookWorker {
       : 'failed';
     return {
       smokeVersion: 'b-workbook-render-smoke-v1',
+      verificationScope: 'ooxml-structure-only',
+      actualRenderingVerified: false,
       status,
       checkedAt: new Date().toISOString(),
       outputPath,
@@ -142,21 +177,47 @@ export class ExcelWorkbookWorker {
     return {
       headerBold: Boolean(style.headerBold),
       headerFill: style.headerFill ?? null,
-      autoFilter: Boolean(style.autoFilter)
+      autoFilter: Boolean(style.autoFilter),
+      totalRowBold: Boolean(style.totalRowBold)
     };
   }
 
   normalizeCharts(charts, columns, rows) {
-    if (!Array.isArray(charts)) return [];
-    const maxColumn = spreadsheetColumnName(Math.max(columns.length - 1, 0));
-    const lastRow = Math.max(rows.length + 1, 1);
-    return charts.slice(0, 3).map((chart, index) => ({
-      chartId: chart.chartId ?? `chart_${index + 1}`,
-      type: String(chart.type ?? 'bar').toLowerCase(),
-      title: chart.title ?? `Chart ${index + 1}`,
-      range: chart.range ?? `A1:${maxColumn}${lastRow}`
-    }));
+    return normalizeWorkbookCharts(charts,columns,rows);
   }
+}
+
+function normalizeColumnName(column, index) {
+  if (typeof column === 'string' || typeof column === 'number') {
+    const value = String(column).trim();
+    if (value) return value;
+  }
+  if (column && typeof column === 'object' && !Array.isArray(column)) {
+    for (const key of ['name', 'label', 'title', 'header', 'key']) {
+      const value = column[key];
+      if (!['string', 'number'].includes(typeof value)) continue;
+      const normalized = String(value).trim();
+      if (normalized) return normalized;
+    }
+  }
+  throw new Error(`invalid-column-name:${index + 1}`);
+}
+
+function normalizeWorkbookRows(rows, rawColumns, columns) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((row) => {
+    if (Array.isArray(row) || !row || typeof row !== 'object') return row;
+    return rawColumns.map((column, index) => {
+      const candidateKeys = column && typeof column === 'object' && !Array.isArray(column)
+        ? [column.key, column.name, column.label, column.title, column.header, columns[index]]
+        : [columns[index]];
+      const key = candidateKeys.find((candidate) => (
+        ['string', 'number'].includes(typeof candidate)
+        && Object.hasOwn(row, String(candidate))
+      ));
+      return key === undefined ? '' : row[String(key)];
+    });
+  });
 }
 
 export function createWorkbookRendererProbe({ env = process.env, platform = process.platform } = {}) {

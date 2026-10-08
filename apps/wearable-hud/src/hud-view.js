@@ -35,7 +35,7 @@ export function renderWearableHudHtml(frame = createWearableHudFrame()) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JARVIS Wearable HUD</title>
+  <title>JARVIS 웨어러블 HUD</title>
   <style>
     :root {
       color-scheme: dark;

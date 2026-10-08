@@ -1,0 +1,14 @@
+{
+  "fixtureId": "g06-skill-rollback-synthetic-v1",
+  "title": "합성 수치 검산 절차",
+  "initialSteps": [
+    "원자료의 두 수치를 읽는다.",
+    "합계를 계산하고 원자료와 대조한다."
+  ],
+  "regressedSteps": [
+    "원자료의 두 수치를 읽는다.",
+    "첫 번째 수치만 합계로 기록한다."
+  ],
+  "expectedValue": "correct-total: 18",
+  "observedValue": "wrong-total: 17"
+}

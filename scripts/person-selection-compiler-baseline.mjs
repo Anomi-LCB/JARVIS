@@ -1,0 +1,16 @@
+import {readFileSync,writeFileSync} from 'node:fs';
+import {resolve,dirname} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import assert from 'node:assert/strict';
+import {compileNaturalWorkflowObjective as current} from '../packages/core/src/mission/natural-workflow-compiler.js';
+const bundle=JSON.parse(readFileSync('artifacts/natural-row-exclusion-source.json','utf8'));
+const source=bundle.files.find(f=>f.path==='packages/core/src/mission/natural-workflow-compiler.js');
+assert.ok(source);assert.match(source.content,/natural-workflow-ko-v11/);
+const code=source.content.replace(/from '([.][^']+)'/gu,(_,path)=>`from '${pathToFileURL(resolve(dirname(resolve(source.path)),path)).href}'`);
+const baseline=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const objective="'people.json' JSON을 '명부'로 읽고; '명부'에서 이름 '김민수'와 소속 '교육팀'에 일치하는 사람 한 명을 '선택'으로 골라; '선택'을 'selected.json' JSON으로 저장해",workspaceRoot=resolve('artifacts/person-baseline-isolated');
+const before=baseline.compileNaturalWorkflowObjective(objective,{workspaceRoot}),after=current(objective,{workspaceRoot});
+assert.equal(before.status,'blocked');assert.equal(after.status,'compiled');
+const report={observedAt:new Date().toISOString(),scope:'compiler-only historical source execution, not historical Core end-to-end',sourceSha256:source.sha256,objective,before:{status:before.status,code:before.code,compilerVersion:before.compilerVersion},after:{status:after.status,compilerVersion:after.compilerVersion,nodeOps:after.spec.nodes.map(n=>n.op)}};
+writeFileSync('artifacts/person-selection-compiler-baseline.json',JSON.stringify(report,null,2)+'\n',{flag:'wx'});
+console.log(JSON.stringify(report));

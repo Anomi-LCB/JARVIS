@@ -66,6 +66,16 @@ function statusIsSynced(status) {
   return ['synced', 'already-synced'].includes(status);
 }
 
+export function mobileDeviceEvidencePassed(report = {}) {
+  if (report.actualDeviceVerified !== true) return false;
+  if (report.status === 'passed') return true;
+  if (report.status !== 'passed-retained-evidence') return false;
+  return report.evidenceSource === 'retained-last-passed'
+    && report.retainedEvidence?.status === 'valid'
+    && report.retainedEvidence?.fingerprintMatches === true
+    && report.retainedEvidence?.screenshotIntegrity?.passed === true;
+}
+
 function check(checkId, passed, detail = {}, severity = 'blocking') {
   return {
     checkId,
@@ -180,6 +190,8 @@ export async function runProductCompletionLedger({
     mobileDevice,
     mobileLiveBridge,
     wearableHud,
+    wearablePhysicalField,
+    wearableChaos,
     securityRedteam,
     growthQuality,
     verificationDashboard,
@@ -209,6 +221,8 @@ export async function runProductCompletionLedger({
     readFirstJson(workspaceRoot, ['dist/mobile-device-smoke-report.json']),
     readFirstJson(workspaceRoot, ['dist/mobile-live-bridge-e2e-report.json']),
     readFirstJson(workspaceRoot, ['dist/wearable-hud-verification-report.json']),
+    readFirstJson(workspaceRoot, ['dist/wearable-physical-field-gate.json']),
+    readFirstJson(workspaceRoot, ['dist/wearable-field-chaos-report.json']),
     readFirstJson(workspaceRoot, ['dist/security-redteam-corpus-report.json']),
     readFirstJson(workspaceRoot, ['dist/growth-quality-corpus-report.json']),
     readFirstJson(workspaceRoot, ['dist/verification-dashboard-dossier.json']),
@@ -369,9 +383,13 @@ export async function runProductCompletionLedger({
           status: mobileLane?.status ?? 'missing',
           missingArtifactCount: mobileLane?.missingArtifactCount ?? null
         }),
-        check('mobile_device_smoke_passed', mobileDevice.data?.status === 'passed' && mobileDevice.data?.actualDeviceVerified === true, {
+        check('mobile_device_smoke_passed', mobileDeviceEvidencePassed(mobileDevice.data), {
           status: mobileDevice.data?.status ?? 'missing',
-          actualDeviceVerified: mobileDevice.data?.actualDeviceVerified ?? null
+          actualDeviceVerified: mobileDevice.data?.actualDeviceVerified ?? null,
+          evidenceSource: mobileDevice.data?.evidenceSource ?? null,
+          retainedEvidenceStatus: mobileDevice.data?.retainedEvidence?.status ?? null,
+          fingerprintMatches: mobileDevice.data?.retainedEvidence?.fingerprintMatches ?? null,
+          screenshotIntegrityPassed: mobileDevice.data?.retainedEvidence?.screenshotIntegrity?.passed ?? null
         }),
         check('mobile_route_navigation_verified', (mobileDevice.data?.devices ?? []).every((device) => device.verified === true), {
           deviceCount: mobileDevice.data?.devices?.length ?? 0
@@ -402,6 +420,26 @@ export async function runProductCompletionLedger({
           highRiskDirectApproveEnabled: wearableHud.data?.summary?.highRiskDirectApproveEnabled ?? null,
           pcHandoffEnabled: wearableHud.data?.summary?.pcHandoffEnabled ?? null
         }),
+        check('wearable_voice_and_failure_chaos_verified', wearableChaos.data?.status === 'passed'
+          && wearableChaos.data?.checks?.every((item) => item.status === 'passed')
+          && wearableChaos.data?.summary?.voice2RecoveryPassed === true
+          && wearableChaos.data?.summary?.rawTranscriptStored === false
+          && wearableChaos.data?.rawLeakCheck?.rawLeakDetected === false, {
+          status: wearableChaos.data?.status ?? 'missing',
+          passed: wearableChaos.data?.summary?.passed ?? null,
+          checks: wearableChaos.data?.summary?.checks ?? null,
+          voice2RecoveryPassed: wearableChaos.data?.summary?.voice2RecoveryPassed ?? null,
+          rawLeakDetected: wearableChaos.data?.rawLeakCheck?.rawLeakDetected ?? null
+        }),
+        check('wearable_physical_field_verified', wearablePhysicalField.data?.status === 'passed'
+          && wearablePhysicalField.data?.physicalValidationPassed === true
+          && wearablePhysicalField.data?.integrity?.passed === true
+          && wearablePhysicalField.data?.evaluation?.status === 'passed', {
+          status: wearablePhysicalField.data?.status ?? 'missing',
+          physicalValidationPassed: wearablePhysicalField.data?.physicalValidationPassed ?? false,
+          evidenceState: wearablePhysicalField.data?.evidence?.state ?? 'missing',
+          integrityState: wearablePhysicalField.data?.integrity?.state ?? 'missing'
+        }),
         check('mobile_external_validation_verified', mobileDeviceValidation?.status === 'verified' && mobileBridgeValidation?.status === 'verified', {
           mobileDeviceStatus: mobileDeviceValidation?.status ?? 'missing',
           liveBridgeStatus: mobileBridgeValidation?.status ?? 'missing'
@@ -411,15 +449,18 @@ export async function runProductCompletionLedger({
         reportEvidence('Mobile device smoke', mobileDevice),
         reportEvidence('Mobile live bridge E2E', mobileLiveBridge),
         reportEvidence('Wearable HUD adapter', wearableHud),
+        reportEvidence('Wearable physical field gate', wearablePhysicalField),
+        reportEvidence('Wearable field chaos', wearableChaos),
         reportEvidence('Operator handoff', handoff)
       ],
       nextActions: [
         'Run npm run mobile:device and npm run mobile:live-bridge-e2e with a ready Android device or emulator.',
+        'Open field-calibration.html on the target glasses, complete every measurement and scenario, then run npm run wearable:physical-gate.',
         'Refresh ag:handoff and ops:final-gate after mobile evidence is regenerated.'
       ],
       excellenceActions: [
         'Repeat the same smoke on a physical Android device, not only an emulator, before wider daily use.',
-        'Run the wearable HUD preview on the target AI glasses display mode and capture a field photo/video evidence note.',
+        'Repeat the wearable field lab after display firmware, microphone, browser, network, or thermal behavior changes.',
         'Add an iOS build/submission dry run when the Apple toolchain is available.'
       ]
     }),
